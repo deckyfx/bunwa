@@ -19,10 +19,18 @@
     "stage0:measure": "bun run src/tools/stage0/measure.ts",
     "stage0:drop": "bun run src/tools/stage0/drop.ts",
     "stage0:status": "bun run src/tools/stage0/status.ts",
-    "stage0:send": "bun run src/tools/stage0/sendtest.ts"
+    "stage0:send": "bun run src/tools/stage0/sendtest.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",
+    "drizzle-kit": "^0.31.10",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "drizzle-orm": "^0.45.2",
+    "elysia": "^1.4.29"
   }
 }

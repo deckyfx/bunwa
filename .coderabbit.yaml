@@ -38,18 +38,51 @@ reviews:
 
     - path: "src/tenancy/**"
       instructions: >-
-        Multi-tenant boundary. Every query must be scoped by environment id — a
-        missing predicate is a cross-tenant data leak, so treat an unscoped
-        query as a blocking issue. Consent is granted per (device, project) and
-        inherited by that project's environments; flag anything that grants
-        access without an active consent row.
+        Multi-tenant boundary; treat findings here as blocking, not advisory.
+        Every query must be scoped by environment id — a missing predicate is a
+        cross-tenant data leak. Flag: any Drizzle query without a where clause
+        binding environmentId or projectId; any repository method that takes an
+        id without also taking the tenant scope; any use of the raw `db` handle
+        outside a store class. Consent is granted per (device, project) and
+        inherited by that project's environments — flag anything granting
+        access without an active consent row, and anything that reads a consent
+        row without checking its status and expiry.
+
+    - path: "src/**/*.ts"
+      instructions: >-
+        This project's recurring defect is accepting input without validating
+        it and then silently substituting a default, so the code runs and
+        produces the wrong result. Six review passes on the stage 0 harness
+        found that same mistake in five different forms. Flag every instance:
+        a parsed value that falls back on NaN or empty string; a config read
+        with `??` where the absent case is a mistake rather than an omission;
+        an optional parameter whose default silently changes behaviour; a
+        catch block that swallows and returns a zero value. Prefer failing
+        loudly at the boundary over defaulting.
+
+    - path: "src/auth/**"
+      instructions: >-
+        API keys are Argon2id-hashed at rest and the plaintext is shown once at
+        creation. Flag any code path that logs, stores, returns or compares a
+        plaintext key, any non-constant-time comparison, and any key lookup that
+        does not check revoked_at and expires_at. The tenant is derived from the
+        credential and never accepted from the request — flag any handler that
+        reads a project or environment id from the body, query or a header.
 
     - path: "src/delivery/**"
       instructions: >-
         Outbound webhooks must be queued per virtual device, signed with a
         timestamped HMAC, and retried with backoff. Flag fire-and-forget
         delivery, shared queues across tenants, and any signature scheme that
-        omits the timestamp (it permits replay).
+        omits the timestamp (it permits replay). Webhook URLs are supplied by
+        tenants, so flag any outbound request that does not validate the target
+        first — scheme allowlist, private and link-local range block,
+        resolve-then-pin. gowa's /send/link was measured fetching arbitrary
+        caller-supplied URLs server-side (docs/12); bunwa must not add a second
+        such hole. Also flag any send whose success is inferred from the engine
+        accepting it rather than from a delivery ack: engine acceptance was
+        measured to mean nothing for up to 203 seconds after a silent
+        disconnect.
 
     - path: "src/tools/**"
       instructions: >-
