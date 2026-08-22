@@ -108,7 +108,7 @@ the finding above.
 
 | Devices | Memory | FDs | PIDs |
 | --- | --- | --- | --- |
-| 0 (idle, dashboard loaded) | **19.0 – 19.9 MiB** | 44–46 | 17 |
+| 0 (idle, dashboard loaded) | **19.0 – 19.9 MiB** | ~~44–46~~ withdrawn | 17 |
 
 Notably small. The fixed cost of a gowa process is negligible against a
 container budget, which is good news for the colocated single-container topology
@@ -576,11 +576,31 @@ failure as a connectivity problem.
 
 | State | Memory | FDs | PIDs |
 | --- | --- | --- | --- |
-| 0 devices, idle | 15 MiB | 51 | 17 |
-| 1 device, paired and connected | **70 MiB** | 55 | 22 |
+| 0 devices, idle | 15 MiB | ~~51~~ withdrawn | 17 |
+| 1 device, paired and connected | **70 MiB** | ~~55~~ withdrawn | 22 |
 
 A **~55 MiB marginal cost per connected device**, and +5 PIDs. Extrapolating
 naively, a 4 GB container holds roughly 70 devices.
+
+> **Two corrections to this section.**
+>
+> **The file-descriptor figures are withdrawn.** `openFds` ran
+> `ls /proc/*/fd | wc -l`, which counts the per-directory headers and blank
+> lines `ls` emits for multiple arguments. Measured against a correct count:
+> 49 reported versus 28 actual, an inflation of roughly 75%. Fixed in the tool;
+> the numbers here are struck rather than adjusted, because the error is not a
+> constant factor. Re-measure when a device is next paired.
+>
+> **The memory figures were derived by hand, not by the tool.** `perDevice`
+> anchored its baseline on the first sample rather than the first sample with
+> zero devices connected. The sampler was restarted after pairing, so the
+> baseline already contained the device's memory, the divisor collapsed to zero,
+> and the `MiB/device` column reported nothing for all 168 samples that had a
+> device connected. The ~55 MiB comes from manually differencing two samples
+> across that restart. It is consistent with the raw data and the memory figures
+> themselves are sound — `docker stats` is reliable — but it rests on two points,
+> not on a series, and should be confirmed with a second device before it is
+> used to size an engine pool.
 
 That figure needs a second device to confirm it is marginal rather than a
 one-off allocation, but if it holds it sets two things: the engine pool size in

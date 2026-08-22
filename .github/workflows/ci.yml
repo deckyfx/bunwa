@@ -1,0 +1,48 @@
+name: ci
+
+# Two review passes found eight defects in the measurement harness — code whose
+# only job is to check other code. None of them needed a reviewer to catch; a
+# typecheck and a handful of assertions would have done. This runs both.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Test
+        run: bun test
+
+      - name: Verify the harness has no runtime data committed
+        # deploy/stage0/data holds WhatsApp session credentials and captured
+        # message payloads. It is git-ignored; this fails the build if that ever
+        # stops being true.
+        run: |
+          if git ls-files --error-unmatch 'deploy/stage0/data/*' >/dev/null 2>&1; then
+            echo "::error::runtime data is tracked in git"
+            exit 1
+          fi
+          echo "no runtime data tracked"

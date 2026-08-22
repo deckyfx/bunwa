@@ -9,6 +9,7 @@
     "dev": "bun --watch run src/index.ts",
     "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
+    "test": "bun test",
     "reference:update": "./scripts/update-reference.sh",
     "stage0:up": "docker compose -f deploy/stage0/docker-compose.yml up -d",
     "stage0:down": "docker compose -f deploy/stage0/docker-compose.yml down",

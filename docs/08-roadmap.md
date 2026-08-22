@@ -66,7 +66,8 @@ topology in [03](03-architecture.md) and cannot be guessed.
 - Postgres + Drizzle, initial migration
 - Project entity, API keys, auth middleware
 - Health and readiness endpoints
-- CI: typecheck, lint, test, OpenAPI diff
+- CI: typecheck, lint, test, OpenAPI diff *(typecheck + test + a
+  runtime-data guard landed in stage 0; lint and the OpenAPI diff remain)*
 
 ### 1.2 — Engine abstraction (weeks 2–3)
 
