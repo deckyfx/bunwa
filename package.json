@@ -20,9 +20,11 @@
     "stage0:drop": "bun run src/tools/stage0/drop.ts",
     "stage0:status": "bun run src/tools/stage0/status.ts",
     "stage0:send": "bun run src/tools/stage0/sendtest.ts",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:studio": "drizzle-kit studio"
+    "db:generate": "drizzle-kit generate && bun run scripts/embed-migrations.ts",
+    "db:migrate": "bun run src/db/migrate.ts",
+    "db:studio": "drizzle-kit studio",
+    "db:embed": "bun run scripts/embed-migrations.ts",
+    "build": "bun run db:embed && bun run typecheck && bun build --compile --outfile dist/bunwa src/index.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",

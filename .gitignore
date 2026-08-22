@@ -24,3 +24,6 @@ reference/
 
 # stage 0 harness output — contains WhatsApp session credentials
 deploy/stage0/data/
+
+# runtime state materialised out of the binary
+.runtime/

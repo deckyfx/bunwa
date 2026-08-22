@@ -7,9 +7,10 @@
  */
 import { config, ConfigError } from "./config/env";
 import { createServer } from "./api/server";
+import { MigrationManager } from "./db/migration-manager";
 import { log } from "./observability/logger";
 
-function main(): void {
+async function main(): Promise<void> {
   let cfg;
   try {
     cfg = config();
@@ -21,6 +22,11 @@ function main(): void {
     }
     throw err;
   }
+
+  // Before accepting traffic: verify the database matches this build, and in
+  // development apply what is missing. Production refuses to start instead —
+  // an unattended schema change is not something a deploy should decide.
+  await MigrationManager.init();
 
   const server = createServer();
   log.info("bunwa started", { ...cfg.describe(), url: server.url.toString() });
@@ -34,4 +40,4 @@ function main(): void {
   process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
 
-main();
+await main();

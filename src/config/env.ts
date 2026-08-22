@@ -92,6 +92,12 @@ export class Config {
   readonly databaseUrl: string;
   /** Fail to start when migrations are pending, rather than auto-applying. */
   readonly migrateStrict: boolean;
+  /**
+   * Writable directory for runtime state, chiefly the migrations materialised
+   * out of the binary. Must be writable by the service user and is expected to
+   * be ephemeral — nothing here is a source of truth.
+   */
+  readonly runtimeDir: string;
 
   constructor(source: Record<string, string | undefined> = Bun.env) {
     this.nodeEnv = oneOf(source, "NODE_ENV", NODE_ENVS, "development");
@@ -101,6 +107,7 @@ export class Config {
     this.databaseUrl = required(source, "DATABASE_URL");
     // Production must never silently mutate a schema; development may.
     this.migrateStrict = optional(source, "MIGRATE_STRICT", this.nodeEnv === "production" ? "true" : "false") === "true";
+    this.runtimeDir = optional(source, "RUNTIME_DIR", ".runtime");
   }
 
   get isProduction(): boolean {
@@ -120,6 +127,7 @@ export class Config {
       logLevel: this.logLevel,
       database: redactUrl(this.databaseUrl),
       migrateStrict: this.migrateStrict,
+      runtimeDir: this.runtimeDir,
     };
   }
 }
