@@ -50,6 +50,18 @@ describe("Config", () => {
     expect(() => new Config({ ...base, LOG_LEVEL: "verbose" })).toThrow("must be one of");
   });
 
+  test("rejects a boolean that is neither true nor false", () => {
+    // `raw === "true"` silently mapped "yes" to false — the same silent-default
+    // failure this module exists to prevent, found by review inside the fix.
+    expect(() => new Config({ ...base, MIGRATE_STRICT: "yes" })).toThrow('must be "true" or "false"');
+    expect(() => new Config({ ...base, MIGRATE_STRICT: "1" })).toThrow('must be "true" or "false"');
+  });
+
+  test("accepts booleans case-insensitively", () => {
+    expect(new Config({ ...base, MIGRATE_STRICT: "TRUE" }).migrateStrict).toBe(true);
+    expect(new Config({ ...base, NODE_ENV: "production", MIGRATE_STRICT: "false" }).migrateStrict).toBe(false);
+  });
+
   test("production defaults differ from development", () => {
     const prod = new Config({ ...base, NODE_ENV: "production" });
     expect(prod.logLevel).toBe("info");

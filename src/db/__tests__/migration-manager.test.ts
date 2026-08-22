@@ -119,9 +119,11 @@ describe("inspect", () => {
     expect(state.problem).toContain("does not match this build");
   });
 
-  test("normalises created_at arriving as a string", async () => {
+  test("accepts created_at as a number, as a driver may return bigint", async () => {
+    // The string case is already covered by rowsFor(); this exercises the other
+    // branch of the normalisation rather than repeating the same one.
     const seq = MigrationManager.buildSequence();
-    const rows = [{ hash: seq[0]!.hash, created_at: String(seq[0]!.when) }];
+    const rows = [{ hash: seq[0]!.hash, created_at: seq[0]!.when }];
     const state = await MigrationManager.inspect(fakeDb(rows));
     expect(state.problem).toBeNull();
   });

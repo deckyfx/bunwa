@@ -13,9 +13,11 @@
  *   bun run scripts/embed-migrations.ts
  */
 import { readdir } from "node:fs/promises";
-import { join, relative, dirname } from "node:path";
+import { join, relative } from "node:path";
 
-const ROOT = new URL("..", import.meta.url).pathname;
+// URL.pathname keeps percent-encoding, so a checkout under a path with a
+// space or a "#" resolves to a directory that does not exist.
+const ROOT = Bun.fileURLToPath(new URL("..", import.meta.url));
 const MIGRATIONS_DIR = join(ROOT, "src/db/migrations");
 const OUTPUT = join(ROOT, "src/db/migrations-embedded.ts");
 

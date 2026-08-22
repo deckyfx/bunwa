@@ -5,13 +5,13 @@
  * deployment fails immediately with a precise message rather than accepting
  * traffic it cannot serve.
  */
-import { config, ConfigError } from "./config/env";
+import { config, ConfigError, type Config } from "./config/env";
 import { createServer } from "./api/server";
 import { MigrationManager } from "./db/migration-manager";
 import { log } from "./observability/logger";
 
 async function main(): Promise<void> {
-  let cfg;
+  let cfg: Config;
   try {
     cfg = config();
   } catch (err) {

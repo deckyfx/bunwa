@@ -21,6 +21,8 @@ async function main(): Promise<void> {
     throw err;
   }
 
+  // inspect() asserts the build carries migrations, so a packaging fault fails
+  // here rather than reporting "up to date" against an empty database.
   const state = await MigrationManager.inspect();
   if (state.problem !== null) {
     log.error("refusing to migrate", undefined, { problem: state.problem });

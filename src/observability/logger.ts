@@ -26,8 +26,11 @@ const storage = new AsyncLocalStorage<LogContext>();
 
 /** Keys whose values are replaced before a line is emitted. */
 const REDACT = new Set([
-  "apikey", "api_key", "authorization", "password", "secret", "token",
-  "webhook_secret", "key_hash", "challenge_token",
+  "apikey", "api_key", "authorization", "password", "passwd", "secret",
+  "token", "accesstoken", "access_token", "refreshtoken", "refresh_token",
+  "bearer", "credential", "credentials", "privatekey", "private_key",
+  "webhooksecret", "webhook_secret", "keyhash", "key_hash",
+  "challengetoken", "challenge_token", "sessionid", "session_id", "cookie",
 ]);
 
 /**
@@ -66,12 +69,15 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
   const cfg = config();
   if (SEVERITY[level] < SEVERITY[cfg.logLevel]) return;
 
+  // Context fields are redacted too. They were not, and a credential placed in
+  // a request context — precisely where one is most likely to be put — reached
+  // the log verbatim while a directly-logged one was masked.
   const context = storage.getStore();
-  const line = {
+  const line: Record<string, LogValue> = {
     level,
     time: new Date().toISOString(),
     message,
-    ...(context ?? {}),
+    ...(redact(context ?? {}) as Record<string, LogValue>),
     ...(redact(fields) as Record<string, LogValue>),
   };
 
@@ -81,12 +87,21 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
     return;
   }
   // Development: one readable line, with the correlation id kept short.
-  const id = typeof line["correlationId"] === "string" ? line["correlationId"].slice(0, 8) : "--------";
+  const rawId = line["correlationId"];
+  const id = typeof rawId === "string" ? rawId.slice(0, 8) : "--------";
   const rest = Object.entries(line).filter(([k]) => !["level", "time", "message", "correlationId"].includes(k));
-  out(`${line.time.slice(11, 23)} ${level.toUpperCase().padEnd(5)} [${id}] ${message}` +
+  const time = typeof line["time"] === "string" ? line["time"] : new Date().toISOString();
+  out(`${time.slice(11, 23)} ${level.toUpperCase().padEnd(5)} [${id}] ${message}` +
       (rest.length ? ` ${JSON.stringify(Object.fromEntries(rest))}` : ""));
 }
 
+/**
+ * The application logger.
+ *
+ * Exists so that every line the service emits is queryable in aggregate and
+ * carries the correlation id a support question starts from. Call it rather
+ * than console: console output has no level, no context and no redaction.
+ */
 export const log = {
   debug: (message: string, fields?: Record<string, LogValue>) => emit("debug", message, fields),
   info: (message: string, fields?: Record<string, LogValue>) => emit("info", message, fields),
@@ -95,12 +110,23 @@ export const log = {
     emit("error", message, { ...fields, ...(err === undefined ? {} : { error: describeError(err) }) }),
 };
 
-/** Run `fn` with these fields attached to every line it emits. */
+/**
+ * Run `fn` with these fields attached to every line it emits.
+ *
+ * The mechanism that makes a correlation id useful: set once per request at the
+ * edge, and every log line beneath it — including inside awaited calls several
+ * layers down — carries it without being passed one.
+ */
 export function withContext<T>(context: LogContext, fn: () => T): T {
   return storage.run(context, fn);
 }
 
-/** The correlation id of the current context, if there is one. */
+/**
+ * The correlation id of the current context, if there is one.
+ *
+ * For code that must put the id somewhere other than a log line — an error
+ * body, an outbound header — without threading it through its own signature.
+ */
 export function currentCorrelationId(): string | undefined {
   return storage.getStore()?.correlationId;
 }

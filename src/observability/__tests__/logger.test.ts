@@ -52,6 +52,23 @@ describe("redaction", () => {
     expect(line).toContain("https://x");
   });
 
+  test("redacts credentials placed in the request context", () => {
+    // Context fields were spread unredacted, so a credential put where one is
+    // most likely to be put — the request context — reached the log verbatim.
+    const lines = capture(() =>
+      withContext({ correlationId: "c1", apiKey: "LEAKED" } as never, () => log.info("x")),
+    );
+    expect(lines[0]).not.toContain("LEAKED");
+    expect(lines[0]).toContain('"correlationId":"c1"');
+  });
+
+  test("covers common credential aliases", () => {
+    const [line] = capture(() => log.info("y", { accessToken: "a", refreshToken: "b", cookie: "c" }));
+    expect(line).not.toContain('"a"');
+    expect(line).not.toContain('"b"');
+    expect(line).not.toContain('"c"');
+  });
+
   test("does not recurse without bound", () => {
     const deep: Record<string, unknown> = {};
     let cursor = deep;

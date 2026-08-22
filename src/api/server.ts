@@ -113,7 +113,9 @@ export function createApp() {
       }
       return {
         status: database.ok ? ("ready" as const) : ("not_ready" as const),
-        checks: { database },
+        // The driver's message names the host, port, database and role. It goes
+        // to the log above; an unauthenticated probe gets the verdict only.
+        checks: { database: { ok: database.ok, latencyMs: database.latencyMs } },
       };
     });
 }

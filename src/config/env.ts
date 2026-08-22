@@ -62,6 +62,22 @@ function integer(
   return value;
 }
 
+/**
+ * Read a boolean, accepting only the two spellings that mean something.
+ *
+ * `raw === "true"` silently maps "yes", "1" and "TRUE" to false — the exact
+ * silent-default failure this module exists to prevent, and it was present here
+ * until a reviewer pointed at it.
+ */
+function boolean(source: Record<string, string | undefined>, key: string, fallback: boolean): boolean {
+  const raw = source[key];
+  if (raw === undefined) return fallback;
+  const value = raw.trim().toLowerCase();
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new ConfigError(`${key} must be "true" or "false", got "${raw}"`);
+}
+
 /** Read a value constrained to a fixed set. */
 function oneOf<T extends string>(
   source: Record<string, string | undefined>,
@@ -106,7 +122,7 @@ export class Config {
     this.logLevel = oneOf(source, "LOG_LEVEL", LOG_LEVELS, this.nodeEnv === "production" ? "info" : "debug");
     this.databaseUrl = required(source, "DATABASE_URL");
     // Production must never silently mutate a schema; development may.
-    this.migrateStrict = optional(source, "MIGRATE_STRICT", this.nodeEnv === "production" ? "true" : "false") === "true";
+    this.migrateStrict = boolean(source, "MIGRATE_STRICT", this.nodeEnv === "production");
     this.runtimeDir = optional(source, "RUNTIME_DIR", ".runtime");
   }
 

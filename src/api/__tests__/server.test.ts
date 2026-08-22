@@ -53,6 +53,14 @@ describe("GET /readyz", () => {
     expect(body.status).toBe("not_ready");
     expect(body.checks.database.ok).toBe(false);
   });
+
+  test("does not echo the driver error to an unauthenticated caller", async () => {
+    // The message names host, port, database and role. It belongs in the log.
+    const text = await (await get("/readyz")).text();
+    expect(text).not.toContain("127.0.0.1");
+    expect(text).not.toContain("Failed query");
+    expect(text).not.toContain("error");
+  });
 });
 
 describe("correlation id", () => {

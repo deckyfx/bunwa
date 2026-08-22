@@ -47,6 +47,18 @@ interface BuildMigration {
   hash: string;
 }
 
+/**
+ * One row of Drizzle's tracking table.
+ *
+ * `created_at` is declared `bigint` in pg-core/dialect.js, and a driver may
+ * surface that as a number or a string depending on its bigint handling, so
+ * both are accepted and normalised at the comparison.
+ */
+export interface AppliedMigrationRow extends Record<string, unknown> {
+  hash: string;
+  created_at: number | string;
+}
+
 /** Outcome of comparing the database against this build. */
 export interface MigrationState {
   pending: number;
@@ -60,7 +72,12 @@ export class MigrationManager {
     return join(config().runtimeDir, ".migrations");
   }
 
-  /** This build's migrations, ordered and hashed the way Drizzle records them. */
+  /**
+   * This build's migrations, ordered and hashed the way Drizzle records them.
+   *
+   * The reference sequence every comparison is made against: what the running
+   * binary can create, independent of what any database currently holds.
+   */
   static buildSequence(): BuildMigration[] {
     return embeddedJournal.entries
       .slice()
@@ -111,14 +128,18 @@ export class MigrationManager {
    * match at the wrong position.
    */
   static async inspect(database: Database = db()): Promise<MigrationState> {
+    // Checked here rather than only in the callers: a build with nothing
+    // embedded has zero pending migrations, which every caller would otherwise
+    // read as "schema is up to date" and report success on an empty database.
+    this.assertPackaged();
     const buildSeq = this.buildSequence();
 
-    let rows: Array<{ hash: string; created_at: unknown }>;
+    let rows: AppliedMigrationRow[];
     try {
-      const result = await database.execute(
+      // Drizzle types execute() loosely; the query above fixes the shape.
+      rows = (await database.execute(
         sql`select hash, created_at from drizzle.__drizzle_migrations order by created_at asc`,
-      );
-      rows = result as unknown as Array<{ hash: string; created_at: unknown }>;
+      )) as AppliedMigrationRow[];
     } catch {
       // No tracking table yet: nothing has been applied.
       return { pending: buildSeq.length, problem: null };
@@ -169,7 +190,7 @@ export class MigrationManager {
   }
 
   /** Zero migrations compiled in is a packaging fault, not a valid state. */
-  private static assertPackaged(): void {
+  static assertPackaged(): void {
     if (embeddedMigrationCount === 0) {
       log.error("no migrations were compiled into this build — the database cannot be created");
       log.error("this is a packaging fault; run `bun run db:generate` and rebuild");

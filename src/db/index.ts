@@ -13,7 +13,13 @@ import * as schema from "./schema";
 
 export type Database = ReturnType<typeof createDatabase>;
 
-/** Build a Drizzle handle against the given connection string. */
+/**
+ * Build a Drizzle handle against the given connection string.
+ *
+ * Exported separately from `db()` so a caller can hold an isolated handle:
+ * migrations against an administrative connection, and tests against a
+ * throwaway database, neither of which should mutate the process-wide one.
+ */
 export function createDatabase(url: string) {
   return drizzle(new SQL(url), { schema });
 }
