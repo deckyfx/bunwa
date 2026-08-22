@@ -87,6 +87,12 @@ describe("flag", () => {
     expect(() => flag("device", ["bun", "x", "--device"])).toThrow("--device requires a value");
   });
 
+  test("rejects an explicitly empty value", () => {
+    // `--interval ""` previously returned "", which intOrThrow read as unset.
+    expect(() => flag("interval", ["bun", "x", "--interval", ""])).toThrow(/non-empty/);
+    expect(() => flag("interval", ["bun", "x", "--interval", "   "])).toThrow(/non-empty/);
+  });
+
   test("rejects the next flag being consumed as the value", () => {
     // Previously `--outage --device x` set outage to the string "--device".
     expect(() => flag("outage", ["bun", "x", "--outage", "--device", "a"])).toThrow(/got the flag/);
@@ -100,6 +106,10 @@ describe("intOrThrow", () => {
 
   test("rejects non-numeric input", () => {
     expect(() => intOrThrow("abc", 60, "--outage")).toThrow(/must be an integer/);
+  });
+
+  test("rejects an env var that is set but empty", () => {
+    expect(() => intOrThrow("", 3999, "SINK_PORT")).toThrow(/set but empty/);
   });
 
   test("rejects out-of-range input", () => {

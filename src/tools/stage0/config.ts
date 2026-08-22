@@ -17,6 +17,10 @@ export function flag(name: string, argv: string[] = Bun.argv): string | undefine
   const value = argv[i + 1];
   if (value === undefined) throw new Error(`--${name} requires a value`);
   if (value.startsWith("--")) throw new Error(`--${name} requires a value; got the flag ${value}`);
+  // An explicit empty value is a mistake, not an omission. Returning "" would
+  // let intOrThrow treat it as unset and quietly substitute the default — the
+  // same silent-default failure this function exists to remove.
+  if (value.trim() === "") throw new Error(`--${name} requires a non-empty value`);
   return value;
 }
 
@@ -28,7 +32,11 @@ export function flag(name: string, argv: string[] = Bun.argv): string | undefine
  * intend while reporting success.
  */
 export function intOrThrow(raw: string | undefined, fallback: number, name: string, min = 1, max = 65535): number {
-  if (raw === undefined || raw === "") return fallback;
+  // Only an absent value is an omission. An empty string reached this function
+  // from an environment variable set to nothing, which is a configuration
+  // mistake worth surfacing rather than papering over.
+  if (raw === undefined) return fallback;
+  if (raw.trim() === "") throw new Error(`${name} is set but empty; unset it to use the default of ${fallback}`);
   const n = Number(raw);
   if (!Number.isInteger(n) || n < min || n > max) {
     throw new Error(`${name} must be an integer between ${min} and ${max}; got ${JSON.stringify(raw)}`);
