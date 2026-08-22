@@ -66,6 +66,15 @@ export interface MigrationState {
   problem: string | null;
 }
 
+/**
+ * Owns the two things that make migrations survive being shipped.
+ *
+ * It materialises the SQL compiled into this build, so a single-file binary
+ * carries its own schema instead of looking for a directory that is not there;
+ * and it verifies the applied set is an ordered prefix of what this build
+ * knows, because Drizzle's migrator compares only against the newest recorded
+ * timestamp and will silently skip a gap. See the file comment for detail.
+ */
 export class MigrationManager {
   /** Where embedded SQL is written so Drizzle's migrator can read it. */
   private static get migrationsDir(): string {
@@ -114,6 +123,10 @@ export class MigrationManager {
         .map((f) => rm(join(dir, f), { force: true })),
     );
 
+    // No mkdir here, deliberately: Bun.write creates missing parent directories,
+    // including the nested meta/ one, so a first run against a clean runtime
+    // directory succeeds. Verified against a path whose parents do not exist.
+    // (Reviewers have flagged a missing mkdir twice; it is not missing.)
     await Bun.write(join(dir, "meta", "_journal.json"), JSON.stringify(embeddedJournal));
     for (const [name, contents] of Object.entries(embeddedFiles)) {
       await Bun.write(join(dir, name), contents);
@@ -178,6 +191,15 @@ export class MigrationManager {
   static async runMigrations(database: Database = db()): Promise<void> {
     this.assertPackaged();
     await this.materialise();
+
+    // Checked here as well as in init(), because this is a public entry point:
+    // `bun run db:migrate` and any direct caller reach it without passing
+    // through the startup path. Applying migrations on top of a database this
+    // build cannot account for is how a downgrade corrupts data rather than
+    // merely failing.
+    const state = await this.inspect(database);
+    if (state.problem !== null) throw new MigrationError(state.problem);
+
     try {
       await migrate(database, { migrationsFolder: this.migrationsDir });
     } catch (err) {

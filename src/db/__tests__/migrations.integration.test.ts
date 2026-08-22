@@ -100,6 +100,20 @@ describe("a real migration round trip", () => {
   });
 });
 
+describe("runMigrations refuses a database it cannot account for", () => {
+  test("throws rather than applying on top of a diverged database", async () => {
+    const { database } = scratch();
+    await MigrationManager.runMigrations(database);
+
+    // A database migrated by another branch: same count, different content.
+    database.run(sql`update __drizzle_migrations set hash = ${"0".repeat(64)}`);
+
+    // db:migrate and any direct caller reach runMigrations without passing
+    // through init(), so the guard has to live here too.
+    await expect(MigrationManager.runMigrations(database)).rejects.toThrow(/does not match this build/);
+  });
+});
+
 describe("the schema the migration produces", () => {
   test("accepts the tenancy spine and cascades a project delete", async () => {
     const { database } = scratch();

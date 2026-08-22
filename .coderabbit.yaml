@@ -19,7 +19,18 @@ reviews:
     - "!bun.lock"
     - "!deploy/stage0/data/**"
 
+  # Findings that have been verified against the code and deliberately not
+  # applied. Each is answered by an inline comment at the site and, where the
+  # assumption could change, by a test. Re-raising them costs a review slot.
   path_instructions:
+    - path: "src/db/migration-manager.ts"
+      instructions: >-
+        Do not report a missing mkdir in materialise(). Bun.write creates
+        missing parent directories, including the nested meta/ one; this was
+        verified against a path whose parents do not exist and is pinned by the
+        test "succeeds against a runtime directory that does not exist yet".
+        The absence of mkdir is deliberate and documented inline.
+
     - path: "src/**/*.ts"
       instructions: >-
         This is a Bun + TypeScript project. Prefer Bun native APIs (Bun.file,

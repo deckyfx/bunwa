@@ -7,7 +7,7 @@
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 
-import { log, withContext, currentCorrelationId, sanitiseCorrelationId } from "../logger";
+import { log, withContext, currentCorrelationId, sanitiseCorrelationId, isSensitiveKey } from "../logger";
 import { resetConfig } from "../../config/env";
 
 /** Capture stdout/stderr for the duration of one call. */
@@ -67,6 +67,25 @@ describe("redaction", () => {
     expect(line).not.toContain('"a"');
     expect(line).not.toContain('"b"');
     expect(line).not.toContain('"c"');
+  });
+
+  test("masks compound credential names in any casing", () => {
+    // Patched twice as an alias list — accessToken, then clientSecret — before
+    // being generalised to substring matching. These pin the class, not cases.
+    const [line] = capture(() =>
+      log.info("z", { clientSecret: "A", client_secret: "B", SigningKey: "C", refresh_token: "D" }),
+    );
+    for (const leaked of ['"A"', '"B"', '"C"', '"D"']) expect(line).not.toContain(leaked);
+  });
+
+  test("leaves deliberately visible fields alone", () => {
+    // keyPrefix exists to be shown in dashboards and logs; over-redaction would
+    // make the identification it is for impossible.
+    const [line] = capture(() => log.info("v", { keyPrefix: "bw_live_grande_", correlationId: "c" }));
+    expect(line).toContain("bw_live_grande_");
+    expect(isSensitiveKey("keyPrefix")).toBe(false);
+    expect(isSensitiveKey("correlationId")).toBe(false);
+    expect(isSensitiveKey("clientSecret")).toBe(true);
   });
 
   test("does not recurse without bound", () => {

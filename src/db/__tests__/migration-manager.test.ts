@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
-import { MigrationManager } from "../migration-manager";
+import { MigrationManager, type AppliedMigrationRow } from "../migration-manager";
 import { embeddedFiles, embeddedJournal, embeddedMigrationCount } from "../migrations-embedded";
 import { resetConfig } from "../../config/env";
 
@@ -35,7 +35,7 @@ function rowsFor(indices: number[]) {
 }
 
 /** Stand-in for the database handle; only `all` is used by inspect(). */
-function fakeDb(rows: unknown[] | Error) {
+function fakeDb(rows: AppliedMigrationRow[] | Error) {
   return {
     all: () => {
       if (rows instanceof Error) throw rows;
@@ -75,6 +75,19 @@ describe("materialise", () => {
     expect(files).toContain("meta");
     for (const entry of embeddedJournal.entries) expect(files).toContain(`${entry.tag}.sql`);
     expect(await Bun.file(join(dir, "meta/_journal.json")).json()).toEqual(embeddedJournal);
+  });
+
+  test("succeeds against a runtime directory that does not exist yet", async () => {
+    // Pins the assumption behind having no mkdir call: Bun.write creates parent
+    // directories. If a Bun release ever changes that, this fails rather than
+    // the first cold start in production.
+    const fresh = join(RUNTIME, "never-created", "nested");
+    resetConfig();
+    Bun.env["RUNTIME_DIR"] = fresh;
+    await MigrationManager.materialise();
+    expect(await Bun.file(join(fresh, ".migrations", "meta", "_journal.json")).exists()).toBe(true);
+    resetConfig();
+    Bun.env["RUNTIME_DIR"] = RUNTIME;
   });
 
   test("prunes SQL this build does not carry", async () => {

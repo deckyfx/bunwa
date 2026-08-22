@@ -24,14 +24,31 @@ export interface LogContext {
 
 const storage = new AsyncLocalStorage<LogContext>();
 
-/** Keys whose values are replaced before a line is emitted. */
-const REDACT = new Set([
-  "apikey", "api_key", "authorization", "password", "passwd", "secret",
-  "token", "accesstoken", "access_token", "refreshtoken", "refresh_token",
-  "bearer", "credential", "credentials", "privatekey", "private_key",
-  "webhooksecret", "webhook_secret", "keyhash", "key_hash",
-  "challengetoken", "challenge_token", "sessionid", "session_id", "cookie",
-]);
+/**
+ * Fragments that make a field name a credential.
+ *
+ * Matched as substrings of the normalised key rather than as an exact set. The
+ * exact-set version was patched twice — once for `accessToken`, once for
+ * `clientSecret` — which is fixing instances of a class. Any name containing
+ * one of these is masked, and the false positives that costs (a field merely
+ * counting tokens) are cheaper than the leak they prevent.
+ */
+const SENSITIVE_FRAGMENTS = [
+  "secret", "password", "passwd", "passphrase", "token", "credential",
+  "authorization", "cookie", "privatekey", "apikey", "keyhash", "bearer",
+  "sessionid", "signingkey",
+];
+
+/** Lowercase and strip separators, so client_secret and clientSecret agree. */
+function normaliseKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+/** Whether a field name suggests it holds a credential. */
+export function isSensitiveKey(key: string): boolean {
+  const normalised = normaliseKey(key);
+  return SENSITIVE_FRAGMENTS.some((fragment) => normalised.includes(fragment));
+}
 
 /**
  * Replace the value of any field whose name suggests a credential.
@@ -45,7 +62,7 @@ function redact(value: LogValue, depth = 0): LogValue {
   if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1));
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([k, v]) => [k, REDACT.has(k.toLowerCase()) ? "***" : redact(v, depth + 1)]),
+      Object.entries(value).map(([k, v]) => [k, isSensitiveKey(k) ? "***" : redact(v, depth + 1)]),
     );
   }
   return value;
@@ -103,9 +120,19 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
  * than console: console output has no level, no context and no redaction.
  */
 export const log = {
+  /** Detail useful while diagnosing, and noise otherwise. Off in production. */
   debug: (message: string, fields?: Record<string, LogValue>) => emit("debug", message, fields),
+  /** A thing the service did that an operator would expect to see. */
   info: (message: string, fields?: Record<string, LogValue>) => emit("info", message, fields),
+  /** Degraded but serving — something a human should look at, not tonight. */
   warn: (message: string, fields?: Record<string, LogValue>) => emit("warn", message, fields),
+  /**
+   * Failed, and someone needs to know.
+   *
+   * The error is a separate parameter rather than a field so it can be
+   * unwrapped — name, message, stack and the whole `cause` chain — instead of
+   * serialising to the useless `{}` a bare Error produces in JSON.
+   */
   error: (message: string, err?: unknown, fields?: Record<string, LogValue>) =>
     emit("error", message, { ...fields, ...(err === undefined ? {} : { error: describeError(err) }) }),
 };
