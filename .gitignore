@@ -1,0 +1,26 @@
+node_modules/
+dist/
+build/
+*.log
+
+# env
+.env
+.env.*
+!.env.example
+
+# runtime / session data
+data/
+sessions/
+*.sqlite
+*.sqlite-journal
+*.db
+
+# os / editor
+.DS_Store
+*.local
+
+# read-only upstream reference clone (gowa)
+reference/
+
+# stage 0 harness output — contains WhatsApp session credentials
+deploy/stage0/data/

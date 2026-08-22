@@ -1,0 +1,16 @@
+{
+  "folders": [
+    { "name": "bunwa", "path": "." },
+    { "name": "gowa (reference, read-only)", "path": "reference/gowa" }
+  ],
+  "settings": {
+    "files.readonlyInclude": {
+      "reference/**": true,
+      "**/reference/gowa/**": true
+    },
+    "files.watcherExclude": {
+      "**/reference/**": true
+    },
+    "typescript.tsserver.exclude": ["reference"]
+  }
+}

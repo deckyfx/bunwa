@@ -1,0 +1,30 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "dev",
+      "type": "shell",
+      "command": "bun run dev",
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "typecheck",
+      "type": "shell",
+      "command": "bun run typecheck",
+      "problemMatcher": [
+        "$tsc"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "update gowa reference",
+      "type": "shell",
+      "command": "./scripts/update-reference.sh",
+      "problemMatcher": []
+    }
+  ]
+}

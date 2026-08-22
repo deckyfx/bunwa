@@ -1,0 +1,28 @@
+{
+  "name": "bunwa",
+  "version": "0.0.1",
+  "description": "Bun/TypeScript rewrite of gowa (WhatsApp Web multi-device API)",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch run src/index.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "reference:update": "./scripts/update-reference.sh",
+    "stage0:up": "docker compose -f deploy/stage0/docker-compose.yml up -d",
+    "stage0:down": "docker compose -f deploy/stage0/docker-compose.yml down",
+    "stage0:logs": "docker compose -f deploy/stage0/docker-compose.yml logs -f",
+    "stage0:sink": "bun run src/tools/stage0/sink.ts",
+    "stage0:ws": "bun run src/tools/stage0/wstap.ts",
+    "stage0:measure": "bun run src/tools/stage0/measure.ts",
+    "stage0:drop": "bun run src/tools/stage0/drop.ts",
+    "stage0:status": "bun run src/tools/stage0/status.ts",
+    "stage0:send": "bun run src/tools/stage0/sendtest.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "typescript.preferences.importModuleSpecifierEnding": "minimal",
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "files.exclude": {
+    "**/node_modules": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/bun.lock": true,
+    "reference/**": true
+  },
+  "files.watcherExclude": {
+    "**/node_modules/**": true,
+    "**/reference/**": true
+  },
+  "files.readonlyInclude": {
+    "reference/**": true
+  }
+}

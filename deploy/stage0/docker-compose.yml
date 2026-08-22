@@ -1,0 +1,26 @@
+# Stage 0 harness: a single gowa instance, instrumented, for the measurements
+# listed in docs/08-roadmap.md. Not a deployment topology — see docs/03.
+name: bunwa-stage0
+
+services:
+  gowa:
+    # Pinned by digest rather than :latest. This harness exists to produce
+    # reproducible measurements, and a mutable tag means a re-run measures a
+    # different build than docs/12 recorded. Refresh deliberately, and
+    # re-measure when you do.
+    #   resolved from :latest; `docker manifest inspect` to refresh
+    image: ghcr.io/aldinokemal/go-whatsapp-web-multidevice@sha256:55ad22b7ce7fde482f3d76cedc8382b9b7154449035a5c65d0de14d913952960
+    command: ["rest"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    env_file: [.env]
+    extra_hosts:
+      # Lets gowa reach the host-side webhook sink on Linux.
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/storages:/app/storages
+      - ./data/statics:/app/statics
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }

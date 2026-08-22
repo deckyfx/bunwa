@@ -1,0 +1,68 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai/guides/configure-coderabbit
+# Schema: https://coderabbit.ai/integrations/schema.v2.json
+language: en-GB
+
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+
+  # Docs are prose, not code. They are long, they change often while the design
+  # is still moving, and a code reviewer has nothing useful to say about them —
+  # reviewing them would bury real findings in style notes.
+  path_filters:
+    - "!docs/**"            # design prose; long-lived, changes constantly, not code
+    - "!reference/**"       # read-only upstream clone (git-ignored, listed defensively)
+    - "!bun.lock"
+    - "!deploy/stage0/data/**"
+
+  path_instructions:
+    - path: "src/**/*.ts"
+      instructions: >-
+        This is a Bun + TypeScript project. Prefer Bun native APIs (Bun.file,
+        Bun.serve, Bun.spawn) over Node equivalents. Strict TypeScript: flag any
+        use of `any` or `unknown` where a precise type is possible. Every
+        exported class, function and method needs TSDoc explaining why it
+        exists, not just what it does.
+
+    - path: "src/engine/**"
+      instructions: >-
+        Engine adapters must not leak engine-specific concepts into the control
+        plane. Flag any conditional on engine kind outside this directory, and
+        any type that mirrors a gowa response shape rather than the normalised
+        internal one. Errors from gowa arrive as an opaque 500 with a prose
+        message; unclassified failures must default to retryable, never fatal.
+
+    - path: "src/tenancy/**"
+      instructions: >-
+        Multi-tenant boundary. Every query must be scoped by environment id — a
+        missing predicate is a cross-tenant data leak, so treat an unscoped
+        query as a blocking issue. Consent is granted per (device, project) and
+        inherited by that project's environments; flag anything that grants
+        access without an active consent row.
+
+    - path: "src/delivery/**"
+      instructions: >-
+        Outbound webhooks must be queued per virtual device, signed with a
+        timestamped HMAC, and retried with backoff. Flag fire-and-forget
+        delivery, shared queues across tenants, and any signature scheme that
+        omits the timestamp (it permits replay).
+
+    - path: "src/tools/**"
+      instructions: >-
+        Diagnostic tooling, not production code. Hold it to a lower bar for
+        abstraction, but any probe that mutates external state (docker networks,
+        device config, sending messages) must restore that state in a finally
+        block and must never default to a destructive target.
+
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches:
+      - main
+
+chat:
+  auto_reply: true
