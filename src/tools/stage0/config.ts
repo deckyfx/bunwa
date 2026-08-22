@@ -4,6 +4,23 @@ import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
+ * Read a `--name value` flag, rejecting the shapes that silently misbehave.
+ *
+ * `argv[indexOf(flag) + 1]` has two failure modes and neither is visible at
+ * runtime: a trailing `--device` yields undefined and falls through to the
+ * default, and `--outage --device x` consumes `--device` as the outage value.
+ * Both produce a run that looks fine and measures the wrong thing.
+ */
+export function flag(name: string, argv: string[] = Bun.argv): string | undefined {
+  const i = argv.indexOf(`--${name}`);
+  if (i < 0) return undefined;
+  const value = argv[i + 1];
+  if (value === undefined) throw new Error(`--${name} requires a value`);
+  if (value.startsWith("--")) throw new Error(`--${name} requires a value; got the flag ${value}`);
+  return value;
+}
+
+/**
  * Parse an integer from configuration, failing loudly.
  *
  * `Number(x) || fallback` silently swallows a typo: `SINK_PORT=300O` becomes

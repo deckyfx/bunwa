@@ -18,7 +18,7 @@
  *
  *   bun run stage0:drop -- [--device stage0-a] [--outage 60]
  */
-import { STAGE0, record, c, stamp, intOrThrow } from "./config";
+import { STAGE0, record, c, stamp, intOrThrow, flag } from "./config";
 
 /**
  * The network to cut is derived from the target container, never defaulted.
@@ -55,13 +55,9 @@ async function resolveNetworkOrExit(): Promise<string> {
   }
 }
 
-const arg = (n: string): string | undefined => {
-  const i = Bun.argv.indexOf(`--${n}`);
-  return i > 0 ? Bun.argv[i + 1] : undefined;
-};
-const deviceId = arg("device") ?? "stage0-a";
+const deviceId = flag("device") ?? "stage0-a";
 // A NaN outage would make the hold-time guard and pollUntil silently misbehave.
-const outageSec = intOrThrow(arg("outage"), 60, "--outage", 1, 3600);
+const outageSec = intOrThrow(flag("outage"), 60, "--outage", 1, 3600);
 
 // Resolved only after the arguments validate: bad input should fail without
 // touching docker at all.

@@ -9,7 +9,7 @@
  *
  *   bun run src/tools/stage0/measure.ts [--interval 10] [--samples 0]
  */
-import { STAGE0, record, c, stamp } from "./config";
+import { STAGE0, record, c, stamp, intOrThrow, flag } from "./config";
 
 interface Sample {
   devices: number;
@@ -106,9 +106,10 @@ async function sample(): Promise<Sample> {
   return { ...counts, memBytes: stats?.memBytes ?? null, pids: stats?.pids ?? null, fds };
 }
 
-const args = Bun.argv.slice(2);
-const intervalSec = Number(args[args.indexOf("--interval") + 1]) || 10;
-const maxSamples = Number(args[args.indexOf("--samples") + 1]) || 0;
+// Same latent defect as the other tools: indexOf(...) + 1 on a missing flag
+// reads argv[0], and a flag as the final argument reads undefined.
+const intervalSec = intOrThrow(flag("interval"), 10, "--interval", 1, 3600);
+const maxSamples = intOrThrow(flag("samples"), 0, "--samples", 0, 100_000);
 
 const mib = (b: number | null) => (b === null ? "    n/a" : (b / 1024 ** 2).toFixed(1).padStart(7));
 const num = (v: number | null, w: number) => (v === null ? "n/a".padStart(w) : String(v).padStart(w));

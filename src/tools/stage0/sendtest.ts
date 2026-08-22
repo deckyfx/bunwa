@@ -14,20 +14,14 @@
  *
  * SENDS REAL WHATSAPP MESSAGES. --to is mandatory and has no default.
  */
-import { STAGE0, record, c, stamp, containerReachableBindAddress, maskPhone, maskDeep } from "./config";
+import { STAGE0, record, c, stamp, containerReachableBindAddress, maskPhone, maskDeep, intOrThrow, flag } from "./config";
 
-const argv = Bun.argv;
-const arg = (name: string): string | undefined => {
-  const i = argv.indexOf(`--${name}`);
-  return i > 0 ? argv[i + 1] : undefined;
-};
-
-const to = arg("to");
-const device = arg("device") ?? "stage0-a";
-const only = arg("only")?.split(",").map((s) => s.trim());
+const to = flag("to");
+const device = flag("device") ?? "stage0-a";
+const only = flag("only")?.split(",").map((s) => s.trim());
 /** Port the fixture server binds; gowa reaches it via host.docker.internal. */
-const FIXTURE_PORT = Number(arg("fixture-port") ?? 3998);
-const FIXTURE_HOST = arg("fixture-host") ?? "host.docker.internal";
+const FIXTURE_PORT = intOrThrow(flag("fixture-port"), 3998, "--fixture-port");
+const FIXTURE_HOST = flag("fixture-host") ?? "host.docker.internal";
 /** Narrowest address gowa can still fetch fixtures from. */
 const FIXTURE_BIND = await containerReachableBindAddress();
 

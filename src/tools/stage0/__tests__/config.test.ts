@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import { maskPhone, maskDeep, stamp } from "../config";
+import { maskPhone, maskDeep, stamp, flag, intOrThrow } from "../config";
 
 describe("maskPhone", () => {
   test("masks an international number inside a JID", () => {
@@ -70,5 +70,39 @@ describe("maskDeep", () => {
 describe("stamp", () => {
   test("formats as HH:MM:SS.mmm", () => {
     expect(stamp(new Date("2026-08-22T10:28:03.123Z"))).toBe("10:28:03.123");
+  });
+});
+
+describe("flag", () => {
+  test("reads a value", () => {
+    expect(flag("device", ["bun", "x", "--device", "stage0-b"])).toBe("stage0-b");
+  });
+
+  test("returns undefined when the flag is absent", () => {
+    expect(flag("device", ["bun", "x"])).toBeUndefined();
+  });
+
+  test("rejects a trailing flag with no value", () => {
+    // Previously fell through to the default, so the run measured the wrong device.
+    expect(() => flag("device", ["bun", "x", "--device"])).toThrow("--device requires a value");
+  });
+
+  test("rejects the next flag being consumed as the value", () => {
+    // Previously `--outage --device x` set outage to the string "--device".
+    expect(() => flag("outage", ["bun", "x", "--outage", "--device", "a"])).toThrow(/got the flag/);
+  });
+});
+
+describe("intOrThrow", () => {
+  test("uses the fallback when unset", () => {
+    expect(intOrThrow(undefined, 60, "--outage")).toBe(60);
+  });
+
+  test("rejects non-numeric input", () => {
+    expect(() => intOrThrow("abc", 60, "--outage")).toThrow(/must be an integer/);
+  });
+
+  test("rejects out-of-range input", () => {
+    expect(() => intOrThrow("70000", 3999, "SINK_PORT")).toThrow(/between 1 and 65535/);
   });
 });
