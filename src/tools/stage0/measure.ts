@@ -156,7 +156,14 @@ async function tick(): Promise<void> {
  * rejected docker call would terminate the run.
  */
 let stopped = false;
-process.on("SIGINT", () => { stopped = true; });
+/** Resolved by the signal handler so the pause can be cut short. */
+let wake: () => void = () => undefined;
+process.on("SIGINT", () => {
+  if (stopped) process.exit(130); // second Ctrl-C exits immediately
+  stopped = true;
+  console.log(c.dim("\n  stopping after the current sample"));
+  wake();
+});
 
 while (!stopped) {
   try {
@@ -165,7 +172,9 @@ while (!stopped) {
     console.error(c.red(`  sample failed: ${err instanceof Error ? err.message : String(err)}`));
   }
   if (maxSamples && ++n >= maxSamples) break;
-  await Bun.sleep(intervalSec * 1000);
+  // Race the pause against the signal: an uninterruptible sleep makes the tool
+  // look like it is ignoring Ctrl-C for up to a full interval.
+  await Promise.race([Bun.sleep(intervalSec * 1000), new Promise<void>((r) => { wake = r; })]);
 }
 
 if (baseline === null) {

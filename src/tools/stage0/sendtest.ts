@@ -14,7 +14,7 @@
  *
  * SENDS REAL WHATSAPP MESSAGES. --to is mandatory and has no default.
  */
-import { STAGE0, record, c, stamp, containerReachableBindAddress, maskPhone } from "./config";
+import { STAGE0, record, c, stamp, containerReachableBindAddress, maskPhone, maskDeep } from "./config";
 
 const argv = Bun.argv;
 const arg = (name: string): string | undefined => {
@@ -177,10 +177,7 @@ for (const t of cases) {
   // The recipient is masked before it reaches disk. sends.jsonl is git-ignored,
   // but that protects the repository, not a copied log or a shared machine.
   const request = isJson ? { ...(t.body as Record<string, string>), phone: maskPhone(to) } : "multipart";
-  await record("sends.jsonl", {
-    type: t.name, path: t.path, ok, ms, request,
-    response: JSON.parse(maskPhone(JSON.stringify(payload ?? null))) as unknown,
-  });
+  await record("sends.jsonl", { type: t.name, path: t.path, ok, ms, request, response: maskDeep(payload) });
   console.log(`  ${c.dim(stamp())} ${ok ? c.green("✓") : c.red("✗")} ${t.name.padEnd(9)} ${String(ms).padStart(6)}ms  ${c.dim(detail.slice(0, 70))}`);
 }
 

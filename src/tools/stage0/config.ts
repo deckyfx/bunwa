@@ -87,7 +87,28 @@ export function stamp(d = new Date()): string {
   return d.toISOString().slice(11, 23);
 }
 
-/** Mask a phone number or JID for on-disk records: 628…295@s.whatsapp.net. */
+/**
+ * Mask a phone number or JID for on-disk records: 628…95@s.whatsapp.net.
+ *
+ * Seven digits is the threshold, not nine: a national-format number written
+ * without a country code is still a real person's number.
+ */
 export function maskPhone(value: string): string {
-  return value.replace(/(\d{2})\d{4,}(\d{3})/g, "$1…$2");
+  return value.replace(/(\d{2})\d{3,}(\d{2})/g, "$1…$2");
+}
+
+/**
+ * Mask every string in a structure, leaving numbers, booleans and keys alone.
+ *
+ * Masking a serialised JSON blob instead would rewrite unquoted number
+ * literals — a millisecond timestamp becomes `17…01` — and the document no
+ * longer parses. Walking the parsed value keeps the shape intact.
+ */
+export function maskDeep(value: unknown): unknown {
+  if (typeof value === "string") return maskPhone(value);
+  if (Array.isArray(value)) return value.map(maskDeep);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, maskDeep(v)]));
+  }
+  return value;
 }

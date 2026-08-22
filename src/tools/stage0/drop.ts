@@ -115,8 +115,12 @@ let recoverMs: number | null = null;
 
 try {
   console.log(`  ${c.dim(stamp())} ${c.red("network disconnected")}`);
-  await network("disconnect");
+  // Flagged *before* the call: `docker network disconnect` takes time, and a
+  // signal arriving mid-call would otherwise see networkCut === false and exit
+  // leaving the container offline. network("connect") treats "not connected"
+  // as benign, so an unnecessary restore costs nothing.
   networkCut = true;
+  await network("disconnect");
 
   detectMs = await pollUntil(false, (outageSec + 120) * 1000, "noticed the socket died");
 
