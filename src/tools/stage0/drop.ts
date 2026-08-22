@@ -18,7 +18,7 @@
  *
  *   bun run stage0:drop -- [--device stage0-a] [--outage 60]
  */
-import { STAGE0, record, c, stamp } from "./config";
+import { STAGE0, record, c, stamp, intOrThrow } from "./config";
 
 const NETWORK = process.env.GOWA_NETWORK ?? "bunwa-stage0_default";
 const arg = (n: string): string | undefined => {
@@ -26,7 +26,8 @@ const arg = (n: string): string | undefined => {
   return i > 0 ? Bun.argv[i + 1] : undefined;
 };
 const deviceId = arg("device") ?? "stage0-a";
-const outageSec = Number(arg("outage") ?? 60);
+// A NaN outage would make the hold-time guard and pollUntil silently misbehave.
+const outageSec = intOrThrow(arg("outage"), 60, "--outage", 1, 3600);
 const POLL_MS = 2000;
 
 interface Status { connected: boolean; loggedIn: boolean; reachable: boolean }

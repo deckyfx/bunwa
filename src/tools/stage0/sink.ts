@@ -8,7 +8,7 @@
  */
 import { timingSafeEqual } from "node:crypto";
 
-import { STAGE0, record, c, stamp, containerReachableBindAddress } from "./config";
+import { STAGE0, record, c, stamp, containerReachableBindAddress, maskPhone, maskDeep } from "./config";
 
 /** The fields the harness reads off a gowa webhook; the rest is kept verbatim. */
 interface WebhookPayload {
@@ -60,11 +60,20 @@ const server = Bun.serve({
     // Unsigned or wrongly-signed posts are recorded under a separate file so a
     // third party cannot inject rows into the measurement data.
     seen.set(valid ? event : `${event} (unsigned)`, (seen.get(valid ? event : `${event} (unsigned)`) ?? 0) + 1);
-    await record(valid ? "webhooks.jsonl" : "webhooks-rejected.jsonl", { event, device, from, valid, payload });
+
+    // Masked before it reaches disk or the terminal. This file holds the most
+    // sensitive capture in the harness — sender numbers, LIDs, the contact name
+    // the device owner saved them under, and message bodies — belonging to
+    // third parties who are not party to this project at all. docs/12 argues
+    // bunwa must strip exactly this; the harness has to hold the same line.
+    const maskedFrom = maskPhone(from);
+    await record(valid ? "webhooks.jsonl" : "webhooks-rejected.jsonl", {
+      event, device: maskPhone(device), from: maskedFrom, valid, payload: maskDeep(payload),
+    });
 
     const flag = valid ? c.green("sig ok") : c.red("SIG BAD");
     console.log(
-      `${c.dim(stamp())} ${c.cyan(event.padEnd(22))} ${flag}  ${c.dim(device.slice(0, 24))} ${c.dim(from.slice(0, 24))}`,
+      `${c.dim(stamp())} ${c.cyan(event.padEnd(22))} ${flag}  ${c.dim(maskPhone(device).slice(0, 24))} ${c.dim(maskedFrom.slice(0, 24))}`,
     );
     return new Response("ok");
   },

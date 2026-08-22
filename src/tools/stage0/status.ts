@@ -53,7 +53,9 @@ console.log(c.bold("\n  stage 0 status\n"));
 
 // ── processes ────────────────────────────────────────────────────────────────
 const container = await sh(["docker", "ps", "--filter", `name=${STAGE0.container}`, "--format", "{{.Status}}"]);
-const procs = await sh(["pgrep", "-af", "stage0/(sink|wstap|measure|drop).ts"]);
+// `pgrep -a` is GNU-only; BSD pgrep (macOS) rejects it and every tool would
+// then be reported as not running. `ps` plus a filter is portable.
+const procs = await sh(["ps", "-eo", "args="]);
 const running = (n: string) => procs.includes(`stage0/${n}.ts`);
 
 console.log(c.bold("  processes"));

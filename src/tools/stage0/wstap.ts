@@ -7,7 +7,7 @@
  * (docs/01). The stage 1 gowa adapter is planned to bridge exactly this, so the
  * tap doubles as a prototype of that bridge.
  */
-import { STAGE0, record, c, stamp } from "./config";
+import { STAGE0, record, c, stamp, maskDeep } from "./config";
 
 const seen = new Map<string, number>();
 let attempt = 0;
@@ -59,11 +59,23 @@ async function connect(): Promise<void> {
     const code = String(msg["code"] ?? msg["Code"] ?? "UNKNOWN");
     seen.set(code, (seen.get(code) ?? 0) + 1);
 
-    const detail = JSON.stringify(msg["result"] ?? msg["Result"] ?? msg["message"] ?? "").slice(0, 90);
+    // PASSKEY_* broadcasts carry live pairing material. Recording it would put
+    // a working credential in a plaintext file for as long as it is valid, so
+    // the payload is dropped and only the fact of the event is kept. (An
+    // earlier draft of docs/12 claimed QRDATA also arrives here; it does not —
+    // QR data is returned in the login response body.)
+    const credentialBearing = code.startsWith("PASSKEY");
+    const safe = credentialBearing
+      ? { code, redacted: "pairing material withheld" }
+      : (maskDeep(msg) as Record<string, unknown>);
+
+    const detail = credentialBearing
+      ? c.red("[redacted]")
+      : JSON.stringify(safe["result"] ?? safe["Result"] ?? safe["message"] ?? "").slice(0, 90);
     console.log(`${c.dim(stamp())} ${c.yellow(code.padEnd(24))} ${c.dim(detail)}`);
 
     chain = chain
-      .then(() => record("ws.jsonl", { code, msg }))
+      .then(() => record("ws.jsonl", { code, msg: safe }))
       .catch((err: unknown) => console.error(c.red(`  failed to record ${code}: ${String(err)}`)));
   };
 

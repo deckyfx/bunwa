@@ -19,6 +19,9 @@ which is the v1 engine decision ([ADR-0007](../../docs/adr/0007-gowa-engine-for-
 Four terminals. The sink must be up before gowa, or the first webhooks are lost.
 
 ```bash
+# 0 — one-time: the compose file reads .env, which is git-ignored
+cp deploy/stage0/.env.example deploy/stage0/.env
+
 # 1 — webhook sink
 bun run stage0:sink
 
@@ -63,7 +66,7 @@ Everything lands in `deploy/stage0/data/` as JSONL, git-ignored:
 
 | File | Contents |
 | --- | --- |
-| `webhooks.jsonl` | Every **correctly signed** webhook |
+| `webhooks.jsonl` | Every **correctly signed** webhook, with identifiers masked and free text redacted |
 | `webhooks-rejected.jsonl` | Posts whose HMAC did not verify, quarantined so they cannot skew a measurement |
 | `ws.jsonl` | Every `/ws` broadcast |
 | `metrics.jsonl` | Memory, fds, pids, device counts over time |
@@ -72,6 +75,13 @@ Everything lands in `deploy/stage0/data/` as JSONL, git-ignored:
 
 `data/` is git-ignored in full. Treat `storages/` as a secret: it is enough to
 impersonate the paired device.
+
+The JSONL captures are additionally sanitised on the way to disk — phone numbers
+and JIDs are masked, and free-text fields (`body`, `caption`, `sender_display_name`
+and friends) are replaced by their length. The harness studies payload *shape*,
+so nothing it needs is lost, and the messages of third parties who never agreed
+to be part of this project do not end up in a file on your laptop. Pairing
+material from `PASSKEY_*` broadcasts is dropped entirely rather than masked.
 
 ## Notes
 

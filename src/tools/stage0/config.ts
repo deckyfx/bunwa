@@ -3,13 +3,29 @@ import { appendFile, mkdir } from "node:fs/promises";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+/**
+ * Parse an integer from configuration, failing loudly.
+ *
+ * `Number(x) || fallback` silently swallows a typo: `SINK_PORT=300O` becomes
+ * NaN, falls back, and the sink then listens somewhere the operator did not
+ * intend while reporting success.
+ */
+export function intOrThrow(raw: string | undefined, fallback: number, name: string, min = 1, max = 65535): number {
+  if (raw === undefined || raw === "") return fallback;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}; got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
 export const STAGE0 = {
   /** gowa's REST base URL, as published by deploy/stage0/docker-compose.yml. */
   gowaBaseUrl: process.env.GOWA_URL ?? "http://127.0.0.1:3000",
   /** gowa's internal broadcast WebSocket. */
   gowaWsUrl: process.env.GOWA_WS ?? "ws://127.0.0.1:3000/ws",
   /** Port the webhook sink listens on; must match WHATSAPP_WEBHOOK in .env. */
-  sinkPort: Number(process.env.SINK_PORT ?? 3999),
+  sinkPort: intOrThrow(process.env.SINK_PORT, 3999, "SINK_PORT"),
   /** Shared secret gowa signs webhook payloads with. */
   webhookSecret: process.env.WEBHOOK_SECRET ?? "stage0-secret",
   /** Compose container name, for docker stats and network manipulation. */
@@ -104,11 +120,27 @@ export function maskPhone(value: string): string {
  * literals — a millisecond timestamp becomes `17…01` — and the document no
  * longer parses. Walking the parsed value keeps the shape intact.
  */
+/**
+ * Free-text fields whose content the harness never needs.
+ *
+ * Masking identifiers is not enough: the message body is the most sensitive
+ * part of an inbound capture, and it belongs to a third party. The harness
+ * studies payload *shape* — which fields appear, how they nest, whether a
+ * media field is an object or a bare string — so the text itself can be
+ * replaced by its length and nothing is lost.
+ */
+const CONTENT_FIELDS = new Set(["body", "caption", "text", "message", "conversation", "push_name", "from_name", "sender_display_name"]);
+
 export function maskDeep(value: unknown): unknown {
   if (typeof value === "string") return maskPhone(value);
   if (Array.isArray(value)) return value.map(maskDeep);
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, maskDeep(v)]));
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        CONTENT_FIELDS.has(k) && typeof v === "string" ? `<redacted ${v.length} chars>` : maskDeep(v),
+      ]),
+    );
   }
   return value;
 }

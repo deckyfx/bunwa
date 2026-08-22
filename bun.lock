@@ -5,10 +5,8 @@
     "": {
       "name": "bunwa",
       "devDependencies": {
-        "@types/bun": "latest",
-      },
-      "peerDependencies": {
-        "typescript": "^7",
+        "@types/bun": "^1.4.0",
+        "typescript": "^7.0.2",
       },
     },
   },

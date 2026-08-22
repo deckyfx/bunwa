@@ -46,6 +46,21 @@ describe("maskDeep", () => {
     });
   });
 
+  test("redacts free-text content but keeps its length", () => {
+    // The harness studies payload shape, never message text — which belongs to
+    // a third party who is not part of this project.
+    const masked = maskDeep({
+      body: "secret text",
+      sender_display_name: "Papa",
+      image: { caption: "hello", path: "statics/media/x.jpeg" },
+    }) as Record<string, unknown>;
+    expect(masked["body"]).toBe("<redacted 11 chars>");
+    expect(masked["sender_display_name"]).toBe("<redacted 4 chars>");
+    expect((masked["image"] as Record<string, unknown>)["caption"]).toBe("<redacted 5 chars>");
+    // Structural fields survive — they are the thing being measured.
+    expect((masked["image"] as Record<string, unknown>)["path"]).toBe("statics/media/x.jpeg");
+  });
+
   test("passes null and undefined through", () => {
     expect(maskDeep(null)).toBeNull();
     expect(maskDeep(undefined)).toBeUndefined();
