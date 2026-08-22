@@ -105,7 +105,7 @@ export class Config {
   readonly port: number;
   readonly host: string;
   readonly logLevel: LogLevel;
-  readonly databaseUrl: string;
+  readonly databasePath: string;
   /** Fail to start when migrations are pending, rather than auto-applying. */
   readonly migrateStrict: boolean;
   /**
@@ -120,7 +120,10 @@ export class Config {
     this.port = integer(source, "PORT", 3000, 1, 65535);
     this.host = optional(source, "HOST", "0.0.0.0");
     this.logLevel = oneOf(source, "LOG_LEVEL", LOG_LEVELS, this.nodeEnv === "production" ? "info" : "debug");
-    this.databaseUrl = required(source, "DATABASE_URL");
+    // A filesystem path, not a URL. `file:` is accepted so the variable keeps
+    // the conventional name and a Postgres-style value is not silently
+    // misread as a relative path.
+    this.databasePath = normaliseDatabasePath(optional(source, "DATABASE_PATH", "./data/db/bunwa.sqlite"));
     // Production must never silently mutate a schema; development may.
     this.migrateStrict = boolean(source, "MIGRATE_STRICT", this.nodeEnv === "production");
     this.runtimeDir = optional(source, "RUNTIME_DIR", ".runtime");
@@ -141,11 +144,32 @@ export class Config {
       port: this.port,
       host: this.host,
       logLevel: this.logLevel,
-      database: redactUrl(this.databaseUrl),
+      database: this.databasePath,
       migrateStrict: this.migrateStrict,
       runtimeDir: this.runtimeDir,
     };
   }
+}
+
+/**
+ * Resolve a SQLite location.
+ *
+ * Accepts a bare path, a `file:` URL, or `:memory:`. A `postgres://` value is
+ * rejected outright rather than treated as a filename — that mistake would
+ * silently create a database file named after the connection string.
+ */
+export function normaliseDatabasePath(raw: string): string {
+  const value = raw.trim();
+  if (value === ":memory:") return value;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value) && !value.startsWith("file://")) {
+    throw new ConfigError(`DATABASE_PATH must be a file path or a file: URL, got "${raw}"`);
+  }
+  if (value.startsWith("file:")) {
+    const withoutScheme = value.startsWith("file://") ? value.slice("file://".length) : value.slice("file:".length);
+    if (withoutScheme.trim() === "") throw new ConfigError(`DATABASE_PATH has no path after "file:"`);
+    return withoutScheme;
+  }
+  return value;
 }
 
 /** Strip credentials from a connection string so it can be logged. */

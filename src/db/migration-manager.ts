@@ -21,7 +21,7 @@ import { readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 
 import { sql } from "drizzle-orm";
-import { migrate } from "drizzle-orm/bun-sql/migrator";
+import { migrate } from "drizzle-orm/bun-sqlite/migrator";
 
 import { config } from "../config/env";
 import { db, type Database } from "./index";
@@ -136,10 +136,12 @@ export class MigrationManager {
 
     let rows: AppliedMigrationRow[];
     try {
-      // Drizzle types execute() loosely; the query above fixes the shape.
-      rows = (await database.execute(
-        sql`select hash, created_at from drizzle.__drizzle_migrations order by created_at asc`,
-      )) as AppliedMigrationRow[];
+      // SQLite keeps the tracking table unqualified — Postgres puts it in a
+      // `drizzle` schema (pg-core/dialect.js), SQLite does not
+      // (sqlite-core/dialect.js). Ordered ascending so position is comparable.
+      rows = database.all<AppliedMigrationRow>(
+        sql`select hash, created_at from __drizzle_migrations order by created_at asc`,
+      );
     } catch {
       // No tracking table yet: nothing has been applied.
       return { pending: buildSeq.length, problem: null };

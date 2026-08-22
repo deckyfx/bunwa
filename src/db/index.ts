@@ -1,12 +1,18 @@
 /**
  * Database connection.
  *
- * Uses Bun's native Postgres driver through Drizzle, so there is no separate
- * pg dependency. The handle is created lazily: constructing it at import time
- * would make every test and every CLI tool require a reachable database.
+ * SQLite through Bun's built-in driver — no server, no container, and a real
+ * database in tests rather than a mock. See
+ * docs/adr/0005-postgres-over-sqlite.md for when this changes and why.
+ *
+ * The handle is created lazily: constructing it at import time would make every
+ * test and CLI tool open a database file just by importing a module.
  */
-import { SQL } from "bun";
-import { drizzle } from "drizzle-orm/bun-sql";
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+
+import { Database as BunDatabase } from "bun:sqlite";
+import { drizzle } from "drizzle-orm/bun-sqlite";
 
 import { config } from "../config/env";
 import * as schema from "./schema";
@@ -14,21 +20,36 @@ import * as schema from "./schema";
 export type Database = ReturnType<typeof createDatabase>;
 
 /**
- * Build a Drizzle handle against the given connection string.
+ * Build a Drizzle handle against the given SQLite file.
  *
  * Exported separately from `db()` so a caller can hold an isolated handle:
- * migrations against an administrative connection, and tests against a
- * throwaway database, neither of which should mutate the process-wide one.
+ * migrations against their own connection, and tests against a throwaway file,
+ * neither of which should mutate the process-wide one.
+ *
+ * `:memory:` is accepted and skips directory creation.
  */
-export function createDatabase(url: string) {
-  return drizzle(new SQL(url), { schema });
+export function createDatabase(path: string) {
+  if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
+  const sqlite = new BunDatabase(path, { create: true });
+
+  // WAL lets readers proceed during a write, which matters as soon as the
+  // delivery worker shares this process with request handling.
+  sqlite.exec("PRAGMA journal_mode = WAL");
+  // Foreign keys are off by default in SQLite. The schema relies on them for
+  // cascade deletes, so a tenant removal would otherwise orphan its rows.
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  // Wait rather than fail immediately when another connection holds the write
+  // lock; without this a concurrent write surfaces as SQLITE_BUSY.
+  sqlite.exec("PRAGMA busy_timeout = 5000");
+
+  return drizzle(sqlite, { schema });
 }
 
 let instance: Database | undefined;
 
 /** The process-wide database handle, created on first use. */
 export function db(): Database {
-  instance ??= createDatabase(config().databaseUrl);
+  instance ??= createDatabase(config().databasePath);
   return instance;
 }
 

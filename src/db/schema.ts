@@ -1,22 +1,27 @@
 /**
- * Database schema.
+ * Database schema (SQLite).
  *
  * Rationale for every table lives in docs/04-data-model.md; this file is the
- * authoritative definition. Stage 1.1 covers the tenancy spine only —
- * projects, environments and API keys. Devices, virtual devices and consent
- * arrive in 1.3, and the delivery tables in 1.4.
+ * authoritative definition. Stage 1 covers the tenancy spine only — projects,
+ * environments and API keys. Devices, virtual devices and consent arrive in
+ * 1.3, delivery tables in 1.4.
+ *
+ * SQLite for now, Postgres when a second process needs the data — see
+ * docs/adr/0005-postgres-over-sqlite.md. The column choices below keep that
+ * move mechanical: no SQLite-only types, JSON stored as text rather than as a
+ * driver-specific column, and timestamps as epoch milliseconds.
  */
 import { relations, sql } from "drizzle-orm";
-import { index, jsonb, pgEnum, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
-
-export const projectStatus = pgEnum("project_status", ["active", "suspended"]);
-export const environmentKind = pgEnum("environment_kind", ["live", "test"]);
-export const environmentStatus = pgEnum("environment_status", ["active", "suspended"]);
+import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /** Shared audit columns. Every table carries them; none is nullable. */
 const timestamps = {
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  createdAt: integer("created_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .default(sql`(unixepoch() * 1000)`),
 };
 
 /**
@@ -25,13 +30,13 @@ const timestamps = {
  * `displayName` is customer-facing: it appears verbatim in the WhatsApp consent
  * message a phone holder receives, so it must be a name they recognise.
  */
-export const projects = pgTable(
+export const projects = sqliteTable(
   "projects",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
     slug: text("slug").notNull(),
     displayName: text("display_name").notNull(),
-    status: projectStatus("status").notNull().default("active"),
+    status: text("status", { enum: ["active", "suspended"] }).notNull().default("active"),
     ...timestamps,
   },
   (t) => [uniqueIndex("projects_slug_key").on(t.slug)],
@@ -45,18 +50,21 @@ export const projects = pgTable(
  * project and inherited by all of its environments — so onboarding a customer
  * to staging after production asks them nothing.
  */
-export const environments = pgTable(
+export const environments = sqliteTable(
   "environments",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    projectId: uuid("project_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    projectId: text("project_id")
       .notNull()
       .references(() => projects.id, { onDelete: "cascade" }),
     slug: text("slug").notNull(),
-    kind: environmentKind("kind").notNull().default("test"),
-    status: environmentStatus("status").notNull().default("active"),
+    kind: text("kind", { enum: ["live", "test"] }).notNull().default("test"),
+    status: text("status", { enum: ["active", "suspended"] }).notNull().default("active"),
     /** Rate limits, default event filter, retry policy, timezone. */
-    settings: jsonb("settings").notNull().default(sql`'{}'::jsonb`),
+    settings: text("settings", { mode: "json" })
+      .$type<Record<string, unknown>>()
+      .notNull()
+      .default({}),
     ...timestamps,
   },
   (t) => [
@@ -74,11 +82,11 @@ export const environments = pgTable(
  * cross-tenant access structurally impossible rather than a check that could be
  * forgotten.
  */
-export const apiKeys = pgTable(
+export const apiKeys = sqliteTable(
   "api_keys",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
-    environmentId: uuid("environment_id")
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    environmentId: text("environment_id")
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
     /** Argon2id hash of the plaintext key. Never the key itself. */
@@ -87,10 +95,10 @@ export const apiKeys = pgTable(
     keyPrefix: text("key_prefix").notNull(),
     /** Operator-facing name: "backend", "cron worker". */
     label: text("label").notNull(),
-    scopes: text("scopes").array().notNull().default(sql`ARRAY[]::text[]`),
-    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
-    expiresAt: timestamp("expires_at", { withTimezone: true }),
-    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    scopes: text("scopes", { mode: "json" }).$type<string[]>().notNull().default([]),
+    lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
     ...timestamps,
   },
   (t) => [

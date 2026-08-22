@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 
 import { Config, ConfigError, redactUrl } from "../env";
 
-const base = { DATABASE_URL: "postgres://u:p@localhost:5432/bunwa" };
+const base: Record<string, string> = {};
 
 describe("Config", () => {
   test("applies documented defaults when values are absent", () => {
@@ -21,13 +21,22 @@ describe("Config", () => {
     expect(c.migrateStrict).toBe(false);
   });
 
-  test("requires DATABASE_URL", () => {
-    expect(() => new Config({})).toThrow(ConfigError);
-    expect(() => new Config({})).toThrow("DATABASE_URL is required");
+  test("defaults the database to ./data/db", () => {
+    expect(new Config({}).databasePath).toBe("./data/db/bunwa.sqlite");
   });
 
-  test("rejects a required value that is present but empty", () => {
-    expect(() => new Config({ DATABASE_URL: "   " })).toThrow("set but empty");
+  test("rejects a database path that is present but empty", () => {
+    expect(() => new Config({ DATABASE_PATH: "   " })).toThrow("set but empty");
+  });
+
+  test("accepts a file: URL and :memory:", () => {
+    expect(new Config({ DATABASE_PATH: "file:./x/y.sqlite" }).databasePath).toBe("./x/y.sqlite");
+    expect(new Config({ DATABASE_PATH: "file://./x/y.sqlite" }).databasePath).toBe("./x/y.sqlite");
+    expect(new Config({ DATABASE_PATH: ":memory:" }).databasePath).toBe(":memory:");
+  });
+
+  test("rejects a Postgres URL rather than creating a file named after it", () => {
+    expect(() => new Config({ DATABASE_PATH: "postgres://u:p@h/d" })).toThrow("must be a file path");
   });
 
   test("rejects an optional value that is present but empty", () => {
@@ -70,10 +79,8 @@ describe("Config", () => {
     expect(prod.isProduction).toBe(true);
   });
 
-  test("describe() never leaks database credentials", () => {
-    const described = new Config(base).describe();
-    expect(JSON.stringify(described)).not.toContain("p@");
-    expect(described["database"]).toBe("postgres://***:***@localhost:5432/bunwa");
+  test("describe() reports the database location", () => {
+    expect(new Config(base).describe()["database"]).toBe("./data/db/bunwa.sqlite");
   });
 });
 

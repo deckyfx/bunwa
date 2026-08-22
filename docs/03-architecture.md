@@ -204,7 +204,7 @@ they are unnecessary. In a shared one they are the product.
 | --- | --- | --- |
 | Runtime | Bun (latest) | Project premise; fast startup, native TS, single-executable builds |
 | HTTP | Elysia | End-to-end types with Eden Treaty, first-class OpenAPI, mature on Bun |
-| Database | Postgres + Drizzle | Multi-tenant relational data with real constraints. SQLite cannot serve concurrent engine pools. |
+| Database | **SQLite + Drizzle** for stage 1; Postgres when a second process needs the data — see [ADR-0005](adr/0005-postgres-over-sqlite.md) | No server to stand up, and tests run against a real database rather than synthetic rows |
 | Queues | Redis streams | Durable per-virtual-device delivery queues, consumer groups, visible backlog |
 | Realtime → dashboard | SSE | One-way, survives proxies, far simpler than WebSocket for this shape |
 | Validation | TypeBox via Elysia | One schema drives validation, types and OpenAPI |

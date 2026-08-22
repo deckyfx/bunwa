@@ -11,7 +11,9 @@ import { createApp, problem } from "../server";
 import { resetConfig } from "../../config/env";
 import { resetDatabase } from "../../db";
 
-const ENV = { NODE_ENV: "test", DATABASE_URL: "postgres://u:p@127.0.0.1:1/nope", LOG_LEVEL: "error" };
+// A path under a file, so opening it fails — SQLite in :memory: always works,
+// which would leave the unreachable-database branch untested.
+const ENV = { NODE_ENV: "test", DATABASE_PATH: "/proc/version/nope.sqlite", LOG_LEVEL: "error" };
 
 beforeAll(() => {
   resetConfig();

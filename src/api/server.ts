@@ -47,7 +47,7 @@ export function problem(status: number, type: string, title: string, detail?: st
 async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?: string }> {
   const began = performance.now();
   try {
-    await db().execute(sql`select 1`);
+    db().all(sql`select 1`);
     return { ok: true, latencyMs: Math.round(performance.now() - began) };
   } catch (err) {
     return {

@@ -16,7 +16,7 @@ import { embeddedFiles, embeddedJournal, embeddedMigrationCount } from "../migra
 import { resetConfig } from "../../config/env";
 
 const RUNTIME = join(import.meta.dir, ".test-runtime");
-const ENV = { NODE_ENV: "test", DATABASE_URL: "postgres://u:p@127.0.0.1:1/nope", LOG_LEVEL: "error", RUNTIME_DIR: RUNTIME };
+const ENV = { NODE_ENV: "test", DATABASE_PATH: ":memory:", LOG_LEVEL: "error", RUNTIME_DIR: RUNTIME };
 
 beforeAll(() => {
   resetConfig();
@@ -34,10 +34,10 @@ function rowsFor(indices: number[]) {
   return indices.map((i) => ({ hash: seq[i]!.hash, created_at: String(seq[i]!.when) }));
 }
 
-/** Stand-in for the database handle; only `execute` is used by inspect(). */
+/** Stand-in for the database handle; only `all` is used by inspect(). */
 function fakeDb(rows: unknown[] | Error) {
   return {
-    execute: async () => {
+    all: () => {
       if (rows instanceof Error) throw rows;
       return rows;
     },

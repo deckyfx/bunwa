@@ -26,7 +26,7 @@ function capture(fn: () => void): string[] {
   return lines;
 }
 
-const ENV = { NODE_ENV: "production", DATABASE_URL: "postgres://u:p@h/d", LOG_LEVEL: "debug" };
+const ENV = { NODE_ENV: "production", DATABASE_PATH: ":memory:", LOG_LEVEL: "debug" };
 
 beforeEach(() => {
   resetConfig();
