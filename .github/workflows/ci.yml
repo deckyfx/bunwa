@@ -22,6 +22,10 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Default behaviour writes GITHUB_TOKEN into .git/config, where any
+          # later step — including code from a pull request — can read it.
+          persist-credentials: false
 
       - uses: oven-sh/setup-bun@v2
         with:

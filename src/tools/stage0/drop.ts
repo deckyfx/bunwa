@@ -20,7 +20,41 @@
  */
 import { STAGE0, record, c, stamp, intOrThrow } from "./config";
 
-const NETWORK = process.env.GOWA_NETWORK ?? "bunwa-stage0_default";
+/**
+ * The network to cut is derived from the target container, never defaulted.
+ *
+ * A hardcoded fallback means `docker network disconnect` can mutate docker
+ * state the operator did not choose — the probe would happily detach whatever
+ * happens to carry that name in another project. Asking the container which
+ * networks it is on removes the guess entirely.
+ */
+async function resolveNetwork(): Promise<string> {
+  if (process.env.GOWA_NETWORK) return process.env.GOWA_NETWORK;
+  const p = Bun.spawn(
+    ["docker", "inspect", STAGE0.container, "--format", "{{range $k,$v := .NetworkSettings.Networks}}{{$k}} {{end}}"],
+    { stdout: "pipe", stderr: "pipe" },
+  );
+  const out = (await new Response(p.stdout).text()).trim();
+  if ((await p.exited) !== 0 || !out) {
+    throw new Error(`cannot determine the network for ${STAGE0.container}; is it running? Set GOWA_NETWORK to override.`);
+  }
+  const names = out.split(/\s+/).filter(Boolean);
+  if (names.length !== 1) {
+    throw new Error(`${STAGE0.container} is on ${names.length} networks (${names.join(", ")}); set GOWA_NETWORK to choose one.`);
+  }
+  return names[0] as string;
+}
+
+/** Operator-facing failures should read as guidance, not as a stack trace. */
+async function resolveNetworkOrExit(): Promise<string> {
+  try {
+    return await resolveNetwork();
+  } catch (err) {
+    console.error(c.red(`\n  ${err instanceof Error ? err.message : String(err)}\n`));
+    process.exit(1);
+  }
+}
+
 const arg = (n: string): string | undefined => {
   const i = Bun.argv.indexOf(`--${n}`);
   return i > 0 ? Bun.argv[i + 1] : undefined;
@@ -28,6 +62,10 @@ const arg = (n: string): string | undefined => {
 const deviceId = arg("device") ?? "stage0-a";
 // A NaN outage would make the hold-time guard and pollUntil silently misbehave.
 const outageSec = intOrThrow(arg("outage"), 60, "--outage", 1, 3600);
+
+// Resolved only after the arguments validate: bad input should fail without
+// touching docker at all.
+const NETWORK = await resolveNetworkOrExit();
 const POLL_MS = 2000;
 
 interface Status { connected: boolean; loggedIn: boolean; reachable: boolean }

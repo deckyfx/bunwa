@@ -8,7 +8,7 @@ services:
     # reproducible measurements, and a mutable tag means a re-run measures a
     # different build than docs/12 recorded. Refresh deliberately, and
     # re-measure when you do.
-    #   :latest as of 2026-08-23
+    #   resolved from :latest; `docker manifest inspect` to refresh
     image: ghcr.io/aldinokemal/go-whatsapp-web-multidevice@sha256:55ad22b7ce7fde482f3d76cedc8382b9b7154449035a5c65d0de14d913952960
     command: ["rest"]
     restart: unless-stopped
