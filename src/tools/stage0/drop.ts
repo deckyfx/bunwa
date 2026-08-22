@@ -79,6 +79,27 @@ async function pollUntil(want: boolean, timeoutMs: number, label: string): Promi
   return null;
 }
 
+/**
+ * A `finally` block does not run on SIGINT, and this probe leaves the engine
+ * offline if it does not restore the network. Ctrl-C during the outage was the
+ * failure mode that stranded the container the first time it was run.
+ */
+let networkCut = false;
+let restoring = false;
+async function restoreOnSignal(sig: string): Promise<void> {
+  if (restoring) return;
+  restoring = true;
+  console.log(c.yellow(`\n  ${sig} received`));
+  if (networkCut) {
+    console.log(c.green("  restoring network before exit"));
+    await network("connect").catch((e: unknown) => console.error(c.red(`  restore failed: ${String(e)}`)));
+  }
+  process.exit(130);
+}
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
+  process.on(sig, () => void restoreOnSignal(sig));
+}
+
 console.log(c.bold("\n  stage0 socket-drop probe"));
 console.log(c.dim(`  ${STAGE0.container} · ${NETWORK} · device ${deviceId} · outage ${outageSec}s`));
 console.log(c.dim(`  polling via docker exec, so the cut does not blind us\n`));
@@ -95,6 +116,7 @@ let recoverMs: number | null = null;
 try {
   console.log(`  ${c.dim(stamp())} ${c.red("network disconnected")}`);
   await network("disconnect");
+  networkCut = true;
 
   detectMs = await pollUntil(false, (outageSec + 120) * 1000, "noticed the socket died");
 
@@ -105,6 +127,7 @@ try {
   // than no probe at all.
   console.log(`\n  ${c.dim(stamp())} ${c.green("network restored")}`);
   await network("connect").catch((e: unknown) => console.error(c.red(`  restore failed: ${String(e)}`)));
+  networkCut = false;
 }
 
 recoverMs = await pollUntil(true, 180_000, "reconnected");

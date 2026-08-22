@@ -14,19 +14,26 @@ import { STAGE0, record, c, stamp } from "./config";
 interface Sample {
   devices: number;
   connected: number;
-  memBytes: number;
-  fds: number;
-  pids: number;
+  /** null when the docker call failed — never conflate that with zero. */
+  memBytes: number | null;
+  fds: number | null;
+  pids: number | null;
 }
 
-/** Read one line of `docker stats`, which reports memory and pid count. */
-async function dockerStats(): Promise<{ memBytes: number; pids: number }> {
+/**
+ * Read one line of `docker stats`, which reports memory and pid count.
+ *
+ * Returns null rather than zeros when docker fails: a zero written to
+ * metrics.jsonl is indistinguishable from a real measurement, and poisons any
+ * later derivation with a negative delta.
+ */
+async function dockerStats(): Promise<{ memBytes: number; pids: number } | null> {
   const proc = Bun.spawn(
     ["docker", "stats", "--no-stream", "--format", "{{.MemUsage}}|{{.PIDs}}", STAGE0.container],
     { stdout: "pipe", stderr: "pipe" },
   );
   const out = (await new Response(proc.stdout).text()).trim();
-  if (!out) return { memBytes: 0, pids: 0 };
+  if ((await proc.exited) !== 0 || !out) return null;
   const [mem = "", pids = "0"] = out.split("|");
   const [used = "0B"] = mem.split(" / ");
   return { memBytes: parseSize(used), pids: Number(pids) || 0 };
@@ -43,13 +50,23 @@ function parseSize(s: string): number {
   return Number(m[1]) * (scale[(m[2] ?? "B").toLowerCase()] ?? 1);
 }
 
-/** Count open file descriptors inside the container. */
-async function openFds(): Promise<number> {
+/**
+ * Count open file descriptors inside the container.
+ *
+ * `ls /proc/*∕fd | wc -l` counts the per-directory headers and blank lines that
+ * `ls` emits when given several directories, inflating the total by roughly
+ * 75%. Listing each directory separately counts only real descriptors.
+ */
+async function openFds(): Promise<number | null> {
   const proc = Bun.spawn(
-    ["docker", "exec", STAGE0.container, "sh", "-c", "ls /proc/*/fd 2>/dev/null | wc -l"],
+    ["docker", "exec", STAGE0.container, "sh", "-c",
+     'for d in /proc/[0-9]*/fd; do ls "$d" 2>/dev/null; done | wc -l'],
     { stdout: "pipe", stderr: "pipe" },
   );
-  return Number((await new Response(proc.stdout).text()).trim()) || 0;
+  const out = (await new Response(proc.stdout).text()).trim();
+  if ((await proc.exited) !== 0) return null;
+  const n = Number(out);
+  return Number.isFinite(n) ? n : null;
 }
 
 /**
@@ -85,40 +102,73 @@ async function deviceCounts(): Promise<{ devices: number; connected: number }> {
 }
 
 async function sample(): Promise<Sample> {
-  const [{ memBytes, pids }, fds, counts] = await Promise.all([dockerStats(), openFds(), deviceCounts()]);
-  return { ...counts, memBytes, fds, pids };
+  const [stats, fds, counts] = await Promise.all([dockerStats(), openFds(), deviceCounts()]);
+  return { ...counts, memBytes: stats?.memBytes ?? null, pids: stats?.pids ?? null, fds };
 }
 
 const args = Bun.argv.slice(2);
 const intervalSec = Number(args[args.indexOf("--interval") + 1]) || 10;
 const maxSamples = Number(args[args.indexOf("--samples") + 1]) || 0;
 
-const mib = (b: number) => (b / 1024 ** 2).toFixed(1).padStart(7);
+const mib = (b: number | null) => (b === null ? "    n/a" : (b / 1024 ** 2).toFixed(1).padStart(7));
+const num = (v: number | null, w: number) => (v === null ? "n/a".padStart(w) : String(v).padStart(w));
 
 console.log(c.bold(`stage0 measurement — every ${intervalSec}s${maxSamples ? `, ${maxSamples} samples` : ", until Ctrl-C"}`));
 console.log(c.dim("  writing metrics.jsonl\n"));
 console.log(c.dim("  time         devices  conn   mem MiB    fds  pids   MiB/device"));
 
-const baseline: Sample = await sample();
+/**
+ * Marginal cost per connected device.
+ *
+ * The baseline is the first sample **with zero devices connected**, not simply
+ * the first sample. Anchoring on process start silently breaks the metric when
+ * the sampler is restarted against an already-paired device: the baseline then
+ * already contains that device's memory, the divisor collapses to zero, and the
+ * column reports nothing for the rest of the run.
+ */
+let baseline: Sample | null = null;
 let n = 0;
 
-/** Marginal cost per connected device, against the first sample as a baseline. */
 function perDevice(s: Sample): string {
-  if (s.connected <= 0) return c.dim("     —");
+  if (baseline === null || baseline.memBytes === null || s.memBytes === null) return c.dim("     —");
+  const devices = s.connected - baseline.connected;
+  if (devices <= 0) return c.dim("     —");
   const delta = (s.memBytes - baseline.memBytes) / 1024 ** 2;
-  const idle = baseline.connected === 0 ? s.connected : s.connected - baseline.connected;
-  if (idle <= 0) return c.dim("     —");
-  return (delta / idle).toFixed(1).padStart(6);
+  return (delta / devices).toFixed(1).padStart(6);
 }
 
 async function tick(): Promise<void> {
   const s = await sample();
-  await record("metrics.jsonl", { ...s });
+  if (baseline === null && s.connected === 0 && s.memBytes !== null) baseline = s;
+  await record("metrics.jsonl", { ...s, baseline: baseline === s });
   console.log(
-    `  ${c.dim(stamp())}  ${String(s.devices).padStart(7)}  ${String(s.connected).padStart(4)}  ${mib(s.memBytes)}  ${String(s.fds).padStart(5)}  ${String(s.pids).padStart(4)}   ${perDevice(s)}`,
+    `  ${c.dim(stamp())}  ${num(s.devices, 7)}  ${num(s.connected, 4)}  ${mib(s.memBytes)}  ${num(s.fds, 5)}  ${num(s.pids, 4)}   ${perDevice(s)}`,
   );
-  if (maxSamples && ++n >= maxSamples) process.exit(0);
 }
 
-await tick();
-setInterval(tick, intervalSec * 1000);
+/**
+ * Self-scheduling loop rather than setInterval.
+ *
+ * A tick awaits several docker calls and up to N HTTP requests and regularly
+ * exceeds a short interval; setInterval would start the next tick before the
+ * previous finished, interleaving samples and dropping the even spacing the
+ * per-device derivation depends on. It also discards the promise, so one
+ * rejected docker call would terminate the run.
+ */
+let stopped = false;
+process.on("SIGINT", () => { stopped = true; });
+
+while (!stopped) {
+  try {
+    await tick();
+  } catch (err) {
+    console.error(c.red(`  sample failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
+  if (maxSamples && ++n >= maxSamples) break;
+  await Bun.sleep(intervalSec * 1000);
+}
+
+if (baseline === null) {
+  console.log(c.yellow("\n  no zero-device baseline was captured, so MiB/device could not be derived."));
+  console.log(c.dim("  start the sampler before pairing, or stop the device and re-run."));
+}

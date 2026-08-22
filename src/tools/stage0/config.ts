@@ -1,4 +1,8 @@
-/** Shared configuration for the stage 0 measurement tools. */
+/** Shared configuration and helpers for the stage 0 measurement tools. */
+import { appendFile, mkdir } from "node:fs/promises";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
 export const STAGE0 = {
   /** gowa's REST base URL, as published by deploy/stage0/docker-compose.yml. */
   gowaBaseUrl: process.env.GOWA_URL ?? "http://127.0.0.1:3000",
@@ -10,17 +14,62 @@ export const STAGE0 = {
   webhookSecret: process.env.WEBHOOK_SECRET ?? "stage0-secret",
   /** Compose container name, for docker stats and network manipulation. */
   container: process.env.GOWA_CONTAINER ?? "bunwa-stage0-gowa-1",
-  /** Where JSONL observations are appended. */
-  dataDir: new URL("../../../deploy/stage0/data/", import.meta.url).pathname,
+  /**
+   * Where JSONL observations are appended.
+   *
+   * `fileURLToPath` rather than `URL.pathname`: the latter keeps percent
+   * encoding, so a checkout under a path containing a space or a `#` resolves
+   * to a directory that does not exist.
+   */
+  dataDir: fileURLToPath(new URL("../../../deploy/stage0/data/", import.meta.url)),
 } as const;
+
+/**
+ * Serialise appends per file.
+ *
+ * The sink, the tap and the sampler all write concurrently. A read-modify-write
+ * loses whichever row lost the race, silently, in exactly the files the design
+ * conclusions are drawn from — so appends are both atomic and queued per path.
+ */
+const writeQueues = new Map<string, Promise<void>>();
 
 /** Append one observation to a JSONL file, creating it if absent. */
 export async function record(file: string, row: Record<string, unknown>): Promise<void> {
   const path = STAGE0.dataDir + file;
   const line = JSON.stringify({ at: new Date().toISOString(), ...row }) + "\n";
-  const existing = Bun.file(path);
-  const prior = (await existing.exists()) ? await existing.text() : "";
-  await Bun.write(path, prior + line);
+  const prior = writeQueues.get(path) ?? Promise.resolve();
+  const next = prior
+    .catch(() => undefined) // one failed write must not poison the queue
+    .then(async () => {
+      await mkdir(dirname(path), { recursive: true });
+      await appendFile(path, line, "utf8");
+    });
+  writeQueues.set(path, next);
+  return next;
+}
+
+/**
+ * The address host-side servers must bind so that gowa, inside its container,
+ * can reach them via `host.docker.internal`.
+ *
+ * Binding `0.0.0.0` would work but exposes an unauthenticated sink to every
+ * host on the network, which can then inject rows into the measurement data.
+ * The docker bridge gateway is the narrowest address that still works.
+ */
+export async function containerReachableBindAddress(): Promise<string> {
+  if (process.env.SINK_BIND) return process.env.SINK_BIND;
+  try {
+    const p = Bun.spawn(
+      ["docker", "network", "inspect", "bridge", "-f", "{{(index .IPAM.Config 0).Gateway}}"],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const out = (await new Response(p.stdout).text()).trim();
+    if ((await p.exited) === 0 && /^\d+\.\d+\.\d+\.\d+$/.test(out)) return out;
+  } catch {
+    /* fall through */
+  }
+  console.warn(c.yellow("  could not resolve the docker bridge gateway; binding 127.0.0.1 (gowa will not reach it)"));
+  return "127.0.0.1";
 }
 
 /** ANSI helpers — the harness is read at a glance, so colour earns its place. */
@@ -33,7 +82,12 @@ export const c = {
   bold: (s: string) => `\x1b[1m${s}\x1b[0m`,
 };
 
-/** HH:MM:SS.mmm, for correlating observations across the three tools. */
+/** HH:MM:SS.mmm, for correlating observations across the tools. */
 export function stamp(d = new Date()): string {
   return d.toISOString().slice(11, 23);
+}
+
+/** Mask a phone number or JID for on-disk records: 628…295@s.whatsapp.net. */
+export function maskPhone(value: string): string {
+  return value.replace(/(\d{2})\d{4,}(\d{3})/g, "$1…$2");
 }

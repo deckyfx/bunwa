@@ -38,7 +38,10 @@ Then open <http://127.0.0.1:3000> and pair a device.
 ## The measurement sequence
 
 1. **Baseline.** Let `measure.ts` run for two minutes with zero devices. This is
-   the fixed cost of the process.
+   the fixed cost of the process, and it is **required**: the `MiB/device`
+   column anchors on the first sample with no device connected. Start the
+   sampler before pairing, or it has nothing to subtract and reports `—` for
+   the whole run.
 2. **Pair one device.** Watch `wstap.ts` — `QRDATA` then `LOGIN_SUCCESS` should
    appear. Watch `sink.ts` — nothing lifecycle-related should arrive. That
    contrast *is* the finding.
@@ -60,7 +63,8 @@ Everything lands in `deploy/stage0/data/` as JSONL, git-ignored:
 
 | File | Contents |
 | --- | --- |
-| `webhooks.jsonl` | Every webhook, with signature validity |
+| `webhooks.jsonl` | Every **correctly signed** webhook |
+| `webhooks-rejected.jsonl` | Posts whose HMAC did not verify, quarantined so they cannot skew a measurement |
 | `ws.jsonl` | Every `/ws` broadcast |
 | `metrics.jsonl` | Memory, fds, pids, device counts over time |
 | `drop.jsonl` | Detection and recovery latency |

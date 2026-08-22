@@ -14,7 +14,7 @@
  *
  * SENDS REAL WHATSAPP MESSAGES. --to is mandatory and has no default.
  */
-import { STAGE0, record, c, stamp } from "./config";
+import { STAGE0, record, c, stamp, containerReachableBindAddress, maskPhone } from "./config";
 
 const argv = Bun.argv;
 const arg = (name: string): string | undefined => {
@@ -28,6 +28,8 @@ const only = arg("only")?.split(",").map((s) => s.trim());
 /** Port the fixture server binds; gowa reaches it via host.docker.internal. */
 const FIXTURE_PORT = Number(arg("fixture-port") ?? 3998);
 const FIXTURE_HOST = arg("fixture-host") ?? "host.docker.internal";
+/** Narrowest address gowa can still fetch fixtures from. */
+const FIXTURE_BIND = await containerReachableBindAddress();
 
 if (!to) {
   console.error(c.red("--to <phone> is required. This sends real WhatsApp messages."));
@@ -66,21 +68,40 @@ async function buildFixtures(): Promise<Map<string, { bytes: Uint8Array; type: s
     type: "video/mp4",
   });
 
-  // A minimal but valid single-page PDF; no toolchain needed.
-  const pdf = [
-    "%PDF-1.4",
-    "1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj",
-    "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj",
-    "3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj",
-    "4 0 obj<</Length 52>>stream",
-    "BT /F1 18 Tf 20 45 Td (bunwa stage 0) Tj ET",
-    "endstream endobj",
-    "5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj",
-    "trailer<</Root 1 0 R>>",
-  ].join("\n");
-  out.set("bunwa.pdf", { bytes: new TextEncoder().encode(pdf), type: "application/pdf" });
+  out.set("bunwa.pdf", { bytes: minimalPdf("bunwa stage 0"), type: "application/pdf" });
 
   return out;
+}
+
+/**
+ * Build a single-page PDF with a correct stream Length and a real cross-reference
+ * table. Hand-writing the offsets matters: a wrong /Length or a missing xref
+ * makes the file structurally invalid, and "WhatsApp accepted it" would then
+ * prove less than the test claims.
+ */
+function minimalPdf(text: string): Uint8Array {
+  const enc = new TextEncoder();
+  const content = `BT /F1 18 Tf 20 45 Td (${text.replace(/([()\\])/g, "\\$1")}) Tj ET\n`;
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>",
+    `<< /Length ${enc.encode(content).length} >>\nstream\n${content}endstream`,
+    "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  ];
+
+  let pdf = "%PDF-1.4\n";
+  const offsets: number[] = [];
+  objects.forEach((body, i) => {
+    offsets.push(enc.encode(pdf).length);
+    pdf += `${i + 1} 0 obj\n${body}\nendobj\n`;
+  });
+
+  const xrefOffset = enc.encode(pdf).length;
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, "0")} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  return enc.encode(pdf);
 }
 
 interface Case {
@@ -96,7 +117,7 @@ const fixtureBase = `http://${FIXTURE_HOST}:${FIXTURE_PORT}`;
 
 const fixtureServer = Bun.serve({
   port: FIXTURE_PORT,
-  hostname: "0.0.0.0",
+  hostname: FIXTURE_BIND,
   fetch(req) {
     const name = new URL(req.url).pathname.slice(1);
     const f = fixtures.get(name);
@@ -122,10 +143,12 @@ function form(fields: Record<string, string>): FormData {
 }
 
 console.log(c.bold(`\n  stage 0 send test → ${to}  (device ${device})`));
-console.log(c.dim(`  fixtures served at ${fixtureBase}\n`));
+console.log(c.dim(`  fixtures served on ${FIXTURE_BIND}:${FIXTURE_PORT}, fetched by gowa as ${fixtureBase}\n`));
 
 const results: Array<{ name: string; ok: boolean; ms: number; detail: string }> = [];
 
+/** The fixture server must not outlive the run, including on a thrown case. */
+try {
 for (const t of cases) {
   if (only && !only.includes(t.name)) continue;
   const started = performance.now();
@@ -151,11 +174,19 @@ for (const t of cases) {
   }
   const ms = Math.round(performance.now() - started);
   results.push({ name: t.name, ok, ms, detail });
-  await record("sends.jsonl", { type: t.name, path: t.path, ok, ms, request: isJson ? t.body : "multipart", response: payload });
+  // The recipient is masked before it reaches disk. sends.jsonl is git-ignored,
+  // but that protects the repository, not a copied log or a shared machine.
+  const request = isJson ? { ...(t.body as Record<string, string>), phone: maskPhone(to) } : "multipart";
+  await record("sends.jsonl", {
+    type: t.name, path: t.path, ok, ms, request,
+    response: JSON.parse(maskPhone(JSON.stringify(payload ?? null))) as unknown,
+  });
   console.log(`  ${c.dim(stamp())} ${ok ? c.green("✓") : c.red("✗")} ${t.name.padEnd(9)} ${String(ms).padStart(6)}ms  ${c.dim(detail.slice(0, 70))}`);
 }
 
-fixtureServer.stop(true);
+} finally {
+  fixtureServer.stop(true);
+}
 
 const passed = results.filter((r) => r.ok).length;
 console.log(c.bold(`\n  ${passed}/${results.length} sent`));

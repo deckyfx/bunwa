@@ -65,24 +65,46 @@ console.log(`    ${running("measure") ? ok("measure     sampling") : no("measure
 // ── devices ──────────────────────────────────────────────────────────────────
 console.log(c.bold("\n  devices"));
 let paired = 0;
-if (await reachable(`${STAGE0.gowaBaseUrl}/health`)) {
-  const res = await fetch(`${STAGE0.gowaBaseUrl}/devices`);
-  const body = (await res.json()) as { results?: Array<Record<string, unknown>> };
-  const list = body.results ?? [];
-  if (list.length === 0) {
-    console.log(warn("    no device slots — POST /devices to create one"));
+/** Fetch JSON with a timeout; null on any failure rather than throwing. */
+async function getJson<T>(url: string): Promise<T | null> {
+  try {
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return null;
+    return (await res.json()) as T;
+  } catch {
+    return null;
   }
-  for (const d of list) {
-    const id = String(d["id"]);
-    // /devices list `state` is unreliable; only status is trustworthy (docs/12).
-    const s = (await (await fetch(`${STAGE0.gowaBaseUrl}/devices/${encodeURIComponent(id)}/status`)).json()) as {
-      results?: { is_connected?: boolean; is_logged_in?: boolean };
-    };
-    const conn = s.results?.is_connected === true;
-    const login = s.results?.is_logged_in === true;
+}
+
+if (await reachable(`${STAGE0.gowaBaseUrl}/health`)) {
+  const body = await getJson<{ results?: Array<Record<string, unknown>> }>(`${STAGE0.gowaBaseUrl}/devices`);
+  const list = body?.results ?? [];
+  if (body === null) console.log(no("    /devices did not return usable JSON"));
+  else if (list.length === 0) console.log(warn("    no device slots — POST /devices to create one"));
+
+  // Queried in parallel: one slow or broken device must not stall the board,
+  // and N sequential round trips made it needlessly slow.
+  const rows = await Promise.all(
+    list.map(async (d) => {
+      const id = String(d["id"]);
+      // /devices list `state` is unreliable; only status is trustworthy (docs/12).
+      const s = await getJson<{ results?: { is_connected?: boolean; is_logged_in?: boolean } }>(
+        `${STAGE0.gowaBaseUrl}/devices/${encodeURIComponent(id)}/status`,
+      );
+      return { id, listState: String(d["state"]), status: s?.results ?? null };
+    }),
+  );
+
+  for (const r of rows) {
+    if (r.status === null) {
+      console.log(`    ${no("unknown  ")}  ${c.bold(r.id.padEnd(16))} ${c.dim("status endpoint unreachable")}`);
+      continue;
+    }
+    const conn = r.status.is_connected === true;
+    const login = r.status.is_logged_in === true;
     if (conn && login) paired++;
     const label = conn && login ? ok("connected") : conn ? warn("pairing  ") : no("offline  ");
-    console.log(`    ${label}  ${c.bold(id.padEnd(16))} ${c.dim(`is_connected=${conn}  is_logged_in=${login}  list.state=${String(d["state"])}`)}`);
+    console.log(`    ${label}  ${c.bold(r.id.padEnd(16))} ${c.dim(`is_connected=${conn}  is_logged_in=${login}  list.state=${r.listState}`)}`);
   }
 } else {
   console.log(no("    gowa unreachable"));

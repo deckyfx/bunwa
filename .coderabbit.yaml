@@ -14,10 +14,9 @@ reviews:
   # is still moving, and a code reviewer has nothing useful to say about them —
   # reviewing them would bury real findings in style notes.
   path_filters:
-    - "!docs/**"
+    - "!docs/**"            # design prose; long-lived, changes constantly, not code
     - "!reference/**"       # read-only upstream clone (git-ignored, listed defensively)
     - "!bun.lock"
-    - "!**/*.md"            # README and deploy runbooks, same reasoning as docs/
     - "!deploy/stage0/data/**"
 
   path_instructions:

@@ -47,17 +47,24 @@ async function connect(): Promise<void> {
     console.log(`${c.dim(stamp())} ${c.green("connected")} ${c.dim(url)}`);
   };
 
-  ws.onmessage = async (ev) => {
+  // Frames are handled through a chain rather than an async handler: an async
+  // onmessage discards its rejection and lets two frames interleave, so a
+  // broadcast can be lost or recorded out of order.
+  let chain: Promise<void> = Promise.resolve();
+  ws.onmessage = (ev) => {
     const raw = String(ev.data);
     let msg: Record<string, unknown> = {};
-    try { msg = JSON.parse(raw); } catch { msg = { raw }; }
+    try { msg = JSON.parse(raw) as Record<string, unknown>; } catch { msg = { raw }; }
 
-    const code = String(msg.code ?? msg.Code ?? "UNKNOWN");
+    const code = String(msg["code"] ?? msg["Code"] ?? "UNKNOWN");
     seen.set(code, (seen.get(code) ?? 0) + 1);
-    await record("ws.jsonl", { code, msg });
 
-    const detail = JSON.stringify(msg.result ?? msg.Result ?? msg.message ?? "").slice(0, 90);
+    const detail = JSON.stringify(msg["result"] ?? msg["Result"] ?? msg["message"] ?? "").slice(0, 90);
     console.log(`${c.dim(stamp())} ${c.yellow(code.padEnd(24))} ${c.dim(detail)}`);
+
+    chain = chain
+      .then(() => record("ws.jsonl", { code, msg }))
+      .catch((err: unknown) => console.error(c.red(`  failed to record ${code}: ${String(err)}`)));
   };
 
   ws.onclose = () => {

@@ -8,7 +8,18 @@
  */
 import { timingSafeEqual } from "node:crypto";
 
-import { STAGE0, record, c, stamp } from "./config";
+import { STAGE0, record, c, stamp, containerReachableBindAddress } from "./config";
+
+/** The fields the harness reads off a gowa webhook; the rest is kept verbatim. */
+interface WebhookPayload {
+  event?: unknown;
+  type?: unknown;
+  from?: unknown;
+  sender_id?: unknown;
+  device_id?: unknown;
+  session_id?: unknown;
+  [key: string]: unknown;
+}
 
 /** Event types seen so far, so the summary can show coverage at a glance. */
 const seen = new Map<string, number>();
@@ -22,9 +33,12 @@ function verify(body: string, header: string | null): boolean {
   return timingSafeEqual(Buffer.from(expected), Buffer.from(given));
 }
 
+/** Narrowest address gowa can still reach via host.docker.internal. */
+const bindAddress = await containerReachableBindAddress();
+
 const server = Bun.serve({
   port: STAGE0.sinkPort,
-  hostname: "0.0.0.0",
+  hostname: bindAddress,
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/summary") {
@@ -36,15 +50,17 @@ const server = Bun.serve({
     const sigHeader = req.headers.get("X-Hub-Signature-256") ?? req.headers.get("x-hub-signature-256");
     const valid = verify(body, sigHeader);
 
-    let payload: Record<string, unknown> = {};
-    try { payload = JSON.parse(body); } catch { /* keep raw */ }
+    let payload: WebhookPayload = {};
+    try { payload = JSON.parse(body) as WebhookPayload; } catch { /* keep raw */ }
 
     const event = String(payload.event ?? payload.type ?? "unknown");
-    const from = String((payload as any).from ?? (payload as any).sender_id ?? "");
-    const device = String((payload as any).device_id ?? (payload as any).session_id ?? "");
+    const from = String(payload.from ?? payload.sender_id ?? "");
+    const device = String(payload.device_id ?? payload.session_id ?? "");
 
-    seen.set(event, (seen.get(event) ?? 0) + 1);
-    await record("webhooks.jsonl", { event, device, from, valid, payload });
+    // Unsigned or wrongly-signed posts are recorded under a separate file so a
+    // third party cannot inject rows into the measurement data.
+    seen.set(valid ? event : `${event} (unsigned)`, (seen.get(valid ? event : `${event} (unsigned)`) ?? 0) + 1);
+    await record(valid ? "webhooks.jsonl" : "webhooks-rejected.jsonl", { event, device, from, valid, payload });
 
     const flag = valid ? c.green("sig ok") : c.red("SIG BAD");
     console.log(
@@ -54,9 +70,10 @@ const server = Bun.serve({
   },
 });
 
-console.log(c.bold(`stage0 sink listening on :${server.port}`));
+console.log(c.bold(`stage0 sink listening on ${bindAddress}:${server.port}`));
 console.log(c.dim(`  gowa should POST to http://host.docker.internal:${server.port}/hook`));
-console.log(c.dim(`  GET /summary for event-type counts; writing webhooks.jsonl\n`));
+console.log(c.dim(`  GET /summary for event-type counts; writing webhooks.jsonl`));
+console.log(c.dim(`  unsigned posts are quarantined in webhooks-rejected.jsonl\n`));
 
 process.on("SIGINT", () => {
   console.log(c.bold("\n\nevent types observed:"));
