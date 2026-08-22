@@ -32,9 +32,10 @@ export function flag(name: string, argv: string[] = Bun.argv): string | undefine
  * intend while reporting success.
  */
 export function intOrThrow(raw: string | undefined, fallback: number, name: string, min = 1, max = 65535): number {
-  // Only an absent value is an omission. An empty string reached this function
-  // from an environment variable set to nothing, which is a configuration
-  // mistake worth surfacing rather than papering over.
+  // Only an absent value is an omission. Anything blank — an environment
+  // variable set to nothing, or a CLI flag given an empty or whitespace value —
+  // is a configuration mistake, and surfacing it beats substituting a default
+  // the operator did not ask for.
   if (raw === undefined) return fallback;
   if (raw.trim() === "") throw new Error(`${name} is set but empty; unset it to use the default of ${fallback}`);
   const n = Number(raw);

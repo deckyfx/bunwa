@@ -112,6 +112,11 @@ describe("intOrThrow", () => {
     expect(() => intOrThrow("", 3999, "SINK_PORT")).toThrow(/set but empty/);
   });
 
+  test("rejects a whitespace-only value", () => {
+    expect(() => intOrThrow("   ", 3999, "SINK_PORT")).toThrow(/set but empty/);
+    expect(() => intOrThrow("\t", 3999, "SINK_PORT")).toThrow(/set but empty/);
+  });
+
   test("rejects out-of-range input", () => {
     expect(() => intOrThrow("70000", 3999, "SINK_PORT")).toThrow(/between 1 and 65535/);
   });
