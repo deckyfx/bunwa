@@ -90,31 +90,27 @@ export function reconcile(
     degraded: false,
   };
 
-  // A degradation ends when the device answers *and* is usable. Emitting on
-  // any answer would tell a tenant a device had recovered while it was still
-  // logged out — the poll succeeding says the engine is reachable, not that the
-  // device works.
-  const wasUsableBefore = memory.connected && memory.loggedIn;
-  const isUsableNow = observed.connected && observed.loggedIn;
-  if (memory.degraded && isUsableNow && wasUsableBefore) {
+  const wasUsable = memory.connected && memory.loggedIn;
+  const isUsable = observed.connected && observed.loggedIn;
+
+  // Recovery is one event, emitted once, whichever way the device was unwell.
+  //
+  // Two states qualify and they are not the same: a *disconnection* is a
+  // change in the booleans, while a *degradation* is the engine failing to
+  // answer at all — during which the booleans never move. Requiring a
+  // connectivity transition missed the second entirely; two separate
+  // conditions emitted twice for a device that was both.
+  const wasHealthy = wasUsable && !memory.degraded && memory.disconnectedSince === null;
+  if (!wasHealthy && isUsable && (memory.degraded || memory.disconnectedSince !== null)) {
     events.push({
       type: "device.recovered",
       deviceId,
       downtimeMs: memory.disconnectedSince === null ? 0 : now.getTime() - memory.disconnectedSince.getTime(),
     });
+    next.disconnectedSince = null;
   }
 
-  const wasUsable = wasUsableBefore;
-  const isUsable = isUsableNow;
-
   if (!wasUsable && isUsable) {
-    if (memory.disconnectedSince !== null && !memory.degraded) {
-      events.push({
-        type: "device.recovered",
-        deviceId,
-        downtimeMs: now.getTime() - memory.disconnectedSince.getTime(),
-      });
-    }
     events.push({
       type: "device.connected",
       deviceId,

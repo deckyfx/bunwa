@@ -111,7 +111,11 @@ export const ruleRoutes = new Elysia({ prefix: "/v1" })
    */
   .post(
     "/devices/:ref/rules/:id/test",
-    async ({ auth, params, body }) => {
+    async ({ auth, params, body, path }) => {
+      // Same scope as the mutations. A dry run reveals a rule's conditions and
+      // its captures against a supplied event, which is enough to learn what a
+      // project automates — read-only is not the same as unprivileged.
+      requireScope(auth, "manage:rules", path);
       const binding = await bindingFor(auth, params.ref);
       const stored = (await RuleStore.list(auth.environmentId, binding)).find((r) => r.id === params.id);
       if (stored === undefined) throw new NotFoundError(`rule ${params.id} not found`);

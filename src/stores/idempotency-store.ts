@@ -77,12 +77,27 @@ export class IdempotencyStore {
       .limit(1);
 
     if (existingRow !== undefined && existingRow.createdAt.getTime() + IDEMPOTENCY_TTL_MS <= now.getTime()) {
-      // Expired: take it over rather than waiting for the sweep.
-      await database
+      // Taken over atomically. Checking expiry in code and then updating left a
+      // window in which two callers both saw the stale row, both updated it,
+      // and both believed they held the reservation — which is a duplicate
+      // send, the exact failure this table exists to prevent. The expiry
+      // predicate is in the WHERE clause so exactly one update matches.
+      const cutoff = new Date(now.getTime() - IDEMPOTENCY_TTL_MS);
+      const takenOver = await database
         .update(idempotencyKeys)
         .set({ requestHash, response: null, statusCode: null, createdAt: now })
-        .where(and(eq(idempotencyKeys.environmentId, environmentId), eq(idempotencyKeys.key, key)));
-      return { state: "reserved" };
+        .where(
+          and(
+            eq(idempotencyKeys.environmentId, environmentId),
+            eq(idempotencyKeys.key, key),
+            lt(idempotencyKeys.createdAt, cutoff),
+          ),
+        )
+        .returning();
+
+      if (takenOver.length > 0) return { state: "reserved" };
+      // Lost the takeover race: fall through and treat it as any other
+      // concurrent caller would.
     }
 
     const raced = await this.lookup(environmentId, key, requestHash, database, now);

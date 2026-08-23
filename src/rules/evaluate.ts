@@ -102,9 +102,17 @@ function matchRule(rule: PreparedRule, event: Record<string, unknown>): RuleMatc
   const any = rule.match.any ?? [];
   const none = rule.match.none ?? [];
 
-  const allPass = all.every(check);
-  const anyPass = any.length === 0 || any.some(check);
-  const nonePass = none.length === 0 || !none.some(check);
+  // Evaluated eagerly, not short-circuited. `every`/`some` stop at the first
+  // decisive condition, so a later condition whose pattern blew its budget was
+  // never run and never reported — the rule would quietly keep firing on a
+  // partial evaluation.
+  const allResults = all.map(check);
+  const anyResults = any.map(check);
+  const noneResults = none.map(check);
+
+  const allPass = allResults.every(Boolean);
+  const anyPass = any.length === 0 || anyResults.some(Boolean);
+  const nonePass = none.length === 0 || !noneResults.some(Boolean);
 
   if (timedOut) return { matched: false, captures: {}, timedOut: true };
   return { matched: allPass && anyPass && nonePass, captures, timedOut: false };
@@ -173,13 +181,26 @@ function asText(value: unknown): string {
 }
 
 function compare(op: "gt" | "gte" | "lt" | "lte", a: unknown, b: unknown): boolean {
-  const left = typeof a === "number" ? a : Date.parse(String(a));
-  const right = typeof b === "number" ? b : Date.parse(String(b));
-  if (Number.isNaN(left) || Number.isNaN(right)) return false;
+  // Numbers first, then dates. Parsing "5" as a date gave NaN and made every
+  // numeric comparison against a string silently false — a rule on a count or
+  // a size would never fire and never say why.
+  const left = toComparable(a);
+  const right = toComparable(b);
+  if (left === null || right === null) return false;
   if (op === "gt") return left > right;
   if (op === "gte") return left >= right;
   if (op === "lt") return left < right;
   return left <= right;
+}
+
+/** A number, a numeric string, or a parseable date — otherwise null. */
+function toComparable(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  const text = String(value ?? "").trim();
+  if (text === "") return null;
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
+  const parsed = Date.parse(text);
+  return Number.isNaN(parsed) ? null : parsed;
 }
 
 /**

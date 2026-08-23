@@ -114,3 +114,86 @@ describe("fan-out", () => {
     expect(await database.select().from(deliveries)).toHaveLength(0);
   });
 });
+
+describe("the rule subject", () => {
+  test("is the shape rules are documented against, not the engine's", async () => {
+    // A rule written against `data.text` — exactly as the brief and docs/05
+    // describe — matched nothing, because the engine's shape is `message.body`.
+    const { toRuleSubject } = await import("../consumer");
+    const subject = toRuleSubject(
+      {
+        type: "message.received",
+        deviceId: "d1",
+        message: {
+          id: "m1",
+          from: "628123@s.whatsapp.net",
+          fromLid: "999@lid",
+          chatId: "628123@s.whatsapp.net",
+          chatLid: null,
+          pushName: "Someone",
+          isFromMe: false,
+          timestamp: new Date(),
+          body: "PAY AB1234",
+          media: null,
+        },
+      },
+      "628999@s.whatsapp.net",
+    ) as { device: { jid: string }; data: Record<string, unknown> };
+
+    expect(subject.data["text"]).toBe("PAY AB1234");
+    expect(subject.data["from"]).toBe("628123@s.whatsapp.net");
+    expect(subject.data["chat_type"]).toBe("direct");
+    // The brief matches on which of our numbers received it.
+    expect(subject.device.jid).toBe("628999@s.whatsapp.net");
+  });
+
+  test("classifies a group chat", async () => {
+    const { toRuleSubject } = await import("../consumer");
+    const subject = toRuleSubject(
+      {
+        type: "message.received",
+        deviceId: "d1",
+        message: {
+          id: "m1", from: null, fromLid: null, chatId: "1234@g.us", chatLid: null,
+          pushName: null, isFromMe: false, timestamp: new Date(), body: "hi", media: null,
+        },
+      },
+      null,
+    ) as { data: Record<string, unknown> };
+    expect(subject.data["chat_type"]).toBe("group");
+  });
+});
+
+describe("pairing credentials", () => {
+  test("device.qr is never fanned out to any binding", async () => {
+    // The QR is a credential: anyone who sees it can scan and take over the
+    // account. Fanning it to active bindings hands it to every *other* project
+    // sharing that phone.
+    await handleEngineEvent({ type: "device.connected", deviceId, jid: "628@x", pushName: null }, database);
+    await handleEngineEvent(
+      { type: "device.qr", deviceId, qr: "SECRET-QR-PAYLOAD", expiresAt: new Date(Date.now() + 30_000) },
+      database,
+    );
+
+    const queued = await database.select().from(deliveries);
+    expect(JSON.stringify(queued)).not.toContain("SECRET-QR-PAYLOAD");
+    expect(queued.some((d) => d.eventType === "device.qr")).toBe(false);
+  });
+
+  test("device.pair_code is withheld too", async () => {
+    await handleEngineEvent({ type: "device.connected", deviceId, jid: "628@x", pushName: null }, database);
+    await handleEngineEvent(
+      { type: "device.pair_code", deviceId, code: "ABCD-1234", expiresAt: new Date(Date.now() + 30_000) },
+      database,
+    );
+    expect(JSON.stringify(await database.select().from(deliveries))).not.toContain("ABCD-1234");
+  });
+
+  test("ordinary lifecycle events are still delivered", async () => {
+    // The withholding must be specific, not a blanket refusal.
+    await handleEngineEvent({ type: "device.connected", deviceId, jid: "628@x", pushName: null }, database);
+    await handleEngineEvent({ type: "device.logged_out", deviceId, reason: "remote_logout" }, database);
+    const queued = await database.select().from(deliveries);
+    expect(queued.some((d) => d.eventType === "device.logged_out")).toBe(true);
+  });
+});

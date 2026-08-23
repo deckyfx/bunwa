@@ -157,7 +157,11 @@ export class FakeEngine implements DeviceEngine {
     this.wakers.add(waker);
 
     try {
-      while (!this.closed) {
+      for (;;) {
+        // Drained before the close check, both times. Exiting on `closed` with
+        // a non-empty queue loses events that were emitted before close — and
+        // a consumer that misses the last event before shutdown is exactly the
+        // shape of bug that is impossible to reproduce afterwards.
         while (queue.length > 0) yield queue.shift()!;
         if (this.closed) break;
         await new Promise<void>((resolve) => {

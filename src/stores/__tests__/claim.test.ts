@@ -377,3 +377,26 @@ describe("binding rules", () => {
     expect(await DeviceStore.bindingsFor(device!.id, database)).toHaveLength(2);
   });
 });
+
+describe("an expired consent with no other claim", () => {
+  test("reaches the new-device path and is re-granted", async () => {
+    // The "expired + no other claim" row of the table. hasStandingClaim
+    // compared the persisted status, so a pending request that simply lapsed
+    // still counted as a claim and this row was unreachable — a device nobody
+    // ever answered for stayed claimed for ever.
+    await claim(grandeProd, "otp-sender");
+    const rival = await claim(rivalProd, "theirs");
+    if (rival.outcome !== "awaiting_confirmation") throw new Error("expected a challenge");
+
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    // Lapse every consent on the device: nobody decided anything.
+    await database
+      .update(deviceConsents)
+      .set({ status: "pending", expiresAt: new Date(Date.now() - 60_000), respondedAt: null })
+      .where(eq(deviceConsents.deviceId, device!.id));
+
+    const freshEnv = (await EnvironmentStore.create({ projectId: grandeId, slug: "fresh" }, database)).id;
+    const again = await claim(freshEnv, "fresh-alias");
+    expect(again.outcome).toBe("pending_pairing");
+  });
+});

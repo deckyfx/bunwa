@@ -7,6 +7,8 @@
  * number, containing a certain format, triggers something.
  */
 import { compilePattern, type CompiledPattern } from "./pattern";
+import { config } from "../config/env";
+import { validateWebhookTarget } from "../delivery/target";
 import { ValidationError } from "../stores/errors";
 
 /** Comparisons a condition can make. */
@@ -106,8 +108,12 @@ export function prepareRule(definition: RuleDefinition): PreparedRule {
     if (action.type === "reply" && action.template.trim() === "") {
       throw new ValidationError("a reply action needs a template", "actions");
     }
-    if (action.type === "forward" && action.url.trim() === "") {
-      throw new ValidationError("a forward action needs a url", "actions");
+    if (action.type === "forward") {
+      if (action.url.trim() === "") throw new ValidationError("a forward action needs a url", "actions");
+      // Same policy as a webhook target: a forward is an outbound request to an
+      // address a tenant chose, so the rule engine must not become a way around
+      // the SSRF checks the delivery path already applies.
+      validateWebhookTarget(action.url, { allowInsecure: config().allowInsecureWebhookTargets });
     }
   }
 

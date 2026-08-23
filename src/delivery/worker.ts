@@ -48,6 +48,11 @@ export async function runOnce(options: WorkerOptions = {}): Promise<number> {
     return true;
   }).slice(0, batchSize);
 
+  // claimDue only selects; nothing is marked, so the surplus stays due and is
+  // simply re-selected next pass. That is correct rather than a leak — but it
+  // is worth stating, because "claim" implies a lease and this is not one.
+  // If it ever becomes one, everything filtered out here must be released.
+
   let attempted = 0;
   for (const item of due) {
     const [webhook] = await database

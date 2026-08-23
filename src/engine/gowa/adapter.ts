@@ -240,7 +240,17 @@ export class GowaAdapter implements DeviceEngine {
           multipart: true,
         };
       case "audio":
-        return { path: "/send/audio", body: { phone: to, audio_url: await mediaUrl(action.media) }, multipart: true };
+        return {
+          path: "/send/audio",
+          body: {
+            phone: to,
+            audio_url: await mediaUrl(action.media),
+            // Forwarded rather than dropped. Silently sending a file when a
+            // voice note was asked for is a different message in the chat.
+            ...(action.voiceNote === true ? { ptt: "true" } : {}),
+          },
+          multipart: true,
+        };
       case "video":
         return {
           path: "/send/video",
@@ -411,7 +421,9 @@ export class GowaAdapter implements DeviceEngine {
       );
     }
 
-    if (allowInsecure) return raw;
+    // The normalised serialisation, not the raw string. Handing gowa the
+    // original means it re-parses text we did not check — the two can differ.
+    if (allowInsecure) return url.href;
 
     // Resolve here too. Validation only inspects the literal, and gowa will
     // resolve the name itself inside the container — so a public-looking host
@@ -433,7 +445,7 @@ export class GowaAdapter implements DeviceEngine {
     if (resolved.length === 0 || resolved.some((entry) => !isAddressAllowed(entry.address))) {
       throw new EngineError("refusing to pass a URL resolving to a private or loopback address", false);
     }
-    return raw;
+    return url.href;
   }
 
   /** Classify a gowa message. Unrecognised means retryable, deliberately. */

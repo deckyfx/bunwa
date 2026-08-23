@@ -155,7 +155,7 @@ export class DeviceStore {
     // made, or a question already outstanding, and must be asked rather than
     // assumed.
     const undecided = mine === "expired" || mine === "none";
-    const claimedByAnyone = await this.hasStandingClaim(device.id, database);
+    const claimedByAnyone = await this.hasStandingClaim(device.id, database, now);
 
     if (undecided && !claimedByAnyone) {
       // Genuinely new to the system. The customer scans once, and pairing for
@@ -234,9 +234,9 @@ export class DeviceStore {
    * re-grant itself. Only `expired` does not: nobody decided anything, the
    * question simply lapsed, so the device is genuinely unclaimed again.
    */
-  private static async hasStandingClaim(deviceId: string, database: Database): Promise<boolean> {
+  private static async hasStandingClaim(deviceId: string, database: Database, now: Date): Promise<boolean> {
     const rows = await database
-      .select({ status: deviceConsents.status })
+      .select()
       .from(deviceConsents)
       .where(eq(deviceConsents.deviceId, deviceId));
     // `revoked` and `denied` count. They are decisions the phone holder made,
@@ -244,7 +244,12 @@ export class DeviceStore {
     // "new device" branch and re-granted implicit consent, silently undoing an
     // explicit refusal. Only `expired` is treated as no claim: nobody decided
     // anything, the question simply lapsed.
-    return rows.some((r) => r.status !== "expired");
+    // Compared through effectiveStatus, not the persisted column. A pending
+    // request whose deadline has passed is `expired` in the table above but
+    // still reads "pending" in its row, so comparing the column directly made
+    // the "expired + no other claim" row unreachable — a device nobody ever
+    // answered for stayed claimed for ever.
+    return rows.some((r) => effectiveStatus(r, now) !== "expired");
   }
 
   static async consentFor(
@@ -294,6 +299,11 @@ export class DeviceStore {
           responseChannel: "dashboard",
           requestedByEnvironmentId: environmentId,
           expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
+          // Cleared, as requestConsent does in the other direction: a granted
+          // row keeping a live challenge token leaves a credential answerable
+          // for a question nobody is asking any more.
+          challengeToken: crypto.randomUUID(),
+          evidence: { implicit: "granted by pairing for this project" },
           updatedAt: now,
         },
       })
@@ -568,6 +578,13 @@ export class DeviceStore {
   }
 
   /** Everything using this device, for the operator "who can use my number" view. */
+  /**
+   * Every binding on a device, for the operator "who can use my number" view.
+   *
+   * Intentionally cross-tenant and therefore **operator-only**: it is the
+   * screen that makes device sharing auditable, and it must never be reachable
+   * from a project-scoped route.
+   */
   static async bindingsFor(deviceId: string, database: Database = db()) {
     return database
       .select({ virtualDevice: virtualDevices, projectId: environments.projectId })

@@ -21,9 +21,17 @@ const timestamps = {
   createdAt: integer("created_at", { mode: "timestamp_ms" })
     .notNull()
     .default(sql`(unixepoch() * 1000)`),
+  /**
+   * Refreshed by Drizzle on every update it issues.
+   *
+   * Every store was setting this by hand, which works until one forgets — and
+   * a stale updatedAt is the kind of wrong that is only noticed while
+   * debugging something else.
+   */
   updatedAt: integer("updated_at", { mode: "timestamp_ms" })
     .notNull()
-    .default(sql`(unixepoch() * 1000)`),
+    .default(sql`(unixepoch() * 1000)`)
+    .$onUpdate(() => new Date()),
 };
 
 /**

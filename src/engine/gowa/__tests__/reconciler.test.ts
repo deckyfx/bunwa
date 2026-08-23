@@ -133,3 +133,21 @@ describe("failed polls", () => {
     expect(memory.failedPolls).toBe(0);
   });
 });
+
+describe("recovery is emitted exactly once", () => {
+  test("a device that both disconnected and degraded recovers once", () => {
+    // Two overlapping conditions — one for a degradation ending, one for a
+    // disconnection ending — emitted the event twice for a device that was
+    // both, which reads to a tenant as two separate incidents.
+    let memory: DeviceMemory = { ...paired, connected: false, disconnectedSince: new Date(Date.now() - 5_000) };
+    for (let i = 0; i < DEGRADED_AFTER_FAILED_POLLS; i++) memory = reconcile("d1", memory, null).memory;
+
+    const { events } = reconcile("d1", memory, status(true, true, "628123@s.whatsapp.net"));
+    expect(events.filter((e) => e.type === "device.recovered")).toHaveLength(1);
+  });
+
+  test("an ordinary poll of a healthy device emits nothing", () => {
+    const { events } = reconcile("d1", paired, status(true, true, "628123@s.whatsapp.net"));
+    expect(events).toHaveLength(0);
+  });
+});

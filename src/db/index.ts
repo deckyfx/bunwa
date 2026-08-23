@@ -19,15 +19,6 @@ import * as schema from "./schema";
 
 export type Database = ReturnType<typeof createDatabase>;
 
-/**
- * Build a Drizzle handle against the given SQLite file.
- *
- * Exported separately from `db()` so a caller can hold an isolated handle:
- * migrations against their own connection, and tests against a throwaway file,
- * neither of which should mutate the process-wide one.
- *
- * `:memory:` is accepted and skips directory creation.
- */
 /** Where each handle was opened, so a transaction can open its own. */
 const paths = new WeakMap<object, string>();
 
@@ -36,6 +27,15 @@ export function pathOf(database: object): string | undefined {
   return paths.get(database);
 }
 
+/**
+ * Build a Drizzle handle against the given SQLite file.
+ *
+ * Exported separately from `db()` so a caller can hold an isolated handle:
+ * a transaction's own connection, and a test's throwaway file, neither of
+ * which should mutate the process-wide one.
+ *
+ * `:memory:` is accepted and skips directory creation.
+ */
 export function createDatabase(path: string) {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new BunDatabase(path, { create: true });
@@ -65,6 +65,14 @@ export function db(): Database {
 
 /** Reset the memoised handle. Tests only. */
 export function resetDatabase(): void {
+  // Closed, not merely dropped. Tests create a handle per case; leaking the
+  // descriptor eventually exhausts them, and an unclosed handle keeps the file
+  // locked so a temp directory cannot be removed.
+  try {
+    (instance as unknown as { $client?: { close?: () => void } } | undefined)?.$client?.close?.();
+  } catch {
+    // Already closed, or never opened.
+  }
   instance = undefined;
 }
 

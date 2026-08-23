@@ -7,10 +7,10 @@
  * connected for 203 seconds after a silent drop (docs/12), so the first says
  * far less than it appears to.
  */
-import { and, eq, gt, inArray, lt } from "drizzle-orm";
+import { and, count as drizzleCount, eq, gt, inArray, lt } from "drizzle-orm";
 
 import { db, type Database } from "../db";
-import { outboundMessages, virtualDevices, type OutboundMessage } from "../db/schema";
+import { outboundMessages, type OutboundMessage } from "../db/schema";
 import { NotFoundError } from "./errors";
 
 /** How long to wait for an ack before calling a message undelivered. */
@@ -37,6 +37,7 @@ export class MessageStore {
 
   /** Match an engine ack to the message it acknowledges. */
   static async recordAck(
+    environmentId: string,
     engineMessageId: string,
     status: "delivered" | "read",
     database: Database = db(),
@@ -53,7 +54,15 @@ export class MessageStore {
     const [updated] = await database
       .update(outboundMessages)
       .set({ state: status, ackedAt: new Date(), updatedAt: new Date() })
-      .where(and(eq(outboundMessages.engineMessageId, engineMessageId), inArray(outboundMessages.state, allowedFrom)))
+      .where(
+        and(
+          eq(outboundMessages.engineMessageId, engineMessageId),
+          // Engine ids come from outside and are not tenant-scoped, so the
+          // environment is required rather than inferred from them.
+          eq(outboundMessages.environmentId, environmentId),
+          inArray(outboundMessages.state, allowedFrom),
+        ),
+      )
       .returning();
     return updated ?? null;
   }
@@ -117,12 +126,25 @@ export class MessageStore {
   }
 
   /** Count messages sent by a binding since a cutoff, for quota enforcement. */
-  static async countSince(virtualDeviceId: string, since: Date, database: Database = db()): Promise<number> {
-    const rows = await database
-      .select({ id: outboundMessages.id })
+  static async countSince(
+    environmentId: string,
+    virtualDeviceId: string,
+    since: Date,
+    database: Database = db(),
+  ): Promise<number> {
+    // Counted in the database rather than by loading rows: this runs on the
+    // send path, and a quota check that materialises every message a binding
+    // has ever sent gets slower exactly as it matters more.
+    const [row] = await database
+      .select({ total: drizzleCount() })
       .from(outboundMessages)
-      .innerJoin(virtualDevices, eq(outboundMessages.virtualDeviceId, virtualDevices.id))
-      .where(and(eq(outboundMessages.virtualDeviceId, virtualDeviceId), gt(outboundMessages.acceptedAt, since)));
-    return rows.length;
+      .where(
+        and(
+          eq(outboundMessages.virtualDeviceId, virtualDeviceId),
+          eq(outboundMessages.environmentId, environmentId),
+          gt(outboundMessages.acceptedAt, since),
+        ),
+      );
+    return Number(row?.total ?? 0);
   }
 }

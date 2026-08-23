@@ -12,7 +12,7 @@
 import { and, eq } from "drizzle-orm";
 
 import { db, type Database } from "../db";
-import { devices, environments, projects, virtualDevices } from "../db/schema";
+import { devices, environments, outboundMessages, projects, virtualDevices } from "../db/schema";
 import { DeliveryStore } from "../stores/delivery-store";
 import { RuleStore } from "../stores/rule-store";
 import { evaluate } from "../rules/evaluate";
@@ -20,6 +20,14 @@ import { MessageStore } from "../stores/message-store";
 import { EVENT_SCHEMA_VERSION, type EventEnvelope, type EventType } from "../events/schema";
 import { log, withContext } from "../observability/logger";
 import type { DeviceEngine, EngineEvent } from "./types";
+
+/**
+ * Events whose payload is a credential.
+ *
+ * A set rather than an inline check, so a new pairing event cannot quietly opt
+ * into fan-out by omission.
+ */
+const PAIRING_CREDENTIAL_EVENTS = new Set<EngineEvent["type"]>(["device.qr", "device.pair_code"]);
 
 /**
  * Apply one engine event to the control plane.
@@ -48,13 +56,27 @@ export async function handleEngineEvent(
       await setState(event.deviceId, "degraded", event.lastError, database);
       break;
     case "message.ack":
-      await MessageStore.recordAck(event.messageId, event.status, database);
+      // The environment is resolved from the message itself: an engine id is
+      // not tenant-scoped, so the store will not accept one without it.
+      await ackMessage(event.messageId, event.status, database);
       break;
     case "message.received":
       await runRules(event.deviceId, event, database);
       break;
     default:
       break;
+  }
+
+  // Pairing credentials are never fanned out.
+  //
+  // device.qr carries a code anyone who sees it can scan to take over the
+  // WhatsApp account, and device.pair_code is the same secret in another form.
+  // Fanning them to every active binding hands them to every *other* project
+  // sharing that phone. They go synchronously to the caller that started
+  // pairing, and to nobody else.
+  if (PAIRING_CREDENTIAL_EVENTS.has(event.type)) {
+    log.debug("pairing credential withheld from fan-out", { eventType: event.type });
+    return;
   }
 
   await fanOut(event, engineKind, database);
@@ -106,6 +128,75 @@ async function setState(
 }
 
 /**
+ * The event shape rules are written against.
+ *
+ * Documented in docs/05 and used verbatim in the brief's example, so it is a
+ * contract with rule authors rather than an internal detail — and the engine's
+ * own shape must not leak into it, or a rule would have to know which engine
+ * produced the message.
+ */
+export interface RuleSubject {
+  type: string;
+  device: { jid: string | null };
+  data: {
+    from: string | null;
+    from_lid: string | null;
+    chat_id: string | null;
+    text: string | null;
+    chat_type: "direct" | "group" | "unknown";
+    is_from_me: boolean;
+    has_media: boolean;
+    media_kind: string | null;
+  };
+}
+
+/** Map an engine event onto the documented rule subject. */
+export function toRuleSubject(event: EngineEvent, deviceJid: string | null = null): Record<string, unknown> {
+  if (event.type !== "message.received") {
+    return { type: event.type, device: { jid: deviceJid }, data: {} };
+  }
+  const message = event.message;
+  const chatId = message.chatId ?? message.chatLid;
+  const subject: RuleSubject = {
+    type: event.type,
+    device: { jid: deviceJid },
+    data: {
+      from: message.from,
+      from_lid: message.fromLid,
+      chat_id: chatId,
+      text: message.body,
+      chat_type: chatId === null ? "unknown" : chatId.endsWith("@g.us") ? "group" : "direct",
+      is_from_me: message.isFromMe,
+      has_media: message.media !== null,
+      media_kind: message.media?.kind ?? null,
+    },
+  };
+  return subject as unknown as Record<string, unknown>;
+}
+
+/**
+ * Acknowledge a send, resolving its environment first.
+ *
+ * The engine supplies only its own message id, which belongs to no tenant. The
+ * owning environment is read from the row before the write, so the update can
+ * be scoped and cannot reach another tenant's message that happens to share an
+ * id.
+ */
+async function ackMessage(
+  engineMessageId: string,
+  status: "delivered" | "read",
+  database: Database,
+): Promise<void> {
+  const [owner] = await database
+    .select({ environmentId: outboundMessages.environmentId })
+    .from(outboundMessages)
+    .where(eq(outboundMessages.engineMessageId, engineMessageId))
+    .limit(1);
+  if (owner === undefined) return;
+  await MessageStore.recordAck(owner.environmentId, engineMessageId, status, database);
+}
+
+/**
  * Evaluate each binding's rules against an inbound message.
  *
  * Per binding, because two projects sharing a phone automate it differently and
@@ -116,13 +207,22 @@ async function setState(
  * order.
  */
 async function runRules(deviceId: string, event: EngineEvent, database: Database): Promise<void> {
+  // The device's own JID, because the brief's example matches on *which of our
+  // numbers* received the message — "from a certain number, to a certain
+  // number". Without it that half of the rule can never be expressed.
+  const [device] = await database
+    .select({ jid: devices.jid })
+    .from(devices)
+    .where(eq(devices.id, deviceId))
+    .limit(1);
+
   const bindings = await database
-    .select({ id: virtualDevices.id })
+    .select({ id: virtualDevices.id, environmentId: virtualDevices.environmentId })
     .from(virtualDevices)
     .where(and(eq(virtualDevices.deviceId, deviceId), eq(virtualDevices.status, "active")));
 
   for (const binding of bindings) {
-    const { prepared, broken } = await RuleStore.prepared(binding.id, database);
+    const { prepared, broken } = await RuleStore.prepared(binding.environmentId, binding.id, database);
     if (broken.length > 0) {
       // Already validated once, so this means something changed underneath it.
       log.warn("skipping rules that no longer compile", { virtualDeviceId: binding.id, count: broken.length });
@@ -130,7 +230,11 @@ async function runRules(deviceId: string, event: EngineEvent, database: Database
     if (prepared.length === 0) continue;
 
     const result = evaluate({
-      event: event as unknown as Record<string, unknown>,
+      // Normalised to the subject the rule schema documents. Passing the raw
+      // engine event meant a rule written against `data.text` — exactly as the
+      // brief and the docs describe — matched nothing, because the engine's
+      // shape is `message.body`.
+      event: toRuleSubject(event, device?.jid ?? null),
       rules: prepared,
       chainDepth: 0,
       // Inbound messages from the engine are never bunwa-originated; a reply

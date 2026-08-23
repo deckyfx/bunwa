@@ -118,13 +118,23 @@ export class RuleStore {
    * already validated once, so this means something changed underneath it.
    */
   static async prepared(
+    environmentId: string,
     virtualDeviceId: string,
     database: Database = db(),
   ): Promise<{ prepared: PreparedRule[]; broken: string[] }> {
+    // Environment-scoped like every other read. A binding id is not a tenant
+    // credential, and rules decide what a device does with a customer's
+    // messages — among the worst things to read across a boundary.
     const rows = await database
       .select()
       .from(rules)
-      .where(and(eq(rules.virtualDeviceId, virtualDeviceId), eq(rules.enabled, true)))
+      .where(
+        and(
+          eq(rules.virtualDeviceId, virtualDeviceId),
+          eq(rules.environmentId, environmentId),
+          eq(rules.enabled, true),
+        ),
+      )
       .orderBy(asc(rules.priority));
 
     const prepared: PreparedRule[] = [];
@@ -145,7 +155,11 @@ export class RuleStore {
    * The reason is stored rather than silently flipping `enabled`, so an
    * operator can tell a rule that protected itself from one somebody turned off.
    */
-  static async disableForTimeout(ruleId: string, database: Database = db()): Promise<void> {
+  static async disableForTimeout(
+    environmentId: string,
+    ruleId: string,
+    database: Database = db(),
+  ): Promise<void> {
     await database
       .update(rules)
       .set({
@@ -153,7 +167,7 @@ export class RuleStore {
         disabledReason: "the match pattern repeatedly exceeded its time budget",
         updatedAt: new Date(),
       })
-      .where(eq(rules.id, ruleId));
+      .where(and(eq(rules.id, ruleId), eq(rules.environmentId, environmentId)));
   }
 
   private static async requireBinding(

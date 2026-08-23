@@ -39,12 +39,79 @@ const FORBIDDEN: Array<{ pattern: RegExp; reason: string }> = [
 ];
 
 /**
- * Nested quantifiers — `(a+)+`, `(a*)*` — the classic catastrophic shape.
+ * Whether any quantified group itself contains a quantifier.
  *
- * RE2 handles these in linear time; JavaScript does not, and since the engine
- * here is JavaScript the shape is refused outright.
+ * `(a+)+`, `(a{1,})+`, `((a+)b)+` — the shapes where each extra character can
+ * double the work. RE2 handles them in linear time; JavaScript does not, and
+ * the engine here is JavaScript.
+ *
+ * Scanned with a paren counter rather than matched with a regex. A regex over
+ * regexes cannot see balanced groups, and the version that tried missed
+ * `((a+)b)+` entirely: the quantifier sits inside the *nested* group, so no
+ * fixed pattern lines it up with the outer one.
  */
-const NESTED_QUANTIFIER = /\([^)]*[+*]\)[+*]/;
+function hasNestedQuantifier(source: string): boolean {
+  const starts: number[] = [];
+
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (char === "\\") {
+      i++; // escaped: consume the pair
+      continue;
+    }
+    if (char === "[") {
+      // Character class: quantifiers inside are literal.
+      while (i < source.length && source[i] !== "]") {
+        if (source[i] === "\\") i++;
+        i++;
+      }
+      continue;
+    }
+    if (char === "(") {
+      starts.push(i);
+      continue;
+    }
+    if (char !== ")") continue;
+
+    const open = starts.pop();
+    if (open === undefined) continue; // unbalanced; the compile below rejects it
+
+    if (!isQuantifier(source, i + 1)) continue;
+    // The group is quantified. If its body also quantifies anything, the pair
+    // can backtrack catastrophically.
+    if (containsQuantifier(source.slice(open + 1, i))) return true;
+  }
+
+  return false;
+}
+
+/** Whether a quantifier begins at `index`: +, *, or {n,m}. */
+function isQuantifier(source: string, index: number): boolean {
+  const char = source[index];
+  if (char === "+" || char === "*") return true;
+  if (char !== "{") return false;
+  return /^\{\d+(?:,\d*)?\}/.test(source.slice(index));
+}
+
+/** Whether a group body quantifies anything, ignoring escapes and classes. */
+function containsQuantifier(body: string): boolean {
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (char === "\\") {
+      i++;
+      continue;
+    }
+    if (char === "[") {
+      while (i < body.length && body[i] !== "]") {
+        if (body[i] === "\\") i++;
+        i++;
+      }
+      continue;
+    }
+    if (isQuantifier(body, i)) return true;
+  }
+  return false;
+}
 
 export interface CompiledPattern {
   source: string;
@@ -68,7 +135,7 @@ export function compilePattern(source: string, field = "pattern"): CompiledPatte
       throw new ValidationError(`pattern uses ${reason}, which is not supported (RE2 syntax only)`, field);
     }
   }
-  if (NESTED_QUANTIFIER.test(source)) {
+  if (hasNestedQuantifier(source)) {
     throw new ValidationError("pattern nests quantifiers, which can take exponential time", field);
   }
 
