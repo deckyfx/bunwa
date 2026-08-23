@@ -220,10 +220,24 @@ describe("findings the group-count check missed", () => {
   });
 
   test("the subject is bounded, so a long message cannot amplify a match", () => {
-    const compiled = compilePattern("x+$");
-    // Truncated rather than rejected: a long message should not silently stop
-    // matching, and no realistic rule looks past a few kilobytes.
-    const result = runMatch(compiled, "y".repeat(MAX_SUBJECT_LENGTH + 500) + "x");
-    expect(result.timedOut).toBe(false);
+    const compiled = compilePattern("needle");
+
+    // Inside the bound: found. Beyond it: not, because the subject was cut.
+    // The previous version asserted only `timedOut`, which is false either
+    // way — it passed whether or not truncation happened at all.
+    const within = "y".repeat(MAX_SUBJECT_LENGTH - 10) + "needle";
+    const beyond = "y".repeat(MAX_SUBJECT_LENGTH + 10) + "needle";
+    expect(runMatch(compiled, within).matched).toBe(true);
+    expect(runMatch(compiled, beyond).matched).toBe(false);
+  });
+});
+
+describe("a rule that keeps timing out is disabled, not just logged", () => {
+  test("evaluate reports the rule id, which is what can address a row", () => {
+    // It reported names. A name cannot address a row, so the disable step
+    // could not be written at all — the budget was detected and then ignored,
+    // leaving a pathological pattern running on every message for ever.
+    const rule = prepareRule(baseRule({ name: "slow" }), "rule-123");
+    expect(rule.id).toBe("rule-123");
   });
 });

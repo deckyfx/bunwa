@@ -58,7 +58,7 @@ export async function handleEngineEvent(
     case "message.ack":
       // The environment is resolved from the message itself: an engine id is
       // not tenant-scoped, so the store will not accept one without it.
-      await ackMessage(event.messageId, event.status, database);
+      await ackMessage(event.deviceId, event.messageId, event.status, database);
       break;
     case "message.received":
       await runRules(event.deviceId, event, database);
@@ -183,17 +183,31 @@ export function toRuleSubject(event: EngineEvent, deviceJid: string | null = nul
  * id.
  */
 async function ackMessage(
+  deviceId: string,
   engineMessageId: string,
   status: "delivered" | "read",
   database: Database,
 ): Promise<void> {
-  const [owner] = await database
-    .select({ environmentId: outboundMessages.environmentId })
+  // Narrowed by device, not by engine id alone. An engine id is unique only
+  // within the engine that issued it, so two devices — or two pools — can
+  // produce the same value, and acknowledging by id alone could mark the wrong
+  // tenant's message delivered.
+  const candidates = await database
+    .select({ id: outboundMessages.id, environmentId: outboundMessages.environmentId })
     .from(outboundMessages)
-    .where(eq(outboundMessages.engineMessageId, engineMessageId))
-    .limit(1);
-  if (owner === undefined) return;
-  await MessageStore.recordAck(owner.environmentId, engineMessageId, status, database);
+    .innerJoin(virtualDevices, eq(outboundMessages.virtualDeviceId, virtualDevices.id))
+    .where(and(eq(outboundMessages.engineMessageId, engineMessageId), eq(virtualDevices.deviceId, deviceId)));
+
+  if (candidates.length !== 1) {
+    // Zero is ordinary — an ack for something we did not send. More than one
+    // means the id is not the unique key it is being used as, which is worth
+    // knowing before it silently acknowledges the wrong row.
+    if (candidates.length > 1) {
+      log.warn("ambiguous ack; refusing to guess", { engineMessageId, matches: candidates.length });
+    }
+    return;
+  }
+  await MessageStore.recordAckById(candidates[0]!.id, candidates[0]!.environmentId, status, database);
 }
 
 /**

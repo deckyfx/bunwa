@@ -299,9 +299,10 @@ export class DeviceStore {
           responseChannel: "dashboard",
           requestedByEnvironmentId: environmentId,
           expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
-          // Cleared, as requestConsent does in the other direction: a granted
-          // row keeping a live challenge token leaves a credential answerable
-          // for a question nobody is asking any more.
+          // Rotated, not cleared — the column is not nullable. The effect is
+          // what matters: any challenge the phone holder still holds stops
+          // working, and respondWithin rejects a non-pending row anyway, so
+          // the new token cannot be answered either.
           challengeToken: crypto.randomUUID(),
           evidence: { implicit: "granted by pairing for this project" },
           updatedAt: now,

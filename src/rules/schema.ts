@@ -52,6 +52,8 @@ export interface RuleDefinition {
 
 /** A rule with its patterns already compiled, ready to evaluate. */
 export interface PreparedRule extends RuleDefinition {
+  /** The stored row's id, so a caller can act on the rule it evaluated. */
+  id: string;
   compiled: Map<string, CompiledPattern>;
 }
 
@@ -67,7 +69,7 @@ const MAX_ACTIONS = 10;
  *
  * @throws ValidationError
  */
-export function prepareRule(definition: RuleDefinition): PreparedRule {
+export function prepareRule(definition: RuleDefinition, id = ""): PreparedRule {
   if (definition.name.trim() === "") throw new ValidationError("rule name is required", "name");
 
   const groups = [definition.match.all, definition.match.any, definition.match.none].filter(
@@ -119,5 +121,5 @@ export function prepareRule(definition: RuleDefinition): PreparedRule {
     }
   }
 
-  return { ...definition, compiled };
+  return { ...definition, id, compiled };
 }

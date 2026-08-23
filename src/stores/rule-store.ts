@@ -81,7 +81,10 @@ export class RuleStore {
         disabledReason: null,
         updatedAt: new Date(),
       })
-      .where(eq(rules.id, ruleId))
+      // Repeated here, not only on the ownership check above: the guard and
+      // this statement are separated by an await, and a predicate that is not
+      // on the statement is not enforced by the database.
+      .where(and(eq(rules.id, ruleId), eq(rules.environmentId, environmentId)))
       .returning();
     if (updated === undefined) throw new NotFoundError(`rule ${ruleId} not found`);
     return updated;
@@ -141,7 +144,9 @@ export class RuleStore {
     const broken: string[] = [];
     for (const row of rows) {
       try {
-        prepared.push(prepareRule(toDefinition(row)));
+        // The row id travels with the prepared rule, so a caller that finds
+        // it exceeding its budget can disable that exact row.
+        prepared.push(prepareRule(toDefinition(row), row.id));
       } catch {
         broken.push(row.id);
       }

@@ -423,7 +423,10 @@ export class GowaAdapter implements DeviceEngine {
 
     // The normalised serialisation, not the raw string. Handing gowa the
     // original means it re-parses text we did not check — the two can differ.
-    if (allowInsecure) return url.href;
+    // Deliberately does *not* return early. The development switch relaxes the
+    // https requirement, which is a transport concern; letting it also skip
+    // address validation would make a local config the way to reach the cloud
+    // metadata endpoint through gowa.
 
     // Resolve here too. Validation only inspects the literal, and gowa will
     // resolve the name itself inside the container — so a public-looking host

@@ -64,12 +64,20 @@ export function db(): Database {
 }
 
 /** Reset the memoised handle. Tests only. */
+/**
+ * Drop and close the process-wide handle. **Tests only.**
+ *
+ * Each test opens its own database; without this they would share whichever
+ * one happened to be created first, and results would depend on execution
+ * order. Closing rather than dropping also releases the file, which a temp
+ * directory cannot be removed without.
+ */
 export function resetDatabase(): void {
   // Closed, not merely dropped. Tests create a handle per case; leaking the
   // descriptor eventually exhausts them, and an unclosed handle keeps the file
   // locked so a temp directory cannot be removed.
   try {
-    (instance as unknown as { $client?: { close?: () => void } } | undefined)?.$client?.close?.();
+    instance?.$client.close();
   } catch {
     // Already closed, or never opened.
   }

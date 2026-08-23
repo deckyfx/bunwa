@@ -36,6 +36,34 @@ export class MessageStore {
   }
 
   /** Match an engine ack to the message it acknowledges. */
+  /**
+   * Acknowledge one specific message row.
+   *
+   * Takes the primary key because the caller has already resolved exactly which
+   * message this ack belongs to — an engine id is unique only within its own
+   * engine, so it cannot safely be the key here.
+   */
+  static async recordAckById(
+    id: string,
+    environmentId: string,
+    status: "delivered" | "read",
+    database: Database = db(),
+  ): Promise<OutboundMessage | null> {
+    const allowedFrom: OutboundMessage["state"][] = status === "read" ? ["accepted", "delivered"] : ["accepted"];
+    const [updated] = await database
+      .update(outboundMessages)
+      .set({ state: status, ackedAt: new Date() })
+      .where(
+        and(
+          eq(outboundMessages.id, id),
+          eq(outboundMessages.environmentId, environmentId),
+          inArray(outboundMessages.state, allowedFrom),
+        ),
+      )
+      .returning();
+    return updated ?? null;
+  }
+
   static async recordAck(
     environmentId: string,
     engineMessageId: string,

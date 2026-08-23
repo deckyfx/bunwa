@@ -30,7 +30,13 @@ export interface PlannedAction {
 export interface Evaluation {
   actions: PlannedAction[];
   matched: string[];
-  /** Rules whose pattern exceeded its budget; the caller should disable them. */
+  /**
+   * Ids of rules whose pattern exceeded its budget.
+   *
+   * Ids, not names: the caller disables them, and a name cannot address a row.
+   * Returning names meant the disable step could not be written at all, so the
+   * budget was detected and then ignored.
+   */
   timedOut: string[];
   /** Set when nothing ran, with the reason. */
   skipped?: "self_originated" | "chain_depth";
@@ -64,7 +70,7 @@ export function evaluate(input: EvaluationInput): Evaluation {
   for (const rule of ordered) {
     const result = matchRule(rule, input.event);
     if (result.timedOut) {
-      timedOut.push(rule.name);
+      timedOut.push(rule.id);
       // A rule that cannot be evaluated in budget does not match. Treating a
       // timeout as a match would fire actions on an unknown condition.
       continue;
