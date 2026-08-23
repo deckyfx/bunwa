@@ -114,6 +114,13 @@ export class Config {
    * be ephemeral — nothing here is a source of truth.
    */
   readonly runtimeDir: string;
+  /**
+   * Whether to mount the admin API.
+   *
+   * Off by default because it currently has no authentication and can mint API
+   * keys. Enabling it is a deliberate act, not a deployment oversight.
+   */
+  readonly adminApiEnabled: boolean;
 
   constructor(source: Record<string, string | undefined> = Bun.env) {
     this.nodeEnv = oneOf(source, "NODE_ENV", NODE_ENVS, "development");
@@ -127,6 +134,7 @@ export class Config {
     // Production must never silently mutate a schema; development may.
     this.migrateStrict = boolean(source, "MIGRATE_STRICT", this.nodeEnv === "production");
     this.runtimeDir = optional(source, "RUNTIME_DIR", ".runtime");
+    this.adminApiEnabled = boolean(source, "ADMIN_API_ENABLED", false);
   }
 
   /**
@@ -160,6 +168,7 @@ export class Config {
       database: this.databasePath,
       migrateStrict: this.migrateStrict,
       runtimeDir: this.runtimeDir,
+      adminApiEnabled: this.adminApiEnabled,
     };
   }
 }

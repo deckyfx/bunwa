@@ -10,6 +10,10 @@ import { sql } from "drizzle-orm";
 
 import { config } from "../config/env";
 import { db } from "../db";
+import { adminRoutes } from "./routes/admin";
+import { projectRoutes } from "./routes/project";
+import { AuthError } from "../auth/middleware";
+import { ConflictError, NotFoundError, ValidationError } from "../stores/errors";
 import { log, withContext, sanitiseCorrelationId } from "../observability/logger";
 
 /** Process start, used to report uptime on the liveness probe. */
@@ -93,6 +97,26 @@ export function createApp() {
         set.status = 400;
         return problem(400, "invalid-request", "Request failed validation", String(error), path, id);
       }
+      // Store and auth errors carry their own status. Mapped by type rather
+      // than by message text, which drifts the moment a message is reworded.
+      if (error instanceof AuthError) {
+        set.status = error.status;
+        return problem(error.status, error.type, error.title, error.detail, path, id);
+      }
+      if (error instanceof ValidationError) {
+        set.status = 422;
+        return problem(422, "invalid-request", "Request is not valid", error.message, path, id);
+      }
+      if (error instanceof ConflictError) {
+        set.status = 409;
+        return problem(409, "conflict", "Conflict", error.message, path, id);
+      }
+      if (error instanceof NotFoundError) {
+        // 404 rather than 403 for something that exists but is not yours:
+        // distinguishing them leaks the existence of other tenants' data.
+        set.status = 404;
+        return problem(404, "not-found", "Not found", error.message, path, id);
+      }
       log.error("unhandled request error", error, { path });
       set.status = 500;
       // The message is deliberately not echoed: it may carry internal detail.
@@ -110,6 +134,8 @@ export function createApp() {
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     }))
 
+    .use(projectRoutes)
+
     /** Readiness. Answers "can this process serve traffic?", dependencies included. */
     .get("/readyz", async ({ set }) => {
       const database = await databaseReady();
@@ -124,7 +150,13 @@ export function createApp() {
         // to the log above; an unauthenticated probe gets the verdict only.
         checks: { database: { ok: database.ok, latencyMs: database.latencyMs } },
       };
-    });
+    })
+
+    // Mounted only when explicitly enabled. The admin surface has no
+    // authentication yet, so it must not be reachable by default — an
+    // unauthenticated key-minting endpoint is not something to leave to a
+    // reverse proxy's configuration.
+    .use(config().adminApiEnabled ? adminRoutes : new Elysia());
 }
 
 /** Wrap the app so every request runs inside a logging context. */
