@@ -275,6 +275,53 @@ describe("consent lifecycle", () => {
   });
 });
 
+describe("findings from review", () => {
+  test("a revoked binding is not reactivated by a later consent grant", async () => {
+    // activateBindingsFor updated every binding for the project, so a binding
+    // the phone holder had specifically revoked came back when an unrelated
+    // environment's consent was granted.
+    await claim(grandeProd, "otp-sender");
+    const rival = await claim(rivalProd, "theirs");
+    if (rival.outcome !== "awaiting_confirmation") throw new Error("expected a challenge");
+    await DeviceStore.respondToConsent(rival.consent.challengeToken, "granted", "whatsapp_reply", {}, database);
+
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    const rivalId = (await ProjectStore.findBySlug("rival", database))!.id;
+    await DeviceStore.revokeConsent(device!.id, rivalId, "phone_holder", database);
+
+    // A fresh environment asks again and is granted; the revoked binding must
+    // stay revoked rather than riding along.
+    const rivalStaging = (await EnvironmentStore.create({ projectId: rivalId, slug: "staging" }, database)).id;
+    const again = await claim(rivalStaging, "second");
+    if (again.outcome !== "awaiting_confirmation") throw new Error("expected a challenge");
+    await DeviceStore.respondToConsent(again.consent.challengeToken, "granted", "whatsapp_reply", {}, database);
+
+    const bindings = await database.select().from(virtualDevices);
+    expect(bindings.find((b) => b.environmentId === rivalProd)!.status).toBe("revoked");
+    expect(bindings.find((b) => b.environmentId === rivalStaging)!.status).toBe("active");
+  });
+
+  test("re-opening a request clears the previous answer", async () => {
+    // A pending row carrying the last decision's timestamp and evidence reads,
+    // in the audit trail, as though the customer had already replied.
+    await claim(grandeProd, "otp-sender");
+    const rival = await claim(rivalProd, "theirs");
+    if (rival.outcome !== "awaiting_confirmation") throw new Error("expected a challenge");
+    await DeviceStore.respondToConsent(rival.consent.challengeToken, "denied", "whatsapp_reply", { note: "no" }, database);
+
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    const rivalId = (await ProjectStore.findBySlug("rival", database))!.id;
+    const rivalStaging = (await EnvironmentStore.create({ projectId: rivalId, slug: "staging" }, database)).id;
+    await claim(rivalStaging, "again");
+
+    const consent = await DeviceStore.consentFor(device!.id, rivalId, database);
+    expect(consent!.status).toBe("pending");
+    expect(consent!.respondedAt).toBeNull();
+    expect(consent!.responseChannel).toBeNull();
+    expect(consent!.evidence).toEqual({});
+  });
+});
+
 describe("binding rules", () => {
   test("an environment cannot bind the same number twice", async () => {
     await claim(grandeProd, "otp-sender");

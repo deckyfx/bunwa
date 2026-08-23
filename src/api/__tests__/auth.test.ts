@@ -70,10 +70,37 @@ describe("GET /v1/whoami", () => {
   });
 
   test("rejects every kind of bad credential identically", async () => {
-    // Unknown, malformed and revoked must be indistinguishable, or probing
-    // reveals which keys once existed.
+    // Unknown, malformed, revoked and expired must be indistinguishable, or
+    // probing reveals which keys once existed and when they were turned off.
+    const database = createDatabase(join(dir, "t.sqlite"));
+    const project = await ProjectStore.findBySlug("grande", database);
+    const [environment] = await EnvironmentStore.listForProject(project!.id, database);
+
+    const revoked = await ApiKeyStore.create(
+      { projectId: project!.id, environmentId: environment!.id, label: "revoked", scopes: [] },
+      database,
+    );
+    await ApiKeyStore.revoke(project!.id, environment!.id, revoked.apiKey.id, database);
+
+    const expired = await ApiKeyStore.create(
+      {
+        projectId: project!.id,
+        environmentId: environment!.id,
+        label: "expired",
+        scopes: [],
+        expiresAt: new Date(Date.now() - 1000),
+      },
+      database,
+    );
+
     const bodies = new Set<string>();
-    for (const bad of ["nonsense", "bw_live_grande_" + "a".repeat(40), "bw_test_other_" + "b".repeat(40)]) {
+    for (const bad of [
+      "nonsense",
+      "bw_live_grande_" + "a".repeat(40),
+      "bw_test_other_" + "b".repeat(40),
+      revoked.plaintext,
+      expired.plaintext,
+    ]) {
       const res = await get("/v1/whoami", { "x-api-key": bad });
       expect(res.status).toBe(401);
       const body = (await res.json()) as Record<string, unknown>;

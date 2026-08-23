@@ -35,6 +35,14 @@ export class WebhookStore {
   ): Promise<WebhookView> {
     await EnvironmentStore.requireById(projectId, environmentId, database);
 
+    // The secret is the only thing standing between a receiver and a forged
+    // payload. Validated here as well as at the route, because a store is
+    // callable from anywhere and a weak secret is not something to discover
+    // from a signature that was trivially reproduced.
+    if (input.secret.trim().length < 16) {
+      throw new ValidationError("webhook secret must be at least 16 characters", "secret");
+    }
+
     // Opt-in only. Tying this to NODE_ENV would mean an unset environment name
     // silently disables the check — verified by an end-to-end run that happily
     // accepted https://169.254.169.254/ under the previous logic.

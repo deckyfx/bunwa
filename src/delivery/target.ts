@@ -45,7 +45,14 @@ function isBlockedIPv4(address: string): boolean {
 function isBlockedIPv6(address: string): boolean {
   const lower = address.toLowerCase().replace(/^\[|\]$/g, "");
   if (lower === "::1" || lower === "::") return true;      // loopback, unspecified
-  if (lower.startsWith("fe80:")) return true;              // link-local
+
+  // Link-local is fe80::/10 — fe80 through febf — not just the fe80: prefix.
+  // febf::1 reaches the same place and was slipping straight through.
+  const firstHextet = /^([0-9a-f]{1,4}):/.exec(lower)?.[1];
+  if (firstHextet !== undefined) {
+    const value = Number.parseInt(firstHextet, 16);
+    if (value >= 0xfe80 && value <= 0xfebf) return true;
+  }
   if (/^f[cd][0-9a-f]{2}:/.test(lower)) return true;       // unique local
   if (lower.startsWith("ff")) return true;                 // multicast
   // An IPv4 address wearing an IPv6 hat, in either spelling. WHATWG URL parsing
@@ -61,6 +68,15 @@ function isBlockedIPv6(address: string): boolean {
     const low = Number.parseInt(hex[2], 16);
     const octets = [high >> 8, high & 0xff, low >> 8, low & 0xff];
     return isBlockedIPv4(octets.join("."));
+  }
+
+  // IPv4-compatible (deprecated, still routed by some stacks): ::7f00:1 is
+  // 127.0.0.1 without the ffff marker.
+  const compat = /^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(lower);
+  if (compat?.[1] !== undefined && compat[2] !== undefined) {
+    const high = Number.parseInt(compat[1], 16);
+    const low = Number.parseInt(compat[2], 16);
+    return isBlockedIPv4([high >> 8, high & 0xff, low >> 8, low & 0xff].join("."));
   }
 
   // Anything else mapped-looking is refused rather than guessed at: an
@@ -117,7 +133,10 @@ export function validateWebhookTarget(raw: string, policy: TargetPolicy = {}): U
       throw new ValidationError("webhook url must not point at a private or loopback address", "url");
     }
     // Names that resolve locally by convention, before DNS is consulted at all.
-    if (version === 0 && /^(localhost|.*\.localhost|.*\.local|.*\.internal|metadata\.google\.internal)$/i.test(host)) {
+    // The trailing dot is stripped first: "localhost." is a fully qualified
+    // form of the same name and resolves identically.
+    const bareHost = host.replace(/\.$/, "");
+    if (version === 0 && /^(localhost|.*\.localhost|.*\.local|.*\.internal|metadata\.google\.internal)$/i.test(bareHost)) {
       throw new ValidationError("webhook url must not point at a local host name", "url");
     }
   }

@@ -17,6 +17,8 @@ import { send, type SendOptions } from "./sender";
 export interface WorkerOptions extends SendOptions {
   /** How many deliveries to attempt per tick. */
   batchSize?: number;
+  /** Cap per environment within a tick, so one backlog cannot fill the batch. */
+  maxPerEnvironment?: number;
   /** How often to look for due work. */
   intervalMs?: number;
   database?: Database;
@@ -31,7 +33,20 @@ export interface WorkerOptions extends SendOptions {
 export async function runOnce(options: WorkerOptions = {}): Promise<number> {
   const database = options.database ?? db();
   const now = new Date();
-  const due = await DeliveryStore.claimDue(options.batchSize ?? 20, now, database);
+  const batchSize = options.batchSize ?? 20;
+  const perEnvironment = options.maxPerEnvironment ?? Math.max(1, Math.floor(batchSize / 4));
+
+  // Over-claim, then cap per environment. claimDue orders globally by due time,
+  // so one environment with a long backlog would otherwise fill every batch and
+  // no other tenant would be served at all until it drained.
+  const claimed = await DeliveryStore.claimDue(batchSize * 4, now, database);
+  const seenPerEnvironment = new Map<string, number>();
+  const due = claimed.filter((item) => {
+    const count = seenPerEnvironment.get(item.delivery.environmentId) ?? 0;
+    if (count >= perEnvironment) return false;
+    seenPerEnvironment.set(item.delivery.environmentId, count + 1);
+    return true;
+  }).slice(0, batchSize);
 
   let attempted = 0;
   for (const item of due) {
@@ -45,7 +60,16 @@ export async function runOnce(options: WorkerOptions = {}): Promise<number> {
     // twenty oldest deliveries filled every batch and no other tenant was
     // served at all until the circuit closed.
     if (webhook === undefined) {
-      await DeliveryStore.defer(item.delivery.id, new Date(now.getTime() + 60_000), database);
+      // Terminal, not deferred. The join in claimDue requires a webhook row, so
+      // reaching here means it was deleted mid-pass — there is nowhere to send
+      // this and retrying forever would hide that rather than surface it.
+      await DeliveryStore.recordAttempt(
+        item.delivery.id,
+        { ok: false, statusCode: null, error: "no webhook is configured for this environment", durationMs: 0 },
+        { state: "dead", nextAttemptAt: null },
+        database,
+      );
+      log.warn("delivery dead-lettered: webhook removed", { deliveryId: item.delivery.id });
       continue;
     }
     if (!circuitAllows(webhook.circuitState, webhook.circuitOpenedAt, now)) {

@@ -186,7 +186,7 @@ describe("the worker", () => {
     const [row] = await database.select().from(deliveries);
     expect(row!.state).toBe("dead");
     // Nothing is lost: the row and its history remain, and it can be replayed.
-    const attempts = await DeliveryStore.attemptsFor(projectId, queued!.id, database);
+    const attempts = await DeliveryStore.attemptsFor(projectId, environmentId, queued!.id, database);
     expect(attempts.length).toBeGreaterThanOrEqual(2);
     expect(attempts.every((a) => a.statusCode === 500)).toBe(true);
   });
@@ -201,7 +201,7 @@ describe("the worker", () => {
     await runOnce(opts(failing));
     expect((await database.select().from(deliveries))[0]!.state).toBe("dead");
 
-    const replayed = await DeliveryStore.replay(projectId, queued!.id, database);
+    const replayed = await DeliveryStore.replay(projectId, environmentId, queued!.id, database);
     expect(replayed.state).toBe("pending");
     expect(replayed.attemptCount).toBe(0);
 
@@ -214,7 +214,7 @@ describe("the worker", () => {
     const { impl } = stubFetch(new Error("ECONNREFUSED"));
     await DeliveryStore.enqueue(environmentId, event(), database);
     await expect(runOnce(opts(impl))).resolves.toBe(1);
-    const attempts = await DeliveryStore.attemptsFor(projectId, (await database.select().from(deliveries))[0]!.id, database);
+    const attempts = await DeliveryStore.attemptsFor(projectId, environmentId, (await database.select().from(deliveries))[0]!.id, database);
     expect(attempts[0]!.error).toContain("ECONNREFUSED");
   });
 
@@ -230,7 +230,7 @@ describe("the worker", () => {
 
     // The request must never be made, not merely fail.
     expect(calls).toHaveLength(0);
-    const attempts = await DeliveryStore.attemptsFor(projectId, (await database.select().from(deliveries))[0]!.id, database);
+    const attempts = await DeliveryStore.attemptsFor(projectId, environmentId, (await database.select().from(deliveries))[0]!.id, database);
     expect(attempts[0]!.error).toContain("private or loopback");
   });
 });
@@ -251,7 +251,7 @@ describe("DNS rebinding", () => {
 
     expect(calls).toHaveLength(0);
     const [row] = await database.select().from(deliveries);
-    const attempts = await DeliveryStore.attemptsFor(projectId, row!.id, database);
+    const attempts = await DeliveryStore.attemptsFor(projectId, environmentId, row!.id, database);
     expect(attempts[0]!.error).toContain("private or loopback");
   });
 
@@ -276,7 +276,7 @@ describe("delivery log isolation", () => {
     const queued = await DeliveryStore.enqueue(environmentId, event(), database);
 
     expect(await DeliveryStore.listForEnvironment(other.id, environmentId, 50, database)).toHaveLength(0);
-    await expect(DeliveryStore.attemptsFor(other.id, queued!.id, database)).rejects.toThrow();
-    await expect(DeliveryStore.replay(other.id, queued!.id, database)).rejects.toThrow();
+    await expect(DeliveryStore.attemptsFor(other.id, environmentId, queued!.id, database)).rejects.toThrow();
+    await expect(DeliveryStore.replay(other.id, environmentId, queued!.id, database)).rejects.toThrow();
   });
 });

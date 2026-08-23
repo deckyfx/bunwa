@@ -11,7 +11,7 @@ import { requireApiKey, requireScope } from "../../auth/middleware";
 import { DeviceStore } from "../../stores/device-store";
 import type { EngineRegistry } from "../../engine/registry";
 import { log } from "../../observability/logger";
-import { NotFoundError } from "../../stores/errors";
+import { UnavailableError } from "../../stores/errors";
 
 /**
  * Build the device routes.
@@ -64,10 +64,22 @@ export function deviceRoutes(registry: EngineRegistry) {
           // Pairing starts here, not in the store: the store owns consent, the
           // engine owns sockets, and mixing them is what makes an engine hard
           // to replace.
-          const pool = registry.list()[0];
-          if (pool === undefined) {
-            log.error("no engine pool is registered; cannot start pairing");
-            throw new NotFoundError("no engine is available to pair this device");
+          // Capacity-aware rather than "the first one": pools are bounded so
+          // that one failing takes a known number of devices with it, and
+          // always filling pool zero would defeat that.
+          let pool;
+          try {
+            pool = registry.choosePool("gowa", await DeviceStore.countByPool());
+          } catch {
+            try {
+              pool = registry.choosePool("fake", await DeviceStore.countByPool());
+            } catch {
+              log.error("no engine pool has capacity; cannot start pairing");
+              // 503 with Retry-After, not 404: the device exists and the
+              // request is valid — the capacity to pair it does not, and a
+              // caller should retry rather than treat it as a bad request.
+              throw new UnavailableError("no engine has capacity to pair this device right now");
+            }
           }
           await pool.engine.provision(result.device.id);
           const session = await pool.engine.startPairing(result.device.id, body.pairingMethod ?? "qr");

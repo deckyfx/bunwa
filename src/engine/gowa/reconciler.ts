@@ -90,9 +90,13 @@ export function reconcile(
     degraded: false,
   };
 
-  // Answering at all ends a degradation, whatever the answer says. A tenant
-  // told a device was in trouble must be told when it is not.
-  if (memory.degraded) {
+  // A degradation ends when the device answers *and* is usable. Emitting on
+  // any answer would tell a tenant a device had recovered while it was still
+  // logged out — the poll succeeding says the engine is reachable, not that the
+  // device works.
+  const wasUsableBefore = memory.connected && memory.loggedIn;
+  const isUsableNow = observed.connected && observed.loggedIn;
+  if (memory.degraded && isUsableNow && wasUsableBefore) {
     events.push({
       type: "device.recovered",
       deviceId,
@@ -100,8 +104,8 @@ export function reconcile(
     });
   }
 
-  const wasUsable = memory.connected && memory.loggedIn;
-  const isUsable = observed.connected && observed.loggedIn;
+  const wasUsable = wasUsableBefore;
+  const isUsable = isUsableNow;
 
   if (!wasUsable && isUsable) {
     if (memory.disconnectedSince !== null && !memory.degraded) {
@@ -127,10 +131,14 @@ export function reconcile(
     if (!observed.loggedIn && memory.lastKnownJid !== null) {
       events.push({ type: "device.logged_out", deviceId, reason: "remote_logout" });
       next.lastKnownJid = null;
+      // Not a disconnection: a logged-out device is not "down" and will not
+      // recover on its own, so reporting downtime when it is re-paired would
+      // be measuring the time the customer took to decide.
+      next.disconnectedSince = null;
     } else {
       events.push({ type: "device.disconnected", deviceId, reason: "socket lost", willRetry: true });
+      next.disconnectedSince = now;
     }
-    next.disconnectedSince = now;
   }
 
   // Logged out while already disconnected: the drop was reported, the logout

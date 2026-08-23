@@ -15,7 +15,7 @@ import { deviceRoutes } from "./routes/devices";
 import { projectRoutes } from "./routes/project";
 import type { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
-import { ConflictError, NotFoundError, ValidationError } from "../stores/errors";
+import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../stores/errors";
 import { log, withContext, sanitiseCorrelationId } from "../observability/logger";
 
 /** Process start, used to report uptime on the liveness probe. */
@@ -118,6 +118,11 @@ export function createApp(registry?: EngineRegistry) {
         set.status = 409;
         return problem(409, "conflict", "Conflict", error.message, path, id);
       }
+      if (error instanceof UnavailableError) {
+        set.status = 503;
+        set.headers["retry-after"] = String(error.retryAfterSeconds);
+        return problem(503, "unavailable", "Service Unavailable", error.message, path, id);
+      }
       if (error instanceof NotFoundError) {
         // 404 rather than 403 for something that exists but is not yours:
         // distinguishing them leaks the existence of other tenants' data.
@@ -141,9 +146,6 @@ export function createApp(registry?: EngineRegistry) {
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     }))
 
-    .use(projectRoutes)
-    .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
-
     /** Readiness. Answers "can this process serve traffic?", dependencies included. */
     .get("/readyz", async ({ set }) => {
       const database = await databaseReady();
@@ -159,6 +161,12 @@ export function createApp(registry?: EngineRegistry) {
         checks: { database: { ok: database.ok, latencyMs: database.latencyMs } },
       };
     })
+
+    // Route plugins mount after the probes. An orchestrator's liveness and
+    // readiness checks must never be able to end up behind a plugin's auth.
+    .use(projectRoutes)
+    .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
+
 
     // Mounted only when explicitly enabled. The admin surface has no
     // authentication yet, so it must not be reachable by default — an

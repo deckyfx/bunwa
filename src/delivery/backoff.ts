@@ -6,7 +6,13 @@
  * part a consumer needs to know when deciding how long to stay broken.
  */
 
-/** Delays before attempts 2..9. Eight attempts spans a little over three hours. */
+/**
+ * Delays before each retry.
+ *
+ * With the default of eight attempts only the first seven delays apply, so a
+ * delivery is abandoned about 36 minutes after it was queued — not the three
+ * hours the full list suggests.
+ */
 export const BACKOFF_SECONDS = [1, 2, 5, 15, 60, 300, 1800, 7200] as const;
 
 /**

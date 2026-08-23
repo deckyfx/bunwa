@@ -51,13 +51,18 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
    * Exists because "did you send it?" is the question every webhook integration
    * eventually asks in anger, and answering it from logs is archaeology.
    */
-  .get("/deliveries", async ({ auth }) => DeliveryStore.listForEnvironment(auth.projectId, auth.environmentId))
+  .get(
+    "/deliveries",
+    async ({ auth, query }) =>
+      DeliveryStore.listForEnvironment(auth.projectId, auth.environmentId, query.limit ?? 50),
+    { query: t.Object({ limit: t.Optional(t.Numeric({ minimum: 1, maximum: 200 })) }) },
+  )
 
   .get("/deliveries/:id/attempts", async ({ auth, params }) =>
-    DeliveryStore.attemptsFor(auth.projectId, params.id),
+    DeliveryStore.attemptsFor(auth.projectId, auth.environmentId, params.id),
   )
 
   .post("/deliveries/:id/replay", async ({ auth, params, path }) => {
     requireScope(auth, "manage:webhook", path);
-    return DeliveryStore.replay(auth.projectId, params.id);
+    return DeliveryStore.replay(auth.projectId, auth.environmentId, params.id);
   });

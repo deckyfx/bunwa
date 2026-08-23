@@ -62,8 +62,19 @@ export class EngineRegistry {
     return chosen;
   }
 
+  /**
+   * Close every engine, then clear.
+   *
+   * allSettled, not all: one engine that throws on close must not leave the
+   * others open and the registry populated — this runs during shutdown, where
+   * the alternative is a process that will not exit.
+   */
   async closeAll(): Promise<void> {
-    await Promise.all(this.list().map((p) => p.engine.close()));
+    const results = await Promise.allSettled(this.list().map((p) => p.engine.close()));
     this.pools.clear();
+    const failed = results.filter((r) => r.status === "rejected");
+    if (failed.length > 0) {
+      throw new EngineError(`${failed.length} engine(s) failed to close`, false, { cause: failed[0] });
+    }
   }
 }

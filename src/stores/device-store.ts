@@ -7,7 +7,7 @@
  * Those two sentences are the whole design, and `claim()` below is where they
  * are enforced.
  */
-import { and, eq } from "drizzle-orm";
+import { and, count as drizzleCount, eq } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import {
@@ -178,11 +178,12 @@ export class DeviceStore {
   }
 
   /**
-   * Whether anyone currently holds or is seeking this device.
+   * Whether any decision has been made about this device.
    *
-   * A denied or expired request does not count: those left no standing claim,
-   * and a device nobody currently holds should not be permanently frozen by an
-   * abandoned request.
+   * `granted`, `pending`, `denied` and `revoked` all count — a refusal is a
+   * decision, and treating it as an absence is what let a revoked project
+   * re-grant itself. Only `expired` does not: nobody decided anything, the
+   * question simply lapsed, so the device is genuinely unclaimed again.
    */
   private static async hasStandingClaim(deviceId: string, database: Database): Promise<boolean> {
     const rows = await database
@@ -271,6 +272,12 @@ export class DeviceStore {
       requestedByEnvironmentId: environmentId,
       challengeToken: crypto.randomUUID(),
       expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
+      // Cleared: a re-opened request carrying the previous answer's timestamp
+      // and evidence would read, in the audit trail, as though the customer had
+      // already replied to a question that is still outstanding.
+      respondedAt: null,
+      responseChannel: null,
+      evidence: {},
       updatedAt: now,
     };
     const [created] = await database
@@ -403,12 +410,17 @@ export class DeviceStore {
     database: Database,
   ): Promise<void> {
     const waiting = await database
-      .select({ id: virtualDevices.id })
+      .select({ id: virtualDevices.id, status: virtualDevices.status })
       .from(virtualDevices)
       .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
       .where(and(eq(virtualDevices.deviceId, deviceId), eq(environments.projectId, projectId)));
 
     for (const row of waiting) {
+      // Only bindings that were waiting on this answer. A revoked binding was
+      // deliberately taken away, and a later consent grant elsewhere in the
+      // project must not quietly restore it; a suspended one is an operator
+      // decision that consent does not override either.
+      if (row.status !== "pending_consent" && row.status !== "pending_pairing") continue;
       await database
         .update(virtualDevices)
         .set({ status: "active", activatedAt: now, updatedAt: now })
@@ -448,6 +460,26 @@ export class DeviceStore {
       .from(virtualDevices)
       .innerJoin(devices, eq(virtualDevices.deviceId, devices.id))
       .where(eq(virtualDevices.environmentId, environmentId));
+  }
+
+  /**
+   * How many devices each engine pool currently holds.
+   *
+   * Counted from the rows rather than kept in the registry: an in-memory tally
+   * drifts from the database on any restart or concurrent write, and a pool
+   * that looks empty while it is full is exactly the failure bounded capacity
+   * exists to prevent.
+   */
+  static async countByPool(database: Database = db()): Promise<Map<string, number>> {
+    const rows = await database
+      .select({ poolId: devices.enginePoolId, count: drizzleCount() })
+      .from(devices)
+      .groupBy(devices.enginePoolId);
+    const counts = new Map<string, number>();
+    for (const row of rows) {
+      if (row.poolId !== null) counts.set(row.poolId, Number(row.count));
+    }
+    return counts;
   }
 
   /** Everything using this device, for the operator "who can use my number" view. */

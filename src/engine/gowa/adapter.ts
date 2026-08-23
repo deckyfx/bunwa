@@ -121,7 +121,10 @@ export class GowaAdapter implements DeviceEngine {
 
   /** Raise unless gowa reported success. */
   private assertOk(response: GowaResponse<unknown>, context: string): void {
-    if (response.code !== undefined && response.code !== "SUCCESS") {
+    // Requires SUCCESS rather than merely "not an error code". A response with
+    // no code at all is not a success, and treating it as one is how a failed
+    // logout was recorded as done while the session stayed live.
+    if (response.code !== "SUCCESS") {
       throw this.toError(response.message ?? context);
     }
   }
@@ -213,7 +216,15 @@ export class GowaAdapter implements DeviceEngine {
       case "document":
         return {
           path: "/send/file",
-          body: { phone: to, file_url: mediaUrl(action.media), ...(action.caption === undefined ? {} : { caption: action.caption }) },
+          body: {
+            phone: to,
+            file_url: mediaUrl(action.media),
+            // Without this the recipient sees gowa's generated storage name.
+            // For the PDF requirement that is the whole point: an invoice must
+            // arrive as invoice-2026-08.pdf, not 1787394484-6cdd….pdf.
+            filename: action.filename,
+            ...(action.caption === undefined ? {} : { caption: action.caption }),
+          },
           multipart: true,
         };
       case "audio":
@@ -341,12 +352,26 @@ export class GowaAdapter implements DeviceEngine {
         signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? 30_000),
       });
       const text = await response.text();
+      let parsed: unknown;
       try {
-        return JSON.parse(text) as GowaResponse<T>;
+        parsed = JSON.parse(text);
       } catch {
         // gowa returns bare text for some failures, e.g. "Method Not Allowed".
-        throw new EngineError(`gowa returned a non-JSON response: ${text.slice(0, 120)}`, true);
+        throw new EngineError(`gowa returned a non-JSON response (${response.status}): ${text.slice(0, 120)}`, true);
       }
+      // #22: `null` and arrays parse fine and would then be read as an envelope
+      // with no code, which assertOk now treats as failure — but a clearer
+      // error here beats a confusing one there.
+      if (parsed === null || typeof parsed !== "object") {
+        throw new EngineError(`gowa returned an unexpected JSON body (${response.status})`, true);
+      }
+      const envelope = parsed as GowaResponse<T>;
+      // A 5xx carrying a well-formed envelope is still a failure. Reading only
+      // the body would let a 500 with {code:"SUCCESS"} through.
+      if (!response.ok && envelope.code !== "SUCCESS") {
+        throw this.toError(envelope.message ?? `gowa responded ${response.status}`);
+      }
+      return envelope;
     } catch (err) {
       if (err instanceof EngineError) throw err;
       throw new EngineError(`gowa request failed: ${err instanceof Error ? err.message : String(err)}`, true, {

@@ -61,7 +61,7 @@ jobs:
         run: |
           bun run db:embed
           if ! git diff --quiet -- src/db/migrations-embedded.ts; then
-            echo "::error::src/db/migrations-embedded.ts is stale — run 'bun run db:generate'"
+            echo "::error::src/db/migrations-embedded.ts is stale — run 'bun run db:embed'"
             git --no-pager diff -- src/db/migrations-embedded.ts
             exit 1
           fi

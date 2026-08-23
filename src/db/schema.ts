@@ -2,9 +2,8 @@
  * Database schema (SQLite).
  *
  * Rationale for every table lives in docs/04-data-model.md; this file is the
- * authoritative definition. Stage 1 covers the tenancy spine only — projects,
- * environments and API keys. Devices, virtual devices and consent arrive in
- * 1.3, delivery tables in 1.4.
+ * authoritative definition. It now covers the tenancy spine, devices, consent,
+ * virtual devices, and the delivery queue with its attempt log.
  *
  * SQLite for now, Postgres when a second process needs the data — see
  * docs/adr/0005-postgres-over-sqlite.md. The column choices below keep that

@@ -19,7 +19,7 @@ import {
 } from "../db/schema";
 import type { EventEnvelope } from "../events/schema";
 import { passesFilter } from "../events/schema";
-import { NotFoundError } from "./errors";
+import { ConflictError, NotFoundError } from "./errors";
 
 /** A delivery paired with everything needed to attempt it. */
 export interface DueDelivery {
@@ -167,8 +167,17 @@ export class DeliveryStore {
       .where(eq(deliveries.id, deliveryId));
   }
 
+  /**
+   * Attempts for one delivery.
+   *
+   * Scoped by environment as well as project. Project alone let a key for
+   * `grande/staging` read `grande/production`'s delivery log — a smaller leak
+   * than crossing projects, but the environment is the unit of isolation
+   * precisely so that staging cannot see production.
+   */
   static async attemptsFor(
     projectId: string,
+    environmentId: string,
     deliveryId: string,
     database: Database = db(),
   ): Promise<DeliveryAttempt[]> {
@@ -176,7 +185,13 @@ export class DeliveryStore {
       .select({ id: deliveries.id })
       .from(deliveries)
       .innerJoin(environments, eq(deliveries.environmentId, environments.id))
-      .where(and(eq(deliveries.id, deliveryId), eq(environments.projectId, projectId)))
+      .where(
+        and(
+          eq(deliveries.id, deliveryId),
+          eq(deliveries.environmentId, environmentId),
+          eq(environments.projectId, projectId),
+        ),
+      )
       .limit(1);
     if (owned === undefined) throw new NotFoundError(`delivery ${deliveryId} not found`);
 
@@ -189,14 +204,32 @@ export class DeliveryStore {
    * The attempt count is reset so the replay gets the full schedule; the
    * attempt history is kept, because it is the record of why it died.
    */
-  static async replay(projectId: string, deliveryId: string, database: Database = db()): Promise<Delivery> {
+  static async replay(
+    projectId: string,
+    environmentId: string,
+    deliveryId: string,
+    database: Database = db(),
+  ): Promise<Delivery> {
     const [owned] = await database
       .select({ delivery: deliveries })
       .from(deliveries)
       .innerJoin(environments, eq(deliveries.environmentId, environments.id))
-      .where(and(eq(deliveries.id, deliveryId), eq(environments.projectId, projectId)))
+      .where(
+        and(
+          eq(deliveries.id, deliveryId),
+          eq(deliveries.environmentId, environmentId),
+          eq(environments.projectId, projectId),
+        ),
+      )
       .limit(1);
     if (owned === undefined) throw new NotFoundError(`delivery ${deliveryId} not found`);
+
+    // #28: only a finished delivery may be replayed. Resetting one that is
+    // still pending would reset its attempt count and hand it a fresh schedule
+    // while the worker may already be attempting it.
+    if (owned.delivery.state !== "dead" && owned.delivery.state !== "failed") {
+      throw new ConflictError(`delivery ${deliveryId} is ${owned.delivery.state}; only a dead or failed one can be replayed`);
+    }
 
     const [updated] = await database
       .update(deliveries)

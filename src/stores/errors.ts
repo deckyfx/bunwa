@@ -26,3 +26,17 @@ export class ValidationError extends Error {
     super(message);
   }
 }
+
+/**
+ * A dependency the request needs is not available right now.
+ *
+ * Distinct from NotFoundError because the caller's response differs: the
+ * request was valid and should be retried, which is a 503 with Retry-After
+ * rather than a 404 telling them they asked for something that does not exist.
+ */
+export class UnavailableError extends Error {
+  override readonly name = "UnavailableError";
+  constructor(message: string, readonly retryAfterSeconds = 30) {
+    super(message);
+  }
+}

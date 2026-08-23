@@ -12,6 +12,7 @@ import { generateApiKey, prefixOf, verifyApiKey } from "../auth/api-key";
 import { db, type Database } from "../db";
 import { apiKeys, environments, projects, type ApiKey } from "../db/schema";
 import { NotFoundError, ValidationError } from "./errors";
+import { log } from "../observability/logger";
 
 /** What authentication resolves a presented key to. */
 export interface ResolvedKey {
@@ -120,11 +121,16 @@ export class ApiKeyStore {
    * last-used time is worth more than the latency it would cost to be exact.
    */
   static touch(id: string, database: Database = db()): void {
+    // Rejection handled rather than swallowed silently: an unhandled rejection
+    // in Bun can terminate the process, and losing the service because a
+    // last-used timestamp failed to write would be an absurd way to go down.
     void database
       .update(apiKeys)
       .set({ lastUsedAt: new Date() })
       .where(eq(apiKeys.id, id))
-      .catch(() => undefined);
+      .catch((err: unknown) => {
+        log.warn("failed to record api key use", { error: err instanceof Error ? err.message : String(err) });
+      });
   }
 
   static async listForEnvironment(

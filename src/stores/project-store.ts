@@ -12,8 +12,16 @@ import { db, type Database } from "../db";
 import { projects, type Project } from "../db/schema";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 
-/** Lowercase, digits and hyphens: safe in a URL, in a key prefix, and in a log. */
-const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
+import { KEY_SAFE_SLUG } from "../auth/api-key";
+
+/**
+ * Lowercase, digits and hyphens: safe in a URL, in a key prefix, and in a log.
+ *
+ * The same constant the key parser uses. Two copies would drift, and the
+ * failure mode is silent — keys that mint successfully and then authenticate
+ * nothing.
+ */
+const SLUG_PATTERN = KEY_SAFE_SLUG;
 
 export class ProjectStore {
   /**

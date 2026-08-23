@@ -32,6 +32,15 @@ export interface GeneratedKey {
   prefix: string;
 }
 
+/**
+ * The slug shape a key prefix can carry.
+ *
+ * Exported so the project store validates against exactly this: a slug that
+ * passes there but not here mints keys `prefixOf` cannot parse, and every
+ * request with one would fail authentication for no visible reason.
+ */
+export const KEY_SAFE_SLUG = /^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/;
+
 /** Base62 avoids `+`, `/` and `=`, so a key survives a URL or a shell unescaped. */
 const ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 

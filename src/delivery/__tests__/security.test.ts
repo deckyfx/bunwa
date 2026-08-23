@@ -101,10 +101,14 @@ describe("signatures", () => {
   });
 
   test("rejects a signature whose timestamp was edited", () => {
-    const header = sign(body, "shh");
+    // Signed at a fixed earlier time so the replacement always differs. The
+    // previous version guarded the assertion with `if (forged !== header)`,
+    // which meant a same-second run asserted nothing at all and still passed.
+    const signedAt = new Date(Date.now() - 60_000);
+    const header = sign(body, "shh", signedAt);
     const forged = header.replace(/^t=\d+/, `t=${Math.floor(Date.now() / 1000)}`);
-    // Editing t invalidates the digest, because t is part of what was signed.
-    if (forged !== header) expect(verify(body, forged, "shh").valid).toBe(false);
+    expect(forged).not.toBe(header);
+    expect(verify(body, forged, "shh").valid).toBe(false);
   });
 
   test("rejects malformed headers rather than throwing", () => {
@@ -140,5 +144,32 @@ describe("retry policy", () => {
     expect(circuitAllows("open", opened, new Date(61_000))).toBe(true);
     expect(circuitAllows("closed", null)).toBe(true);
     expect(circuitAllows("half_open", opened, new Date(1_000))).toBe(true);
+  });
+});
+
+describe("address blocking gaps found by review", () => {
+  test("the whole fe80::/10 link-local range is blocked, not just fe80:", () => {
+    // febf::1 reaches the same place; matching only the fe80: prefix let the
+    // rest of the range straight through.
+    for (const host of ["https://[fe80::1]/x", "https://[fe90::1]/x", "https://[febf::1]/x"]) {
+      expect(() => validateWebhookTarget(host)).toThrow(/private or loopback/);
+    }
+  });
+
+  test("IPv4-compatible IPv6 addresses are decoded, not waved through", () => {
+    // ::7f00:1 is 127.0.0.1 without the ffff marker.
+    expect(() => validateWebhookTarget("https://[::7f00:1]/x")).toThrow(/private or loopback/);
+    expect(() => validateWebhookTarget("https://[::a9fe:a9fe]/x")).toThrow(/private or loopback/);
+  });
+
+  test("a trailing dot does not evade the local-name check", () => {
+    // "localhost." is a fully qualified form of the same name.
+    for (const host of ["https://localhost./x", "https://metadata.google.internal./x"]) {
+      expect(() => validateWebhookTarget(host)).toThrow(/local host name/);
+    }
+  });
+
+  test("ordinary public IPv6 is still allowed", () => {
+    expect(validateWebhookTarget("https://[2606:4700::1111]/x").protocol).toBe("https:");
   });
 });

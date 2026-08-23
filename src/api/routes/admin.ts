@@ -9,6 +9,7 @@ import { Elysia, t } from "elysia";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
 import type { ApiKey } from "../../db/schema";
+import { ValidationError } from "../../stores/errors";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ProjectStore } from "../../stores/project-store";
 import { log } from "../../observability/logger";
@@ -60,7 +61,7 @@ export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
         environmentId: params.environmentId,
         label: body.label,
         scopes: body.scopes,
-        ...(body.expiresAt === undefined ? {} : { expiresAt: new Date(body.expiresAt) }),
+        ...(body.expiresAt === undefined ? {} : { expiresAt: parseExpiry(body.expiresAt) }),
       });
       set.status = 201;
       // The id is logged; the key is not, and there is no code path that could
@@ -95,6 +96,20 @@ export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
       return redactKey(revoked);
     },
   );
+
+/**
+ * Parse an expiry, refusing anything that is not a date.
+ *
+ * `new Date("nonsense")` is an Invalid Date, which stores as NaN and then
+ * compares false against every check — producing a key that never expires
+ * because its expiry was unreadable.
+ */
+function parseExpiry(raw: string): Date {
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) throw new ValidationError(`expiresAt is not a valid date: "${raw}"`, "expiresAt");
+  if (parsed.getTime() <= Date.now()) throw new ValidationError("expiresAt must be in the future", "expiresAt");
+  return parsed;
+}
 
 /** Strip the hash before a key ever leaves the process. */
 function redactKey(key: ApiKey): Omit<ApiKey, "keyHash"> {
