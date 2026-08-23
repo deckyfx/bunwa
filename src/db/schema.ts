@@ -110,6 +110,136 @@ export const apiKeys = sqliteTable(
 );
 
 /**
+ * A WhatsApp identity. **System-owned and global** — it belongs to no project.
+ *
+ * `msisdn` being unique is what makes "this phone is already paired, reuse it?"
+ * a primary-key lookup rather than a heuristic, and that lookup is the whole
+ * product: a customer pairs once, then grants access, instead of scanning a QR
+ * per project.
+ */
+export const devices = sqliteTable(
+  "devices",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    /** E.164. The system-wide identity of the device. */
+    msisdn: text("msisdn").notNull(),
+    jid: text("jid"),
+    pushName: text("push_name"),
+    engineKind: text("engine_kind", { enum: ["gowa", "native"] }).notNull().default("gowa"),
+    enginePoolId: text("engine_pool_id"),
+    /** The id *inside* that engine, which is not ours and may be reassigned. */
+    engineDeviceId: text("engine_device_id"),
+    state: text("state", {
+      enum: ["unpaired", "pairing", "connected", "disconnected", "logged_out", "degraded", "deleted"],
+    })
+      .notNull()
+      .default("unpaired"),
+    stateReason: text("state_reason"),
+    firstPairedAt: integer("first_paired_at", { mode: "timestamp_ms" }),
+    lastConnectedAt: integer("last_connected_at", { mode: "timestamp_ms" }),
+    lastSeenAt: integer("last_seen_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("devices_msisdn_key").on(t.msisdn), index("devices_jid_idx").on(t.jid)],
+);
+
+/**
+ * Consent, granted per (device, project).
+ *
+ * Per *project*, not per environment: a customer agrees to "Grande", not to
+ * "Grande's staging". Asking once per environment would mean three
+ * confirmations to onboard one product, which is the friction this system
+ * exists to remove.
+ */
+export const deviceConsents = sqliteTable(
+  "device_consents",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    status: text("status", { enum: ["pending", "granted", "denied", "revoked", "expired"] })
+      .notNull()
+      .default("pending"),
+    requestedByEnvironmentId: text("requested_by_environment_id").references(() => environments.id, {
+      onDelete: "set null",
+    }),
+    /** Single-use, carried in the WhatsApp message sent to the number itself. */
+    challengeToken: text("challenge_token").notNull(),
+    challengeSentAt: integer("challenge_sent_at", { mode: "timestamp_ms" }),
+    respondedAt: integer("responded_at", { mode: "timestamp_ms" }),
+    responseChannel: text("response_channel", { enum: ["whatsapp_reply", "dashboard", "operator"] }),
+    /** Replying JID, message id, IP — what proves they agreed, months later. */
+    evidence: text("evidence", { mode: "json" }).$type<Record<string, unknown>>().notNull().default({}),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("device_consents_device_project_key").on(t.deviceId, t.projectId)],
+);
+
+/** Append-only. The record of what was agreed, and when, and by whom. */
+export const consentEvents = sqliteTable(
+  "consent_events",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    consentId: text("consent_id")
+      .notNull()
+      .references(() => deviceConsents.id, { onDelete: "cascade" }),
+    action: text("action", {
+      enum: ["requested", "challenge_sent", "granted", "denied", "revoked", "expired"],
+    }).notNull(),
+    actor: text("actor", { enum: ["phone_holder", "operator", "system"] }).notNull(),
+    channel: text("channel", { enum: ["whatsapp_reply", "dashboard", "operator", "system"] }).notNull(),
+    evidence: text("evidence", { mode: "json" }).$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => [index("consent_events_consent_idx").on(t.consentId)],
+);
+
+/**
+ * An environment's handle onto a device. The routing unit.
+ *
+ * A project addresses this id or its alias and never learns the global device
+ * id, so two projects sharing one phone see unrelated identifiers and cannot
+ * correlate their traffic.
+ */
+export const virtualDevices = sqliteTable(
+  "virtual_devices",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    alias: text("alias").notNull(),
+    status: text("status", {
+      enum: ["pending_pairing", "pending_consent", "active", "suspended", "revoked"],
+    })
+      .notNull()
+      .default("pending_consent"),
+    scopes: text("scopes", { mode: "json" }).$type<string[]>().notNull().default([]),
+    /** If set, this binding only ever sees these chats. */
+    jidAllowlist: text("jid_allowlist", { mode: "json" }).$type<string[] | null>(),
+    jidDenylist: text("jid_denylist", { mode: "json" }).$type<string[]>().notNull().default([]),
+    activatedAt: integer("activated_at", { mode: "timestamp_ms" }),
+    revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (t) => [
+    uniqueIndex("virtual_devices_environment_device_key").on(t.environmentId, t.deviceId),
+    uniqueIndex("virtual_devices_environment_alias_key").on(t.environmentId, t.alias),
+    index("virtual_devices_device_idx").on(t.deviceId),
+  ],
+);
+
+/**
  * Where an environment's events are delivered.
  *
  * One target per environment for now. When virtual devices arrive in §1.5 they
@@ -207,3 +337,8 @@ export type NewEnvironmentWebhook = typeof environmentWebhooks.$inferInsert;
 export type Delivery = typeof deliveries.$inferSelect;
 export type NewDelivery = typeof deliveries.$inferInsert;
 export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;
+export type Device = typeof devices.$inferSelect;
+export type NewDevice = typeof devices.$inferInsert;
+export type DeviceConsent = typeof deviceConsents.$inferSelect;
+export type ConsentEvent = typeof consentEvents.$inferSelect;
+export type VirtualDevice = typeof virtualDevices.$inferSelect;

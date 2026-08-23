@@ -6,11 +6,11 @@
  */
 import journalJson from "./migrations/meta/_journal.json" with { type: "json" };
 
-import m0000TenancyAndDelivery from "./migrations/0000_tenancy_and_delivery.sql" with { type: "text" };
+import m0000TenancyDeliveryDevices from "./migrations/0000_tenancy_delivery_devices.sql" with { type: "text" };
 
 /** Migration file name to its raw SQL, exactly as drizzle-kit wrote it. */
 const files: Record<string, string> = {
-  "0000_tenancy_and_delivery.sql": m0000TenancyAndDelivery,
+  "0000_tenancy_delivery_devices.sql": m0000TenancyDeliveryDevices,
 };
 
 export interface EmbeddedJournalEntry { idx: number; when: number; tag: string; breakpoints: boolean }
