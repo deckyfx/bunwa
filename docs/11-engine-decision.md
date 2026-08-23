@@ -124,7 +124,7 @@ worth doing — later, upstream, as PRs rather than as a fork.
 │  s6-overlay supervises both       │   │    served at /app  │
 └───────────────────────────────────┘   └────────────────────┘
         │                    │
-   Postgres              Redis
+   SQLite (one file)
 ```
 
 Two published tags from one build. The dashboard is a separate subproject

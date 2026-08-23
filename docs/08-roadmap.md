@@ -95,7 +95,7 @@ topology in [03](03-architecture.md) and cannot be guessed.
 - Normalised event schema `bunwa.event/v1`
 - **Lifecycle event synthesis** — limitation #1 closed
 - Per-virtual-device fan-out with scope, allowlist, denylist and type filtering
-- Redis-backed per-virtual-device delivery queues, retry, backoff, DLQ
+- SQLite-backed per-virtual-device delivery queues, retry, backoff, DLQ
 - Timestamped HMAC signatures
 - SSE endpoint
 
@@ -148,7 +148,14 @@ polish, scale, or optionality.
 - Prometheus metrics per device, environment and virtual device
 - OpenTelemetry tracing across control plane → adapter → engine
 - Load test: 100 devices, 50 msg/s, sustained 24 h
-- Chaos: kill engines, kill Redis, blackhole webhook targets, fill disks
+- Chaos: kill engines, blackhole webhook targets, fill disks, corrupt the
+  SQLite WAL
+  <!-- No Redis. This line said "kill Redis" until stage 1 chose SQLite for the
+       delivery queue (ADR-0005), and a chaos plan naming a component that does
+       not exist is worse than one that is short: it reads as covered. The
+       equivalent failure here is the database file itself — a corrupt WAL, a
+       full disk, a handle held open by a crashed process. Revisit when the
+       move to Postgres happens, at which point the queue may move too. -->
 - Backup and restore drill, actually executed
 - Secret handling: encryption at rest for webhook secrets and engine credentials
 - Rate limiting at the edge
@@ -170,6 +177,13 @@ polish, scale, or optionality.
   connect is still followed. Closing it needs an HTTP client over `Bun.connect`
   — a meaningful amount of security-critical code to own, and the right size of
   decision for hardening rather than foundation.
+
+**The Postgres trigger.** Row-level security is unavailable on SQLite, so the
+second tenant-isolation layer described in [04](04-data-model.md) is deferred —
+repository scoping and the fan-out direction are currently the only guards. The
+move is triggered by a second process needing the data (delivery workers or
+engine supervisors outside the API process), not by a date; see
+[ADR-0005](adr/0005-postgres-over-sqlite.md).
 
 **SSRF deserves naming:** projects supply webhook URLs. Without validation,
 `http://169.254.169.254/` turns your webhook sender into a cloud-metadata

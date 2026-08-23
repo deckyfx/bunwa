@@ -165,7 +165,7 @@ and it materially changes how safe colocation is.
 │                                  /run: tmpfs, mode 0770             │
 └──────────────────────────────────────────────────────────────────────┘
              │                              │
-      Postgres, Redis              project webhooks
+      SQLite (one file)            project webhooks
 ```
 
 **No TCP port is open for gowa at all** — not even on loopback. That is the real

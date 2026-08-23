@@ -23,6 +23,16 @@ reviews:
   # applied. Each is answered by an inline comment at the site and, where the
   # assumption could change, by a test. Re-raising them costs a review slot.
   path_instructions:
+    - path: "**/*"
+      instructions: >-
+        This project uses SQLite, not Redis and not Postgres. ADR-0005 records
+        the decision and its trigger. Do not suggest Redis for queues, caching
+        or rate limiting, and do not treat the absence of Redis as an
+        oversight — the delivery queue is a SQLite table on purpose, because
+        one process owns the data and a durable queue that needs no server is
+        the smaller system. Postgres-specific advice (row-level security,
+        LISTEN/NOTIFY, jsonb operators) is equally out of scope until that
+        trigger is met: a second process needing concurrent access.
     - path: "src/stores/device-store.ts"
       instructions: >-
         The consent state machine is enumerated exhaustively over (this
