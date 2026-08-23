@@ -7,7 +7,7 @@
  * connected for 203 seconds after a silent drop (docs/12), so the first says
  * far less than it appears to.
  */
-import { and, eq, gt, lt } from "drizzle-orm";
+import { and, eq, gt, inArray, lt } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import { outboundMessages, virtualDevices, type OutboundMessage } from "../db/schema";
@@ -41,10 +41,19 @@ export class MessageStore {
     status: "delivered" | "read",
     database: Database = db(),
   ): Promise<OutboundMessage | null> {
+    // Scoped by the engine id *and* the state it may legally leave.
+    //
+    // `read` is terminal for our purposes: WhatsApp emits delivered before
+    // read, but the bridge gives no ordering guarantee across retries or
+    // reconnects, and a late `delivered` overwriting `read` would make a
+    // message appear to regress.
+    const allowedFrom: Array<OutboundMessage["state"]> =
+      status === "read" ? ["accepted", "delivered", "undelivered"] : ["accepted", "undelivered"];
+
     const [updated] = await database
       .update(outboundMessages)
       .set({ state: status, ackedAt: new Date(), updatedAt: new Date() })
-      .where(eq(outboundMessages.engineMessageId, engineMessageId))
+      .where(and(eq(outboundMessages.engineMessageId, engineMessageId), inArray(outboundMessages.state, allowedFrom)))
       .returning();
     return updated ?? null;
   }
@@ -72,11 +81,24 @@ export class MessageStore {
       );
   }
 
-  static async markUndelivered(id: string, database: Database = db()): Promise<void> {
+  /**
+   * Mark a send undelivered.
+   *
+   * Takes the environment as well as the id. Writing by primary key alone gave
+   * a caller with any message id the ability to mutate another tenant's row,
+   * and an engine-supplied identifier is not a tenant-scoped one.
+   */
+  static async markUndelivered(environmentId: string, id: string, database: Database = db()): Promise<void> {
     await database
       .update(outboundMessages)
       .set({ state: "undelivered", updatedAt: new Date() })
-      .where(eq(outboundMessages.id, id));
+      .where(
+        and(
+          eq(outboundMessages.id, id),
+          eq(outboundMessages.environmentId, environmentId),
+          eq(outboundMessages.state, "accepted"),
+        ),
+      );
   }
 
   /** Scoped by environment: a message id alone must not reach another tenant's. */

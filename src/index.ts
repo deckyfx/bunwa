@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     // traffic is still arriving fails those requests for no reason. Then drain
     // the delivery pass in flight, then release the engines.
     await server.stop(false);
-    for (const stop of stopConsumers) stop();
+    await Promise.all(stopConsumers.map((stop) => stop()));
     await stopWorker();
     // Engine cleanup must not be able to prevent the process exiting — a
     // rejected close with shutdown already marked in progress would leave it

@@ -11,7 +11,10 @@
  * driver-specific column, and timestamps as epoch milliseconds.
  */
 import { relations, sql } from "drizzle-orm";
-import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+
+/** Anything that survives a JSON round trip. Used for stored bodies. */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+import { foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /** Shared audit columns. Every table carries them; none is nullable. */
 const timestamps = {
@@ -233,6 +236,11 @@ export const virtualDevices = sqliteTable(
   },
   (t) => [
     uniqueIndex("virtual_devices_environment_device_key").on(t.environmentId, t.deviceId),
+    // Referenced by outbound_messages so a message's environment must match
+    // its virtual device's. Two independent foreign keys only prove both rows
+    // exist, which permits a row pairing environment A's device with
+    // environment B's id — cross-tenant metadata, persisted.
+    uniqueIndex("virtual_devices_id_environment_key").on(t.id, t.environmentId),
     uniqueIndex("virtual_devices_environment_alias_key").on(t.environmentId, t.alias),
     index("virtual_devices_device_idx").on(t.deviceId),
   ],
@@ -281,7 +289,7 @@ export const deliveries = sqliteTable(
     /** Stable across retries; consumers deduplicate on it. */
     eventId: text("event_id").notNull(),
     eventType: text("event_type").notNull(),
-    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    payload: text("payload", { mode: "json" }).$type<Record<string, JsonValue>>().notNull(),
     state: text("state", { enum: ["pending", "delivered", "failed", "dead"] }).notNull().default("pending"),
     attemptCount: integer("attempt_count").notNull().default(0),
     nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }).notNull(),
@@ -328,8 +336,14 @@ export const idempotencyKeys = sqliteTable(
       .notNull()
       .references(() => environments.id, { onDelete: "cascade" }),
     requestHash: text("request_hash").notNull(),
-    response: text("response", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
-    statusCode: integer("status_code").notNull(),
+    /**
+     * Null while the request is still in flight.
+     *
+     * The row is inserted *before* the side effect, so a crash or a concurrent
+     * retry finds the reservation rather than an empty table and sends again.
+     */
+    response: text("response", { mode: "json" }).$type<Record<string, JsonValue>>(),
+    statusCode: integer("status_code"),
     createdAt: integer("created_at", { mode: "timestamp_ms" })
       .notNull()
       .default(sql`(unixepoch() * 1000)`),
@@ -372,6 +386,11 @@ export const outboundMessages = sqliteTable(
     ...timestamps,
   },
   (t) => [
+    foreignKey({
+      columns: [t.virtualDeviceId, t.environmentId],
+      foreignColumns: [virtualDevices.id, virtualDevices.environmentId],
+      name: "outbound_messages_binding_environment_fk",
+    }).onDelete("cascade"),
     index("outbound_engine_message_idx").on(t.engineMessageId),
     index("outbound_environment_idx").on(t.environmentId),
     // Unacked sends are swept to message.undelivered, so this is a hot query.

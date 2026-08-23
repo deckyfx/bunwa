@@ -129,8 +129,8 @@ CREATE TABLE `idempotency_keys` (
 	`key` text NOT NULL,
 	`environment_id` text NOT NULL,
 	`request_hash` text NOT NULL,
-	`response` text NOT NULL,
-	`status_code` integer NOT NULL,
+	`response` text,
+	`status_code` integer,
 	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	PRIMARY KEY(`environment_id`, `key`),
 	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade
@@ -150,7 +150,8 @@ CREATE TABLE `outbound_messages` (
 	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	FOREIGN KEY (`virtual_device_id`) REFERENCES `virtual_devices`(`id`) ON UPDATE no action ON DELETE cascade,
-	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade
+	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`virtual_device_id`,`environment_id`) REFERENCES `virtual_devices`(`id`,`environment_id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
 CREATE INDEX `outbound_engine_message_idx` ON `outbound_messages` (`engine_message_id`);--> statement-breakpoint
@@ -184,5 +185,6 @@ CREATE TABLE `virtual_devices` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `virtual_devices_environment_device_key` ON `virtual_devices` (`environment_id`,`device_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `virtual_devices_id_environment_key` ON `virtual_devices` (`id`,`environment_id`);--> statement-breakpoint
 CREATE UNIQUE INDEX `virtual_devices_environment_alias_key` ON `virtual_devices` (`environment_id`,`alias`);--> statement-breakpoint
 CREATE INDEX `virtual_devices_device_idx` ON `virtual_devices` (`device_id`);

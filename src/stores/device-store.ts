@@ -26,6 +26,27 @@ import { ConflictError, NotFoundError, ValidationError } from "./errors";
 /** How long a phone holder has to answer before the request lapses. */
 export const CONSENT_TTL_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * A consent's status, accounting for its expiry.
+ *
+ * `expiresAt` is the deadline for *answering a request*, not a lifetime on the
+ * answer: consent does not lapse, it is revoked. Reading `status` alone made
+ * the `granted → active` row of the table below wrong, because both
+ * grantImplicitConsent and requestConsent write an expiresAt and nothing ever
+ * transitions a granted row, so a grant older than 24 hours still read as
+ * granted while its row claimed to have expired.
+ *
+ * So: only a *pending* request can lapse. Everything else means what it says.
+ */
+function effectiveStatus(
+  consent: DeviceConsent | null,
+  now: Date,
+): "granted" | "pending" | "denied" | "revoked" | "expired" | "none" {
+  if (consent === null) return "none";
+  if (consent.status === "pending" && consent.expiresAt.getTime() <= now.getTime()) return "expired";
+  return consent.status;
+}
+
 /** E.164: a leading +, then 8–15 digits. Normalised before storage. */
 const MSISDN_PATTERN = /^\+[1-9]\d{7,14}$/;
 
@@ -111,6 +132,8 @@ export class DeviceStore {
      *   this project    others hold?   outcome
      *   ─────────────────────────────────────────────────────────────────
      *   granted         any            active — the product's whole point
+     *                                    (a grant does not lapse; only a
+     *                                     pending request can expire)
      *   pending         any            awaiting (reuse the live challenge)
      *   denied          any            awaiting (they may say yes now)
      *   revoked         any            awaiting (they may say yes now)
@@ -120,7 +143,7 @@ export class DeviceStore {
      *   none            no             new device: pair, implicit consent
      */
     const consent = await this.consentFor(device.id, environment.projectId, database);
-    const mine = consent?.status ?? "none";
+    const mine = effectiveStatus(consent, now);
 
     if (mine === "granted") {
       const virtualDevice = await this.bind(environment.id, device.id, alias, input.scopes ?? [], "active", database, now);
@@ -532,6 +555,16 @@ export class DeviceStore {
       .update(devices)
       .set({ enginePoolId: poolId, engineKind, engineDeviceId, updatedAt: new Date() })
       .where(eq(devices.id, deviceId));
+  }
+
+  /** Which pool holds a device, or null if it has not been provisioned yet. */
+  static async poolIdFor(deviceId: string, database: Database = db()): Promise<string | null> {
+    const [row] = await database
+      .select({ poolId: devices.enginePoolId })
+      .from(devices)
+      .where(eq(devices.id, deviceId))
+      .limit(1);
+    return row?.poolId ?? null;
   }
 
   /** Everything using this device, for the operator "who can use my number" view. */

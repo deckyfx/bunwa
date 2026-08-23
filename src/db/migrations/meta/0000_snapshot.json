@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "50af062c-3035-4609-9004-af9d16d410a2",
+  "id": "da37bd49-bbf6-4c29-8e08-d9edf466733f",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "api_keys": {
@@ -933,14 +933,14 @@
           "name": "response",
           "type": "text",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "status_code": {
           "name": "status_code",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -1122,6 +1122,21 @@
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
+        },
+        "outbound_messages_binding_environment_fk": {
+          "name": "outbound_messages_binding_environment_fk",
+          "tableFrom": "outbound_messages",
+          "tableTo": "virtual_devices",
+          "columnsFrom": [
+            "virtual_device_id",
+            "environment_id"
+          ],
+          "columnsTo": [
+            "id",
+            "environment_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
         }
       },
       "compositePrimaryKeys": {},
@@ -1290,6 +1305,14 @@
           "columns": [
             "environment_id",
             "device_id"
+          ],
+          "isUnique": true
+        },
+        "virtual_devices_id_environment_key": {
+          "name": "virtual_devices_id_environment_key",
+          "columns": [
+            "id",
+            "environment_id"
           ],
           "isUnique": true
         },

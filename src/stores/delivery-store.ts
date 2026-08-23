@@ -17,6 +17,7 @@ import {
   type Delivery,
   type DeliveryAttempt,
 } from "../db/schema";
+import type { JsonValue } from "../db/schema";
 import type { EventEnvelope } from "../events/schema";
 import { passesFilter } from "../events/schema";
 import { ConflictError, NotFoundError } from "./errors";
@@ -59,7 +60,7 @@ export class DeliveryStore {
         environmentId,
         eventId: event.id,
         eventType: event.type,
-        payload: event as unknown as Record<string, unknown>,
+        payload: event as unknown as Record<string, JsonValue>,
         nextAttemptAt: new Date(),
       })
       .onConflictDoNothing()

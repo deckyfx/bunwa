@@ -12,7 +12,7 @@
 import { and, eq } from "drizzle-orm";
 
 import { db, type Database } from "../db";
-import { devices, environments, virtualDevices } from "../db/schema";
+import { devices, environments, projects, virtualDevices } from "../db/schema";
 import { DeliveryStore } from "../stores/delivery-store";
 import { MessageStore } from "../stores/message-store";
 import { EVENT_SCHEMA_VERSION, type EventEnvelope, type EventType } from "../events/schema";
@@ -20,7 +20,11 @@ import { log, withContext } from "../observability/logger";
 import type { DeviceEngine, EngineEvent } from "./types";
 
 /** Handle one engine event: update state, then fan out to entitled tenants. */
-export async function handleEngineEvent(event: EngineEvent, database: Database = db()): Promise<void> {
+export async function handleEngineEvent(
+  event: EngineEvent,
+  database: Database = db(),
+  engineKind = "unknown",
+): Promise<void> {
   switch (event.type) {
     case "device.connected":
       await onConnected(event.deviceId, event.jid, event.pushName, database);
@@ -41,7 +45,7 @@ export async function handleEngineEvent(event: EngineEvent, database: Database =
       break;
   }
 
-  await fanOut(event, database);
+  await fanOut(event, engineKind, database);
 }
 
 /**
@@ -96,17 +100,21 @@ async function setState(
  * cannot reach a tenant with no active binding, because no query would find
  * them.
  */
-async function fanOut(event: EngineEvent, database: Database): Promise<void> {
+async function fanOut(event: EngineEvent, engineKind: string, database: Database): Promise<void> {
   const bindings = await database
     .select({
       environmentId: virtualDevices.environmentId,
       environmentSlug: environments.slug,
       projectId: environments.projectId,
+      // Joined so the envelope can name the project. An empty slug left
+      // consumers unable to identify the tenant from documented metadata.
+      projectSlug: projects.slug,
       alias: virtualDevices.alias,
       virtualDeviceId: virtualDevices.id,
     })
     .from(virtualDevices)
     .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+    .innerJoin(projects, eq(environments.projectId, projects.id))
     .where(and(eq(virtualDevices.deviceId, event.deviceId), eq(virtualDevices.status, "active")));
 
   for (const binding of bindings) {
@@ -116,9 +124,11 @@ async function fanOut(event: EngineEvent, database: Database): Promise<void> {
       type: event.type as EventType,
       occurred_at: new Date().toISOString(),
       environment: { id: binding.environmentId, slug: binding.environmentSlug },
-      project: { id: binding.projectId, slug: "" },
+      project: { id: binding.projectId, slug: binding.projectSlug },
       data: { virtualDeviceId: binding.virtualDeviceId, alias: binding.alias, ...withoutGlobalIds(event) },
-      meta: { engine: "gowa", origin: "engine" },
+      // The engine that produced it, passed in rather than hard-coded — the
+      // control plane must not name one implementation.
+      meta: { engine: engineKind, origin: "engine" },
     };
     await DeliveryStore.enqueue(binding.environmentId, envelope, database);
   }
@@ -143,14 +153,19 @@ function withoutGlobalIds(event: EngineEvent): Record<string, unknown> {
  * Each event is handled in its own logging context, so an event and the
  * deliveries it produces share one correlation id.
  */
-export function startEngineConsumer(engine: DeviceEngine, database: Database = db()): () => void {
+export function startEngineConsumer(engine: DeviceEngine, database: Database = db()): () => Promise<void> {
   let stopped = false;
 
-  void (async () => {
+  // Retained rather than discarded, so shutdown can await it. Dropping the task
+  // let process.exit run while an event was mid-write — the delivery half
+  // enqueued, the state half not.
+  const task = (async () => {
     for await (const event of engine.subscribe()) {
       if (stopped) return;
       try {
-        await withContext({ correlationId: crypto.randomUUID() }, () => handleEngineEvent(event, database));
+        await withContext({ correlationId: crypto.randomUUID() }, () =>
+          handleEngineEvent(event, database, engine.kind),
+        );
       } catch (err) {
         // One bad event must not end the stream: dropping the rest would stop
         // every tenant learning anything about any device again.
@@ -159,7 +174,8 @@ export function startEngineConsumer(engine: DeviceEngine, database: Database = d
     }
   })();
 
-  return () => {
+  return async () => {
     stopped = true;
+    await task.catch(() => undefined);
   };
 }

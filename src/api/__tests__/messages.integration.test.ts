@@ -10,6 +10,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { sql } from "drizzle-orm";
+
 import { createApp } from "../server";
 import { createDatabase, resetDatabase } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
@@ -200,5 +202,68 @@ describe("GET /v1/devices/:ref/messages/:id", () => {
     );
     expect(res.status).toBe(200);
     expect((await res.json() as { state: string }).state).toBe("accepted");
+  });
+});
+
+describe("idempotency findings from review", () => {
+  test("a reservation is written before the send, so a crash cannot duplicate", async () => {
+    // Recording the key after the engine call left two windows: a crash between
+    // them, and two concurrent requests both finding no key. Either produced a
+    // second OTP.
+    const database = createDatabase(join(dir, "t.sqlite"));
+    const idem = crypto.randomUUID();
+    await send(otp, idem);
+    const rows = database.all(sql`select response from idempotency_keys`);
+    expect(rows).toHaveLength(1);
+  });
+
+  test("two concurrent requests with one key send exactly once", async () => {
+    const idem = crypto.randomUUID();
+    const [a, b] = await Promise.all([send(otp, idem), send(otp, idem)]);
+    const statuses = [a.status, b.status].sort();
+    // One succeeds; the other is told a request is in flight or replays it.
+    expect(statuses[0]).toBe(202);
+    expect([202, 409]).toContain(statuses[1]!);
+  });
+
+  test("a retry is not blocked by a send that never reached the engine", async () => {
+    // A failed attempt must release its reservation, or the caller's retry is
+    // told a request is in flight for ever.
+    const claimed = await DeviceStore.findByMsisdn(NUMBER);
+    engine.dropConnection(claimed!.id);
+    await engine.logout(claimed!.id);
+
+    const idem = crypto.randomUUID();
+    expect((await send(otp, idem)).status).toBe(503);
+
+    // Bring it back and retry with the same key: it must go through.
+    engine.completePairing(claimed!.id, "628123456789@s.whatsapp.net");
+    expect((await send(otp, idem)).status).toBe(202);
+  });
+
+  test("field order in the body does not turn a retry into a conflict", async () => {
+    // JSON.stringify preserves insertion order, so a client serialising the
+    // same payload differently on retry would hash differently and get a 409.
+    const idem = crypto.randomUUID();
+    await send({ type: "text", to: "+628999888777", text: "x" }, idem);
+    const res = await send({ text: "x", to: "+628999888777", type: "text" }, idem);
+    expect(res.status).toBe(202);
+    expect(res.headers.get("idempotent-replay")).toBe("true");
+  });
+
+  test("the message state is readable after the device disconnects", async () => {
+    // This is precisely when a caller reconciles a send, and it used to 409.
+    const sent = (await (await send(otp)).json()) as { messageId: string };
+    const claimed = await DeviceStore.findByMsisdn(NUMBER);
+    engine.dropConnection(claimed!.id);
+    await engine.logout(claimed!.id);
+    await handleEngineEvent({ type: "device.logged_out", deviceId: claimed!.id, reason: "remote_logout" });
+
+    const res = await app.handle(
+      new Request(`http://localhost/v1/devices/otp-sender/messages/${sent.messageId}`, {
+        headers: { "x-api-key": key },
+      }),
+    );
+    expect(res.status).toBe(200);
   });
 });

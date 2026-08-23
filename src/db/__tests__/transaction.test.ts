@@ -69,3 +69,39 @@ describe("withTransaction", () => {
     expect(database.all(sql`select v from t`).length).toBeGreaterThan(0);
   });
 });
+
+describe("serialisation", () => {
+  test("overlapping transactions on one handle do not interleave", async () => {
+    // The transaction spans an await and the handle is process-wide, so an
+    // overlapping caller's writes would otherwise land inside this transaction
+    // — committed or rolled back with it. A second BEGIN IMMEDIATE also fails
+    // outright on the same connection.
+    const database = scratch();
+    const order: string[] = [];
+
+    const a = withTransaction(database, async () => {
+      order.push("a-start");
+      database.run(sql`insert into t (v) values ('a')`);
+      await Bun.sleep(20);
+      order.push("a-end");
+    });
+    const b = withTransaction(database, async () => {
+      order.push("b-start");
+      database.run(sql`insert into t (v) values ('b')`);
+      order.push("b-end");
+    });
+
+    await Promise.all([a, b]);
+    expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
+    expect(database.all(sql`select v from t`)).toHaveLength(2);
+  });
+
+  test("a failed transaction does not block the next one", async () => {
+    const database = scratch();
+    await expect(withTransaction(database, async () => { throw new Error("boom"); })).rejects.toThrow();
+    await withTransaction(database, async () => {
+      database.run(sql`insert into t (v) values ('after')`);
+    });
+    expect(database.all(sql`select v from t`)).toHaveLength(1);
+  });
+});

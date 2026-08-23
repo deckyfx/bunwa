@@ -69,6 +69,19 @@ export class EngineRegistry {
    * others open and the registry populated — this runs during shutdown, where
    * the alternative is a process that will not exit.
    */
+  /**
+   * The pool holding a device, or the only pool if it has no assignment yet.
+   *
+   * Returns undefined rather than guessing when there are several pools and no
+   * recorded assignment: sending through an engine that has never provisioned
+   * the device fails in a way that looks like the device is broken.
+   */
+  forDevice(poolId: string | null): EnginePool | undefined {
+    if (poolId !== null) return this.pools.get(poolId);
+    const all = this.list();
+    return all.length === 1 ? all[0] : undefined;
+  }
+
   async closeAll(): Promise<void> {
     const results = await Promise.allSettled(this.list().map((p) => p.engine.close()));
     this.pools.clear();

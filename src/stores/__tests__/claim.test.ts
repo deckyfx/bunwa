@@ -322,6 +322,47 @@ describe("findings from review", () => {
   });
 });
 
+describe("consent expiry", () => {
+  test("a granted consent does not lapse with its expiresAt", async () => {
+    // The `granted → active` row read status alone. Both grant paths write an
+    // expiresAt and nothing transitions a granted row, so a grant older than
+    // 24 hours still read as granted while its own row claimed otherwise —
+    // the table was right and the code disagreed with it.
+    await claim(grandeProd, "otp-sender");
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    await database
+      .update(deviceConsents)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(deviceConsents.deviceId, device!.id));
+
+    const grandeOther = (await EnvironmentStore.create({ projectId: grandeId, slug: "other" }, database)).id;
+    const again = await claim(grandeOther, "second");
+    // Consent is revoked, not expired: the grant stands.
+    expect(again.outcome).toBe("active");
+  });
+
+  test("a pending request does lapse", async () => {
+    await claim(grandeProd, "otp-sender");
+    const rival = await claim(rivalProd, "theirs");
+    if (rival.outcome !== "awaiting_confirmation") throw new Error("expected a challenge");
+
+    await database
+      .update(deviceConsents)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(deviceConsents.id, rival.consent.id));
+
+    // The question lapsed, so a fresh one is asked rather than the stale token
+    // being reused.
+    const rivalStaging = (await EnvironmentStore.create(
+      { projectId: (await ProjectStore.findBySlug("rival", database))!.id, slug: "staging" },
+      database,
+    )).id;
+    const again = await claim(rivalStaging, "again");
+    if (again.outcome !== "awaiting_confirmation") throw new Error("expected a challenge");
+    expect(again.consent.challengeToken).not.toBe(rival.consent.challengeToken);
+  });
+});
+
 describe("binding rules", () => {
   test("an environment cannot bind the same number twice", async () => {
     await claim(grandeProd, "otp-sender");

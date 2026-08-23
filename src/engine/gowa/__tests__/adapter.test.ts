@@ -114,15 +114,19 @@ describe("send mapping", () => {
   test("a media URL resolving to a private address is refused before gowa sees it", async () => {
     // gowa resolves the name itself inside the container, so validating only
     // the literal would let a public-looking host reach loopback one hop on.
+    const seen: Array<{ url: string; body: string }> = [];
     const blocked = new GowaAdapter({
       baseUrl: "http://127.0.0.1:3100",
-      fetchImpl: stubGowa({ "/send/": { code: "SUCCESS", results: { message_id: "x" } } }),
+      fetchImpl: stubGowa({ "/send/": { code: "SUCCESS", results: { message_id: "x" } } }, seen),
       lookupImpl: async () => [{ address: "169.254.169.254" }],
       pollIntervalMs: 999_999,
     });
     await expect(
       blocked.send("d1", { type: "image", to: "+62811", media: { url: "https://evil.example/x.png" } }),
     ).rejects.toMatchObject({ retryable: false });
+    // Asserting only the rejection would pass even if the URL reached gowa and
+    // a later step refused it — by which point gowa has already fetched it.
+    expect(seen).toHaveLength(0);
     await blocked.close();
   });
 
