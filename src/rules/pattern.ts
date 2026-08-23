@@ -12,8 +12,16 @@
  *     structural guarantee rather than a hope.
  *  2. **Compiled and bounded at save time**, so an unsafe pattern is rejected
  *     when a human is present to see the error, not at 3am against real traffic.
- *  3. **A hard timeout at execution**, because JavaScript's engine is not RE2
- *     and (1) is enforced by inspection rather than by the runtime.
+ *  3. **A bounded subject and a time budget at execution**, because
+ *     JavaScript's engine is not RE2 and (1) is enforced by inspection rather
+ *     than by the runtime.
+ *
+ * **Known limit.** Static analysis of a regex cannot be complete, and JavaScript
+ * cannot pre-empt a running match, so the budget below *detects* a slow match
+ * rather than preventing it — one pathological pattern can still occupy the
+ * event loop once. Truncating the subject bounds how badly. Terminating a match
+ * properly needs it to run in a worker that can be killed, which is real work
+ * and is tracked in docs/08 under stage 2 rather than half-done here.
  */
 import { ValidationError } from "../stores/errors";
 
@@ -22,6 +30,16 @@ export const MAX_PATTERN_LENGTH = 512;
 
 /** How long a single match may take before the rule is abandoned. */
 export const MATCH_TIMEOUT_MS = 50;
+
+/**
+ * Longest subject a pattern is run against.
+ *
+ * Backtracking blowup grows with input length, so bounding the input bounds
+ * the worst case even for a pattern the checks above did not catch. A message
+ * body longer than this is truncated for matching only — the message itself is
+ * untouched.
+ */
+export const MAX_SUBJECT_LENGTH = 4096;
 
 /**
  * Constructs RE2 does not support, which are also the ones that backtrack.
@@ -77,9 +95,21 @@ function hasNestedQuantifier(source: string): boolean {
     if (open === undefined) continue; // unbalanced; the compile below rejects it
 
     if (!isQuantifier(source, i + 1)) continue;
-    // The group is quantified. If its body also quantifies anything, the pair
-    // can backtrack catastrophically.
-    if (containsQuantifier(source.slice(open + 1, i))) return true;
+
+    const body = source.slice(open + 1, i);
+    // The group is quantified. Two shapes inside it can backtrack
+    // catastrophically:
+    //
+    //  - another quantifier: (a+)+
+    //  - an alternation whose branches can match the same text: (a|aa)+
+    //
+    // Deciding whether branches genuinely overlap needs real analysis, so any
+    // quantified alternation is refused. Conservative, and an author who wants
+    // `(foo|bar)+` can write `(?:foo|bar)` inside a character class or repeat
+    // the group differently. Refusing a safe pattern costs an error message;
+    // accepting an unsafe one costs the node.
+    if (containsQuantifier(body)) return true;
+    if (containsAlternation(body)) return true;
   }
 
   return false;
@@ -91,6 +121,29 @@ function isQuantifier(source: string, index: number): boolean {
   if (char === "+" || char === "*") return true;
   if (char !== "{") return false;
   return /^\{\d+(?:,\d*)?\}/.test(source.slice(index));
+}
+
+/** Whether a group body contains a top-level alternation. */
+function containsAlternation(body: string): boolean {
+  let depth = 0;
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i];
+    if (char === "\\") {
+      i++;
+      continue;
+    }
+    if (char === "[") {
+      while (i < body.length && body[i] !== "]") {
+        if (body[i] === "\\") i++;
+        i++;
+      }
+      continue;
+    }
+    if (char === "(") depth++;
+    else if (char === ")") depth--;
+    else if (char === "|" && depth === 0) return true;
+  }
+  return false;
 }
 
 /** Whether a group body quantifies anything, ignoring escapes and classes. */
@@ -169,7 +222,10 @@ export interface MatchResult {
  */
 export function runMatch(compiled: CompiledPattern, value: string, timeoutMs = MATCH_TIMEOUT_MS): MatchResult {
   const began = performance.now();
-  const result = compiled.regex.exec(value);
+  // Truncated, not rejected: a long message should not silently stop matching,
+  // and no realistic rule needs to look past the first few kilobytes.
+  const subject = value.length > MAX_SUBJECT_LENGTH ? value.slice(0, MAX_SUBJECT_LENGTH) : value;
+  const result = compiled.regex.exec(subject);
   const elapsed = performance.now() - began;
 
   if (elapsed > timeoutMs) {

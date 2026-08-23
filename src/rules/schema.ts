@@ -73,13 +73,15 @@ export function prepareRule(definition: RuleDefinition): PreparedRule {
   const groups = [definition.match.all, definition.match.any, definition.match.none].filter(
     (g): g is Condition[] => g !== undefined,
   );
-  if (groups.length === 0) {
-    // A rule with no conditions matches every message, which is never what
-    // anyone means and is an expensive way to find out.
+  const total = groups.reduce((n, g) => n + g.length, 0);
+  if (total === 0) {
+    // Counted, not grouped. `{ match: { all: [] } }` produced one group with
+    // no conditions, so a group-count check passed — and `[].every(...)` is
+    // true, so the rule then matched every event and fired its actions. The
+    // exact outcome this check exists to prevent, reached through the check.
     throw new ValidationError("a rule must have at least one condition", "match");
   }
 
-  const total = groups.reduce((n, g) => n + g.length, 0);
   if (total > MAX_CONDITIONS) {
     throw new ValidationError(`a rule may have at most ${MAX_CONDITIONS} conditions`, "match");
   }

@@ -154,6 +154,15 @@ polish, scale, or optionality.
 - Rate limiting at the edge
 - Runbooks: device stuck, pool wedged, DLQ growing, consent dispute
 - Security review: tenant isolation, regex DoS, SSRF on webhook URLs, key handling
+- **Run tenant regex matching in a terminable worker.** Static analysis of a
+  regex cannot be complete, and JavaScript cannot pre-empt a running match, so
+  stage 1's budget *detects* a slow pattern rather than preventing it — one
+  pathological regex can still occupy the event loop once. What is in place:
+  RE2-only syntax, refusal of nested quantifiers and quantified alternations, a
+  bounded subject, and a rule disabled after it exceeds its budget. What is
+  missing is the ability to kill a match in progress, which needs it to run
+  somewhere killable.
+
 - **Close the DNS rebinding window.** Stage 1 validates the resolved address
   immediately before each request and refuses if any answer is blocked, but
   Bun's fetch cannot bind a connection to a validated IP while preserving Host

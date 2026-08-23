@@ -8,7 +8,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import { compilePattern, runMatch, MAX_PATTERN_LENGTH } from "../pattern";
+import { compilePattern, runMatch, MAX_PATTERN_LENGTH, MAX_SUBJECT_LENGTH } from "../pattern";
 import { prepareRule, type RuleDefinition } from "../schema";
 import { evaluate, MAX_CHAIN_DEPTH } from "../evaluate";
 import { ValidationError } from "../../stores/errors";
@@ -190,5 +190,40 @@ describe("case handling", () => {
       baseRule({ name: "wrong", match: { all: [{ field: "data.text", op: "matches", value: "^pay" }] } }),
     );
     expect(evaluate({ event: event(), rules: [wrongCase] }).matched).toHaveLength(0);
+  });
+});
+
+describe("findings the group-count check missed", () => {
+  test("an empty condition array is not a rule with conditions", () => {
+    // `{ match: { all: [] } }` produced one group with no conditions, so a
+    // group-count check passed — and [].every(...) is true, so the rule then
+    // matched every event and fired. The check reached the outcome it existed
+    // to prevent.
+    for (const match of [{ all: [] }, { any: [] }, { none: [] }, { all: [], any: [] }]) {
+      expect(() => prepareRule(baseRule({ match }))).toThrow(/at least one condition/);
+    }
+  });
+
+  test("a quantified alternation is refused", () => {
+    // (a|aa)+ is the classic overlapping-branch blowup and compiles fine.
+    // Deciding whether branches genuinely overlap needs real analysis, so any
+    // quantified alternation is refused — conservative on purpose.
+    for (const source of ["(a|aa)+$", "(x|xy)*", "(foo|foobar){2,}"]) {
+      expect(() => compilePattern(source)).toThrow(/exponential|nests/);
+    }
+  });
+
+  test("an unquantified alternation is still fine", () => {
+    // The refusal must be specific, or every ordinary pattern breaks.
+    expect(() => compilePattern("^(foo|bar)$")).not.toThrow();
+    expect(() => compilePattern("(?:PAY|SEND) [A-Z]+")).not.toThrow();
+  });
+
+  test("the subject is bounded, so a long message cannot amplify a match", () => {
+    const compiled = compilePattern("x+$");
+    // Truncated rather than rejected: a long message should not silently stop
+    // matching, and no realistic rule looks past a few kilobytes.
+    const result = runMatch(compiled, "y".repeat(MAX_SUBJECT_LENGTH + 500) + "x");
+    expect(result.timedOut).toBe(false);
   });
 });
