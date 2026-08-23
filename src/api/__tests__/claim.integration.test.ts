@@ -98,7 +98,9 @@ describe("POST /v1/devices/claim", () => {
   test("a different project is told the phone holder was asked", async () => {
     await claim(grandeProdKey, "otp-sender");
     const res = await claim(rivalKey, "theirs");
-    expect(res.status).toBe(201);
+    // 202, not 201: the device already exists and nothing happens until a
+    // human replies, which docs/06 distinguishes deliberately.
+    expect(res.status).toBe(202);
     const body = (await res.json()) as { outcome: string; message?: string };
     expect(body.outcome).toBe("awaiting_confirmation");
     expect(body.message).toContain("confirm");
