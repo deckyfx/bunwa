@@ -184,8 +184,7 @@ function splitTopLevel(body: string): string[] {
       continue;
     }
     if (char === "[") {
-      const close = body.indexOf("]", i);
-      const end = close === -1 ? body.length : close + 1;
+      const end = endOfCharacterClass(body, i);
       current += body.slice(i, end);
       i = end - 1;
       continue;
@@ -228,8 +227,7 @@ function nestedGroupBodies(source: string): string[] {
       continue;
     }
     if (char === "[") {
-      const close = source.indexOf("]", i);
-      i = close === -1 ? source.length : close;
+      i = endOfCharacterClass(source, i) - 1;
       continue;
     }
     if (char !== "(") continue;
@@ -244,8 +242,7 @@ function nestedGroupBodies(source: string): string[] {
         continue;
       }
       if (c === "[") {
-        const close = source.indexOf("]", j);
-        j = close === -1 ? source.length : close;
+        j = endOfCharacterClass(source, j) - 1;
         continue;
       }
       if (c === "(") depth++;
@@ -323,6 +320,35 @@ function containsQuantifier(body: string): boolean {
 /** Remove a leading group prefix so the body can be analysed on its own. */
 function stripGroupPrefix(body: string): string {
   return body.replace(GROUP_PREFIX, "");
+}
+
+/**
+ * Index just past the character class starting at `open`.
+ *
+ * `indexOf("]")` closes at an *escaped* bracket, so `[\]]` — a class holding a
+ * literal `]` — ended early and everything after it was reparsed as pattern
+ * structure. That rejected `([\](a|aa)])+`, where the alternation is inside the
+ * class and matches literal characters, not branches.
+ *
+ * Two scanners here handled escapes correctly and two, added later, did not.
+ * One helper so they cannot disagree again.
+ */
+function endOfCharacterClass(source: string, open: number): number {
+  // No special case for a leading `]`. In non-Unicode regex `[]]` is a class
+  // containing a bracket, but patterns here compile with the `u` flag, where
+  // `[]` is an empty class and the trailing `]` is unmatched — so such a
+  // pattern is invalid and the compile step rejects it. Skipping it here would
+  // be a rule for a dialect this project does not use.
+  let i = open + 1;
+  if (source[i] === "^") i++;
+  for (; i < source.length; i++) {
+    if (source[i] === "\\") {
+      i++;
+      continue;
+    }
+    if (source[i] === "]") return i + 1;
+  }
+  return source.length;
 }
 
 /** `?:`, `?=`, `?!`, `?<=`, `?<!`, `?<name>` — group syntax, not repetition. */

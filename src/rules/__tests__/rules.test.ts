@@ -303,3 +303,32 @@ describe("nesting must not hide an overlapping alternation", () => {
     expect(() => compilePattern("(?:(GET|POST))+")).not.toThrow();
   });
 });
+
+describe("character classes are not pattern structure", () => {
+  test("an escaped bracket does not end the class early", () => {
+    // indexOf("]") closed at the escaped bracket, so everything after it was
+    // reparsed as structure — and the alternation inside the class, which
+    // matches literal characters rather than branches, looked like a hazard.
+    expect(() => compilePattern(String.raw`([\](a|aa)])+`)).not.toThrow();
+    expect(() => compilePattern(String.raw`([\]x])+`)).not.toThrow();
+    expect(() => compilePattern(String.raw`[\]]+`)).not.toThrow();
+  });
+
+  test("a negated class with an escaped bracket is fine", () => {
+    expect(() => compilePattern(String.raw`([^\]]+)x`)).not.toThrow();
+  });
+
+  test("an empty class is refused, because these compile with the u flag", () => {
+    // `[]]` is a bracket-containing class in legacy regex and an empty class
+    // followed by a stray `]` under `u`. We use `u`, so it is invalid — worth
+    // pinning, since the scanner used to special-case the legacy reading.
+    expect(() => compilePattern("[]]+")).toThrow(/not valid/);
+  });
+
+  test("and the real hazards are still caught", () => {
+    // The scanner must not have been loosened into uselessness.
+    for (const source of ["(a|aa)+", "((a|aa))+$", "(a+)+", "(a?)+"]) {
+      expect(() => compilePattern(source)).toThrow(/exponential|nests/);
+    }
+  });
+});
