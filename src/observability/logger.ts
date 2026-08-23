@@ -50,9 +50,11 @@ export function scrubValue(value: string): string {
   return value
     // scheme://user:password@host
     .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, "$1***:***@")
-    // Authorization: Bearer <token>, and bare "token=..." style pairs
-    .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 ***")
-    .replace(/\b(api[-_]?key|token|secret|password)\s*[=:]\s*("?)[^\s"&,;]{4,}\2/gi, "$1=***");
+    // Authorization: Bearer <token>, and bare "token=..." style pairs.
+    // No minimum length: a four-character token is still a credential, and the
+    // threshold was only ever a guess at what looked token-shaped.
+    .replace(/\b(bearer|basic)\s+\S+/gi, "$1 ***")
+    .replace(/\b(api[-_]?key|token|secret|password|passwd)\s*[=:]\s*("?)[^\s"&,;]+\2/gi, "$1=***");
 }
 
 /** Lowercase and strip separators, so client_secret and clientSecret agree. */
@@ -100,6 +102,25 @@ function describeError(err: unknown): LogValue {
   return scrubValue(String(err));
 }
 
+/**
+ * Fields the logger owns. A caller can never set them, from context or from a
+ * call site.
+ *
+ * Declared as a list rather than handled case by case, because handling them
+ * case by case is how this went wrong twice: `level`, `time` and `message`
+ * were protected after a review, and `correlationId` was not, so it remained
+ * overwritable by the very next call. Anything added here is protected
+ * everywhere, and the test that asserts so is driven from this list.
+ */
+export const CANONICAL_FIELDS = ["level", "time", "message", "correlationId"] as const;
+
+/** Drop any key the logger owns, so caller data cannot shadow it. */
+function withoutCanonical(fields: Record<string, LogValue>): Record<string, LogValue> {
+  return Object.fromEntries(
+    Object.entries(fields).filter(([k]) => !(CANONICAL_FIELDS as readonly string[]).includes(k)),
+  );
+}
+
 /** Emit one line, if it clears the configured severity floor. */
 function emit(level: LogLevel, message: string, fields: Record<string, LogValue> = {}): void {
   const cfg = config();
@@ -110,15 +131,15 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
   // the log verbatim while a directly-logged one was masked.
   const context = storage.getStore();
   const line: Record<string, LogValue> = {
-    // Caller data first, canonical fields last. Spread the other way round and
-    // a field named `level` or `message` silently overwrites the real one —
-    // log forgery by a caller who need not even be malicious, just unlucky
-    // with a field name.
-    ...(redact(context ?? {}) as Record<string, LogValue>),
-    ...(redact(fields) as Record<string, LogValue>),
+    // Caller data first and stripped of canonical keys; the logger's own values
+    // last. Both guards are deliberate: the strip stops a caller shadowing a
+    // field, and the ordering stops it even if the strip is ever weakened.
+    ...withoutCanonical(redact(context ?? {}) as Record<string, LogValue>),
+    ...withoutCanonical(redact(fields) as Record<string, LogValue>),
     level,
     time: new Date().toISOString(),
     message,
+    ...(context === undefined ? {} : { correlationId: context.correlationId }),
   };
 
   const out = level === "error" || level === "warn" ? console.error : console.log;

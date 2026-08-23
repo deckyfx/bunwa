@@ -9,6 +9,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 
 import {
   log, withContext, currentCorrelationId, sanitiseCorrelationId, isSensitiveKey, scrubValue,
+  CANONICAL_FIELDS,
   type LogValue,
 } from "../logger";
 import { resetConfig } from "../../config/env";
@@ -119,6 +120,14 @@ describe("value-level redaction", () => {
     expect(line).not.toContain("abcdef0123456789");
   });
 
+  test("masks short credentials, which are still credentials", () => {
+    // The previous version required 8 characters for a bearer token and 4 for a
+    // key=value pair — thresholds that were guesses at what looks token-shaped.
+    expect(scrubValue("Bearer abc")).toBe("Bearer ***");
+    expect(scrubValue("token=xy")).toBe("token=***");
+    expect(scrubValue("api_key: q")).toBe("api_key=***");
+  });
+
   test("leaves ordinary strings untouched", () => {
     expect(scrubValue("https://example.com/webhooks/inbound")).toBe("https://example.com/webhooks/inbound");
   });
@@ -155,15 +164,41 @@ describe("sanitiseCorrelationId", () => {
 });
 
 describe("caller data cannot forge a line", () => {
-  test("a field named level or message does not overwrite the real one", () => {
-    // Spread the other way round and a caller silently rewrites the record of
-    // what happened — forgery by an unlucky field name, not necessarily malice.
+  // Driven from CANONICAL_FIELDS rather than listing cases: protecting them one
+  // at a time is how correlationId stayed overwritable after level, time and
+  // message were fixed. A new canonical field is covered the moment it is added.
+  for (const field of CANONICAL_FIELDS) {
+    test(`a caller field named ${field} cannot overwrite the real one`, () => {
+      const [line] = capture(() =>
+        withContext({ correlationId: "real-id" }, () =>
+          log.warn("the real message", { [field]: "FORGED" } as never),
+        ),
+      );
+      expect(line).not.toContain("FORGED");
+    });
+
+    // correlationId is excluded here deliberately: the context is precisely
+    // where it is meant to be set, and withContext validates it on the way in.
+    // The other canonical fields have no legitimate source in a context.
+    if (field !== "correlationId") {
+      test(`a context field named ${field} cannot overwrite the real one either`, () => {
+        const [line] = capture(() =>
+          withContext({ correlationId: "real-id", [field]: "FORGED" } as never, () => log.warn("real")),
+        );
+        expect(line).not.toContain("FORGED");
+      });
+    }
+  }
+
+  test("the surviving values are the logger's own", () => {
     const [line] = capture(() =>
-      log.warn("the real message", { level: "debug", message: "the fake one", time: "1970" } as never),
+      withContext({ correlationId: "real-id" }, () =>
+        log.warn("real message", { level: "debug", correlationId: "other" } as never),
+      ),
     );
     expect(line).toContain('"level":"warn"');
-    expect(line).toContain('"message":"the real message"');
-    expect(line).not.toContain('"time":"1970"');
+    expect(line).toContain('"message":"real message"');
+    expect(line).toContain('"correlationId":"real-id"');
   });
 });
 
