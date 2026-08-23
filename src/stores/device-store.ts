@@ -7,7 +7,7 @@
  * Those two sentences are the whole design, and `claim()` below is where they
  * are enforced.
  */
-import { and, count as drizzleCount, eq } from "drizzle-orm";
+import { and, count as drizzleCount, eq, or } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import {
@@ -512,6 +512,29 @@ export class DeviceStore {
    * phone must not be able to correlate their traffic through a shared
    * identifier.
    */
+  /**
+   * One binding in this environment, by id or alias.
+   *
+   * Environment-scoped and matched on either identifier, because a project
+   * addresses its devices by the alias it chose — the id is bunwa's, the alias
+   * is theirs, and both must resolve to the same row without ever crossing a
+   * tenant boundary.
+   */
+  static async findBinding(environmentId: string, ref: string, database: Database = db()) {
+    const [found] = await database
+      .select({ virtualDevice: virtualDevices, device: devices })
+      .from(virtualDevices)
+      .innerJoin(devices, eq(virtualDevices.deviceId, devices.id))
+      .where(
+        and(
+          eq(virtualDevices.environmentId, environmentId),
+          or(eq(virtualDevices.id, ref), eq(virtualDevices.alias, ref)),
+        ),
+      )
+      .limit(1);
+    return found ?? null;
+  }
+
   static async listForEnvironment(environmentId: string, database: Database = db()) {
     return database
       .select({

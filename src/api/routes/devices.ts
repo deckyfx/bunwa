@@ -9,8 +9,9 @@ import { Elysia, t } from "elysia";
 
 import { requireApiKey, requireScope } from "../../auth/middleware";
 import { DeviceStore } from "../../stores/device-store";
+import { problem } from "../server";
 import type { EngineRegistry } from "../../engine/registry";
-import { log } from "../../observability/logger";
+import { currentCorrelationId, log } from "../../observability/logger";
 import { UnavailableError } from "../../stores/errors";
 
 /**
@@ -58,7 +59,11 @@ export function deviceRoutes(registry: EngineRegistry) {
           return { outcome: result.outcome, ...base };
         }
 
-        set.status = 201;
+        // 201 for a device being created here, 202 for one that exists and is
+        // waiting on a human. docs/06 documents both, and a single 201 for the
+        // pair told an integrator that a resource was created when in fact
+        // nothing will happen until a phone holder replies.
+        set.status = result.outcome === "awaiting_confirmation" ? 202 : 201;
 
         if (result.outcome === "pending_pairing") {
           // Pairing starts here, not in the store: the store owns consent, the
@@ -119,5 +124,31 @@ export function deviceRoutes(registry: EngineRegistry) {
     )
 
     /** This environment's virtual devices. */
-    .get("/devices", async ({ auth }) => DeviceStore.listForEnvironment(auth.environmentId));
+    .get("/devices", async ({ auth }) => DeviceStore.listForEnvironment(auth.environmentId))
+
+    /**
+     * One binding, by id or alias.
+     *
+     * Documented in docs/06 and reached by every integrator polling a claim to
+     * see whether the customer has replied yet — without it the claim flow has
+     * no completion signal short of waiting for a webhook.
+     */
+    .get("/devices/:ref", async ({ auth, params, set, path }) => {
+      const binding = await DeviceStore.findBinding(auth.environmentId, params.ref);
+      if (binding === null) {
+        set.status = 404;
+        // Indistinguishable from "exists but is not yours", deliberately:
+        // telling the two apart leaks the existence of other tenants' devices.
+        return problem(404, "not-found", "Device not found", undefined, path, currentCorrelationId());
+      }
+      return {
+        virtualDeviceId: binding.virtualDevice.id,
+        alias: binding.virtualDevice.alias,
+        status: binding.virtualDevice.status,
+        scopes: binding.virtualDevice.scopes,
+        msisdn: binding.device.msisdn,
+        deviceState: binding.device.state,
+        lastSeenAt: binding.device.lastSeenAt,
+      };
+    });
 }
