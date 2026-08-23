@@ -86,12 +86,16 @@ export class EnvironmentStore {
    * and a check that looked only at the environment row would let a suspended
    * tenant keep sending.
    */
-  static async isServable(id: string, database: Database = db()): Promise<boolean> {
+  static async isServable(projectId: string, id: string, database: Database = db()): Promise<boolean> {
     const [row] = await database
       .select({ envStatus: environments.status, projectStatus: projects.status })
       .from(environments)
       .innerJoin(projects, eq(environments.projectId, projects.id))
-      .where(eq(environments.id, id))
+      // Scoped, though today's only caller passes an id derived from the
+      // authenticated key. This decides whether a tenant may send; a predicate
+      // that depends on every future caller resolving the id correctly is one
+      // mistake away from letting a suspended project keep working.
+      .where(and(eq(environments.id, id), eq(environments.projectId, projectId)))
       .limit(1);
     return row !== undefined && row.envStatus === "active" && row.projectStatus === "active";
   }

@@ -126,6 +126,7 @@ export class MessageStore {
    * send during the 203-second blind window returns success, the OTP never
    * arrives, and nothing anywhere reports a problem.
    */
+  /** @crossTenant The ack sweep runs across all environments on a timer. */
   static async findUnacked(
     olderThanMs = ACK_TIMEOUT_MS,
     now: Date = new Date(),

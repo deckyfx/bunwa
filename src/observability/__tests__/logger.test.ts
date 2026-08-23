@@ -232,3 +232,18 @@ describe("levels", () => {
     expect(line).toContain('"message":"inner"');
   });
 });
+
+describe("a looping cause chain", () => {
+  test("is cut rather than exhausting the stack", () => {
+    // A retry wrapper that re-wraps the error it caught can produce a cycle.
+    // Recursing until the stack gives out would take the process down from a
+    // log line, which is an absurd way to lose a service.
+    const inner: Error & { cause?: unknown } = new Error("inner");
+    const outer = new Error("outer", { cause: inner });
+    inner.cause = outer;
+
+    const [line] = capture(() => log.error("cyclic", outer));
+    expect(line).toContain("max cause depth");
+    expect(line).toContain("outer");
+  });
+});

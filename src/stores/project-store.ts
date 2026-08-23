@@ -53,16 +53,19 @@ export class ProjectStore {
     return created;
   }
 
+  /** @crossTenant Projects are the tenant root; there is no scope above them. */
   static async findById(id: string, database: Database = db()): Promise<Project | null> {
     const [found] = await database.select().from(projects).where(eq(projects.id, id)).limit(1);
     return found ?? null;
   }
 
+  /** @crossTenant Projects are the tenant root; there is no scope above them. */
   static async findBySlug(slug: string, database: Database = db()): Promise<Project | null> {
     const [found] = await database.select().from(projects).where(eq(projects.slug, slug)).limit(1);
     return found ?? null;
   }
 
+  /** @crossTenant Operator view of every tenant. */
   static async list(database: Database = db()): Promise<Project[]> {
     return database.select().from(projects);
   }

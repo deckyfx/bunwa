@@ -87,8 +87,22 @@ function redact(value: LogValue, depth = 0): LogValue {
   return value;
 }
 
+/**
+ * How deep a cause chain is followed before it is cut.
+ *
+ * Lower than redact()'s cap on purpose. Both bounds stop a cyclic chain, but
+ * whichever fires first writes the marker — and "max cause depth" tells an
+ * operator the error wrapping looped, where redaction's generic marker does
+ * not. A chain deeper than three is already unusual.
+ */
+const MAX_CAUSE_DEPTH = 3;
+
 /** Serialise an error without losing its cause chain. */
-function describeError(err: unknown): LogValue {
+function describeError(err: unknown, depth = 0): LogValue {
+  // Capped like redact(). An error whose cause chain loops — which a retry
+  // wrapper can produce by re-wrapping the error it caught — would otherwise
+  // recurse until the stack gives out, taking the process down from a log line.
+  if (depth > MAX_CAUSE_DEPTH) return "<max cause depth>";
   if (err instanceof Error) {
     return {
       name: err.name,
@@ -96,7 +110,7 @@ function describeError(err: unknown): LogValue {
       // and the stack repeats it.
       message: scrubValue(err.message),
       ...(err.stack === undefined ? {} : { stack: scrubValue(err.stack) }),
-      ...(err.cause === undefined ? {} : { cause: describeError(err.cause) }),
+      ...(err.cause === undefined ? {} : { cause: describeError(err.cause, depth + 1) }),
     };
   }
   return scrubValue(String(err));

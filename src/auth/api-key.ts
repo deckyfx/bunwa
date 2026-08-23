@@ -88,6 +88,11 @@ export function prefixOf(presented: string): string | null {
   return `bw_${kind}_${slug}_${secret!.slice(0, PREFIX_SECRET_CHARS)}`;
 }
 
+export const DUMMY_KEY_HASH: Promise<string> = Bun.password.hash(
+  "bw_live_nonexistent_0000000000000000000000000000000000000000",
+  { algorithm: "argon2id" },
+);
+
 /**
  * Verify a presented key against a stored hash.
  *
@@ -105,11 +110,6 @@ export function prefixOf(presented: string): string | null {
  *
  * Computed once at module load rather than per request.
  */
-export const DUMMY_KEY_HASH: Promise<string> = Bun.password.hash(
-  "bw_live_nonexistent_0000000000000000000000000000000000000000",
-  { algorithm: "argon2id" },
-);
-
 export async function verifyApiKey(presented: string, hash: string): Promise<boolean> {
   try {
     return await Bun.password.verify(presented, hash);

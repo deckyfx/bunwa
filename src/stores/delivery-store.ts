@@ -75,6 +75,7 @@ export class DeliveryStore {
    * Ordered oldest-first so a backlog drains in the order it arrived rather
    * than starving its head.
    */
+  /** @crossTenant The delivery worker serves every tenant's queue by design. */
   static async claimDue(limit: number, now: Date = new Date(), database: Database = db()): Promise<DueDelivery[]> {
     const rows = await database
       .select({

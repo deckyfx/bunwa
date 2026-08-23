@@ -98,10 +98,17 @@ describe("EnvironmentStore isolation", () => {
 
   test("a suspended project stops its environments serving", async () => {
     const { a, envA } = await twoTenants();
-    expect(await EnvironmentStore.isServable(envA.id, database)).toBe(true);
+    expect(await EnvironmentStore.isServable(a.id, envA.id, database)).toBe(true);
     await ProjectStore.setStatus(a.id, "suspended", database);
     // Checking only the environment row would let a suspended tenant keep sending.
-    expect(await EnvironmentStore.isServable(envA.id, database)).toBe(false);
+    expect(await EnvironmentStore.isServable(a.id, envA.id, database)).toBe(false);
+  });
+
+  test("an environment is not servable under another project's id", async () => {
+    // The scope is on the statement, so a mismatched pair resolves to nothing
+    // rather than to whichever row the id alone happened to find.
+    const { b, envA } = await twoTenants();
+    expect(await EnvironmentStore.isServable(b.id, envA.id, database)).toBe(false);
   });
 });
 

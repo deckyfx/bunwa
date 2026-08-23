@@ -193,6 +193,7 @@ export class DeviceStore {
     return { outcome: "awaiting_confirmation", virtualDevice, device, consent: pending };
   }
 
+  /** @crossTenant Devices are system-owned and keyed by a global number. */
   static async findByMsisdn(msisdn: string, database: Database = db()): Promise<Device | null> {
     const [found] = await database.select().from(devices).where(eq(devices.msisdn, msisdn)).limit(1);
     return found ?? null;
@@ -578,6 +579,7 @@ export class DeviceStore {
    * that looks empty while it is full is exactly the failure bounded capacity
    * exists to prevent.
    */
+  /** @crossTenant Capacity is a property of a pool, not of a tenant. */
   static async countByPool(database: Database = db()): Promise<Map<string, number>> {
     const rows = await database
       .select({ poolId: devices.enginePoolId, count: drizzleCount() })
@@ -611,6 +613,7 @@ export class DeviceStore {
   }
 
   /** Which pool holds a device, or null if it has not been provisioned yet. */
+  /** @crossTenant Resolves which engine holds a device, before any tenant is known. */
   static async poolIdFor(deviceId: string, database: Database = db()): Promise<string | null> {
     const [row] = await database
       .select({ poolId: devices.enginePoolId })

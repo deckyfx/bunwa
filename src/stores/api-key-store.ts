@@ -78,6 +78,7 @@ export class ApiKeyStore {
    * belonging to a suspended tenant — so a caller cannot accidentally
    * distinguish them and turn this into an enumeration oracle.
    */
+  /** @crossTenant Authentication itself: the credential is what establishes scope. */
   static async resolve(presented: string, database: Database = db()): Promise<ResolvedKey | null> {
     const prefix = prefixOf(presented);
     // Reject shape before touching the database: an unparseable credential must
