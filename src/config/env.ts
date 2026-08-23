@@ -129,10 +129,23 @@ export class Config {
     this.runtimeDir = optional(source, "RUNTIME_DIR", ".runtime");
   }
 
+  /**
+   * Whether to apply production policy.
+   *
+   * Read where behaviour must be conservative rather than convenient: JSON log
+   * output, and refusing to auto-apply a schema change. Prefer this to
+   * comparing `nodeEnv` at the call site, so the policy lives in one place.
+   */
   get isProduction(): boolean {
     return this.nodeEnv === "production";
   }
 
+  /**
+   * Whether this process is running a test suite.
+   *
+   * For behaviour that must not fire under test — background timers, outbound
+   * calls — rather than for changing what the code under test does.
+   */
   get isTest(): boolean {
     return this.nodeEnv === "test";
   }

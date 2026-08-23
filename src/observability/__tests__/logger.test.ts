@@ -7,7 +7,10 @@
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 
-import { log, withContext, currentCorrelationId, sanitiseCorrelationId, isSensitiveKey } from "../logger";
+import {
+  log, withContext, currentCorrelationId, sanitiseCorrelationId, isSensitiveKey, scrubValue,
+  type LogValue,
+} from "../logger";
 import { resetConfig } from "../../config/env";
 
 /** Capture stdout/stderr for the duration of one call. */
@@ -89,10 +92,35 @@ describe("redaction", () => {
   });
 
   test("does not recurse without bound", () => {
-    const deep: Record<string, unknown> = {};
+    const deep: Record<string, LogValue> = {};
     let cursor = deep;
-    for (let i = 0; i < 20; i++) cursor = (cursor["next"] = {}) as Record<string, unknown>;
-    expect(() => capture(() => log.info("deep", deep as never))).not.toThrow();
+    for (let i = 0; i < 20; i++) cursor = (cursor["next"] = {}) as Record<string, LogValue>;
+    expect(() => capture(() => log.info("deep", deep))).not.toThrow();
+  });
+});
+
+describe("value-level redaction", () => {
+  test("masks credentials embedded in a url value", () => {
+    // Key-based redaction cannot see this: an innocuous field name, a password
+    // in the value.
+    const [line] = capture(() => log.info("x", { url: "postgres://alice:hunter2@db/x" }));
+    expect(line).not.toContain("hunter2");
+    expect(line).toContain("***:***@db/x");
+  });
+
+  test("masks credentials quoted inside an error message and stack", () => {
+    // Driver errors routinely echo the connection string they failed on.
+    const [line] = capture(() => log.error("y", new Error("connect failed for postgres://bob:s3cret@db/x")));
+    expect(line).not.toContain("s3cret");
+  });
+
+  test("masks bearer tokens and key=value pairs", () => {
+    const [line] = capture(() => log.info("z", { header: "Authorization: Bearer abcdef0123456789" }));
+    expect(line).not.toContain("abcdef0123456789");
+  });
+
+  test("leaves ordinary strings untouched", () => {
+    expect(scrubValue("https://example.com/webhooks/inbound")).toBe("https://example.com/webhooks/inbound");
   });
 });
 
@@ -123,6 +151,34 @@ describe("sanitiseCorrelationId", () => {
     // A newline in an echoed header lets a caller forge log lines.
     expect(sanitiseCorrelationId('a"\n{"level":"error"')).toBeUndefined();
     expect(sanitiseCorrelationId("a b")).toBeUndefined();
+  });
+});
+
+describe("caller data cannot forge a line", () => {
+  test("a field named level or message does not overwrite the real one", () => {
+    // Spread the other way round and a caller silently rewrites the record of
+    // what happened — forgery by an unlucky field name, not necessarily malice.
+    const [line] = capture(() =>
+      log.warn("the real message", { level: "debug", message: "the fake one", time: "1970" } as never),
+    );
+    expect(line).toContain('"level":"warn"');
+    expect(line).toContain('"message":"the real message"');
+    expect(line).not.toContain('"time":"1970"');
+  });
+});
+
+describe("withContext validation", () => {
+  test("rejects an id that would inject into the log", () => {
+    expect(() => withContext({ correlationId: 'a"\n{"level":"error"' }, () => 0)).toThrow(/correlation id/);
+  });
+
+  test("rejects an empty or oversized id", () => {
+    expect(() => withContext({ correlationId: "" }, () => 0)).toThrow(/correlation id/);
+    expect(() => withContext({ correlationId: "x".repeat(129) }, () => 0)).toThrow(/correlation id/);
+  });
+
+  test("accepts a valid id and normalises surrounding whitespace", () => {
+    expect(withContext({ correlationId: " abc-123 " }, () => currentCorrelationId())).toBe("abc-123");
   });
 });
 

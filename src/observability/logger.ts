@@ -39,6 +39,22 @@ const SENSITIVE_FRAGMENTS = [
   "sessionid", "signingkey",
 ];
 
+/**
+ * Strip credentials embedded in a string value.
+ *
+ * Key-based redaction cannot see these: `{ url: "postgres://u:pw@host/db" }`
+ * has an innocuous field name and a password in the value, and driver errors
+ * routinely quote the whole connection string in their message and stack.
+ */
+export function scrubValue(value: string): string {
+  return value
+    // scheme://user:password@host
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)([^/\s:@]+):([^/\s@]+)@/gi, "$1***:***@")
+    // Authorization: Bearer <token>, and bare "token=..." style pairs
+    .replace(/\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 ***")
+    .replace(/\b(api[-_]?key|token|secret|password)\s*[=:]\s*("?)[^\s"&,;]{4,}\2/gi, "$1=***");
+}
+
 /** Lowercase and strip separators, so client_secret and clientSecret agree. */
 function normaliseKey(key: string): string {
   return key.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -59,6 +75,7 @@ export function isSensitiveKey(key: string): boolean {
  */
 function redact(value: LogValue, depth = 0): LogValue {
   if (depth > 6) return "<max depth>";
+  if (typeof value === "string") return scrubValue(value);
   if (Array.isArray(value)) return value.map((v) => redact(v, depth + 1));
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(
@@ -73,12 +90,14 @@ function describeError(err: unknown): LogValue {
   if (err instanceof Error) {
     return {
       name: err.name,
-      message: err.message,
-      ...(err.stack === undefined ? {} : { stack: err.stack }),
+      // Scrubbed: a driver error quotes the connection string it failed on,
+      // and the stack repeats it.
+      message: scrubValue(err.message),
+      ...(err.stack === undefined ? {} : { stack: scrubValue(err.stack) }),
       ...(err.cause === undefined ? {} : { cause: describeError(err.cause) }),
     };
   }
-  return String(err);
+  return scrubValue(String(err));
 }
 
 /** Emit one line, if it clears the configured severity floor. */
@@ -91,11 +110,15 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
   // the log verbatim while a directly-logged one was masked.
   const context = storage.getStore();
   const line: Record<string, LogValue> = {
+    // Caller data first, canonical fields last. Spread the other way round and
+    // a field named `level` or `message` silently overwrites the real one —
+    // log forgery by a caller who need not even be malicious, just unlucky
+    // with a field name.
+    ...(redact(context ?? {}) as Record<string, LogValue>),
+    ...(redact(fields) as Record<string, LogValue>),
     level,
     time: new Date().toISOString(),
     message,
-    ...(redact(context ?? {}) as Record<string, LogValue>),
-    ...(redact(fields) as Record<string, LogValue>),
   };
 
   const out = level === "error" || level === "warn" ? console.error : console.log;
@@ -138,6 +161,19 @@ export const log = {
 };
 
 /**
+ * Accept a caller-supplied correlation id only if it is plausibly one.
+ *
+ * The value is echoed into logs and into error bodies, so an unvalidated header
+ * is a log-injection and unbounded-memory vector.
+ */
+export function sanitiseCorrelationId(candidate: string | null | undefined): string | undefined {
+  if (candidate === undefined || candidate === null) return undefined;
+  const trimmed = candidate.trim();
+  if (trimmed.length === 0 || trimmed.length > 128) return undefined;
+  return /^[A-Za-z0-9._:-]+$/.test(trimmed) ? trimmed : undefined;
+}
+
+/**
  * Run `fn` with these fields attached to every line it emits.
  *
  * The mechanism that makes a correlation id useful: set once per request at the
@@ -145,7 +181,14 @@ export const log = {
  * layers down — carries it without being passed one.
  */
 export function withContext<T>(context: LogContext, fn: () => T): T {
-  return storage.run(context, fn);
+  // Validated here as well as at the HTTP edge, because this is exported: a
+  // caller can reach it directly, and the id is echoed into every log line and
+  // into error bodies. An unvalidated one is a log-injection vector.
+  const correlationId = sanitiseCorrelationId(context.correlationId);
+  if (correlationId === undefined) {
+    throw new Error("withContext requires a correlation id of 1-128 characters from [A-Za-z0-9._:-]");
+  }
+  return storage.run({ ...context, correlationId }, fn);
 }
 
 /**
@@ -158,15 +201,3 @@ export function currentCorrelationId(): string | undefined {
   return storage.getStore()?.correlationId;
 }
 
-/**
- * Accept a caller-supplied correlation id only if it is plausibly one.
- *
- * The value is echoed in logs and error bodies, so an unvalidated header is a
- * log-injection and unbounded-memory vector.
- */
-export function sanitiseCorrelationId(candidate: string | null | undefined): string | undefined {
-  if (candidate === undefined || candidate === null) return undefined;
-  const trimmed = candidate.trim();
-  if (trimmed.length === 0 || trimmed.length > 128) return undefined;
-  return /^[A-Za-z0-9._:-]+$/.test(trimmed) ? trimmed : undefined;
-}

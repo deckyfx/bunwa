@@ -25,7 +25,14 @@ export interface Problem {
   correlationId?: string;
 }
 
-/** Build a problem document. */
+/**
+ * Build a problem document.
+ *
+ * Centralised so every error leaves by the same shape: a stable `type` URI a
+ * client can branch on, and the correlation id that joins the caller's report
+ * to the logs. Handlers that construct their own bodies drift, and the drift is
+ * only discovered by whoever is integrating at the time.
+ */
 export function problem(status: number, type: string, title: string, detail?: string, instance?: string, correlationId?: string): Problem {
   return {
     type: `https://bunwa.dev/errors/${type}`,
@@ -133,8 +140,16 @@ export function createServer() {
       const began = performance.now();
       const url = new URL(request.url);
 
+      // The resolved id is written back onto the request before handing it to
+      // the app, so `derive()` adopts it instead of minting a second one.
+      // Without this the log carried one id and the response header another,
+      // which quietly voids the entire point of having a correlation id.
+      const headers = new Headers(request.headers);
+      headers.set("x-correlation-id", correlationId);
+      const identified = new Request(request, { headers });
+
       return withContext({ correlationId }, async () => {
-        const response = await app.handle(request);
+        const response = await app.handle(identified);
         // Probes are logged at debug so a one-second orchestrator interval does
         // not bury the traffic that matters.
         const level = url.pathname === "/health" || url.pathname === "/readyz" ? "debug" : "info";

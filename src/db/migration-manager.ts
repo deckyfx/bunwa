@@ -91,12 +91,24 @@ export class MigrationManager {
     return embeddedJournal.entries
       .slice()
       .sort((a, b) => a.when - b.when)
-      .map((e) => ({
-        tag: e.tag,
-        when: e.when,
-        // Drizzle hashes the raw file contents (migrator.js: readMigrationFiles).
-        hash: createHash("sha256").update(embeddedFiles[`${e.tag}.sql`] ?? "").digest("hex"),
-      }));
+      .map((e) => {
+        const contents = embeddedFiles[`${e.tag}.sql`];
+        if (contents === undefined) {
+          // Hashing "" instead would make this migration pending forever:
+          // materialise() writes no file, migrate() applies nothing, and
+          // inspect() keeps counting it — in strict mode, exit 75 on every
+          // start with nothing naming the real fault.
+          throw new MigrationError(
+            `journal names ${e.tag} but no SQL for it was compiled into this build; run \`bun run db:generate\` and rebuild`,
+          );
+        }
+        return {
+          tag: e.tag,
+          when: e.when,
+          // Drizzle hashes the raw file contents (migrator.js: readMigrationFiles).
+          hash: createHash("sha256").update(contents).digest("hex"),
+        };
+      });
   }
 
   /**

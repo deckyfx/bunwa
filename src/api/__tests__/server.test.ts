@@ -7,7 +7,7 @@
  */
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 
-import { createApp, problem } from "../server";
+import { createApp, problem, type Problem } from "../server";
 import { resetConfig } from "../../config/env";
 import { resetDatabase } from "../../db";
 
@@ -87,18 +87,18 @@ describe("errors", () => {
   test("unknown routes return an RFC 9457 problem document", async () => {
     const res = await get("/nope");
     expect(res.status).toBe(404);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body["type"]).toBe("https://bunwa.dev/errors/not-found");
-    expect(body["status"]).toBe(404);
-    expect(body["correlationId"]).toBeString();
+    const body = (await res.json()) as Problem;
+    expect(body.type).toBe("https://bunwa.dev/errors/not-found");
+    expect(body.status).toBe(404);
+    expect(body.correlationId).toBeString();
     // The 404 path bypasses `derive`, so this header is easy to lose.
-    expect(res.headers.get("x-correlation-id")).toBe(String(body["correlationId"]));
+    expect(res.headers.get("x-correlation-id")).toBe(body.correlationId ?? null);
   });
 
   test("a 404 echoes a caller-supplied correlation id", async () => {
     const res = await get("/nope", { "x-correlation-id": "trace-me" });
     expect(res.headers.get("x-correlation-id")).toBe("trace-me");
-    expect(((await res.json()) as Record<string, unknown>)["correlationId"]).toBe("trace-me");
+    expect(((await res.json()) as Problem).correlationId).toBe("trace-me");
   });
 });
 
