@@ -258,3 +258,23 @@ Ordered by value, not by novelty. Revisit after stage 3 with real usage data.
 Roughly **three months to the thing you actually need**, against roughly six
 before the original sequence reached the same point — and stage 4 becomes
 something you may rationally decide never to do.
+
+## Stage 1 completion note
+
+*Recorded 2026-08-23.*
+
+§1.1 through §1.6 are implemented, with one deliberate carve-out: **rule actions
+are planned but not executed.** The evaluator decides what a rule would do and
+the dry run reports it, but `reply` does not yet send.
+
+That is an ordering decision, not an omission. Executing a reply means sending
+a WhatsApp message on a rule match, which needs the per-binding rate limiting,
+the reply-rate cap and the rule-level circuit breaker described in
+[05](05-events-and-rules.md) — all of which belong with the hardening in stage
+2. Shipping the trigger without them would mean a single mis-written rule could
+message a customer in a loop bounded only by the depth cap.
+
+What exists and is tested: matching, RE2-only pattern safety with the three
+mitigations, loop protection by origin and by depth, per-binding rule storage
+scoped to the environment, and a dry run that cannot send because the evaluator
+it calls has no way to.

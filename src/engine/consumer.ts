@@ -14,6 +14,8 @@ import { and, eq } from "drizzle-orm";
 import { db, type Database } from "../db";
 import { devices, environments, projects, virtualDevices } from "../db/schema";
 import { DeliveryStore } from "../stores/delivery-store";
+import { RuleStore } from "../stores/rule-store";
+import { evaluate } from "../rules/evaluate";
 import { MessageStore } from "../stores/message-store";
 import { EVENT_SCHEMA_VERSION, type EventEnvelope, type EventType } from "../events/schema";
 import { log, withContext } from "../observability/logger";
@@ -47,6 +49,9 @@ export async function handleEngineEvent(
       break;
     case "message.ack":
       await MessageStore.recordAck(event.messageId, event.status, database);
+      break;
+    case "message.received":
+      await runRules(event.deviceId, event, database);
       break;
     default:
       break;
@@ -98,6 +103,53 @@ async function setState(
     .update(devices)
     .set({ state, stateReason: reason, updatedAt: new Date() })
     .where(eq(devices.id, deviceId));
+}
+
+/**
+ * Evaluate each binding's rules against an inbound message.
+ *
+ * Per binding, because two projects sharing a phone automate it differently and
+ * neither should see the other's rules. Actions are planned but not yet
+ * executed — §1.6 delivers matching and the dry run; wiring `reply` to an
+ * actual send is the first thing stage 2 does, and doing it here without the
+ * rate limiting and circuit breaking that belong with it would be the wrong
+ * order.
+ */
+async function runRules(deviceId: string, event: EngineEvent, database: Database): Promise<void> {
+  const bindings = await database
+    .select({ id: virtualDevices.id })
+    .from(virtualDevices)
+    .where(and(eq(virtualDevices.deviceId, deviceId), eq(virtualDevices.status, "active")));
+
+  for (const binding of bindings) {
+    const { prepared, broken } = await RuleStore.prepared(binding.id, database);
+    if (broken.length > 0) {
+      // Already validated once, so this means something changed underneath it.
+      log.warn("skipping rules that no longer compile", { virtualDeviceId: binding.id, count: broken.length });
+    }
+    if (prepared.length === 0) continue;
+
+    const result = evaluate({
+      event: event as unknown as Record<string, unknown>,
+      rules: prepared,
+      chainDepth: 0,
+      // Inbound messages from the engine are never bunwa-originated; a reply
+      // bunwa sends arrives as message.sent, which rules do not evaluate.
+      selfOriginated: false,
+    });
+
+    if (result.timedOut.length > 0) {
+      // One slow pattern must degrade one rule, not the node.
+      log.warn("rules exceeded their match budget", {
+        virtualDeviceId: binding.id,
+        rules: result.timedOut,
+      });
+    }
+
+    if (result.matched.length > 0) {
+      log.info("rules matched", { virtualDeviceId: binding.id, rules: result.matched });
+    }
+  }
 }
 
 /**

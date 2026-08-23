@@ -398,6 +398,54 @@ export const outboundMessages = sqliteTable(
   ],
 );
 
+/**
+ * Automation rules, per virtual device.
+ *
+ * Per binding rather than per device: two projects sharing one phone must be
+ * able to automate it differently, and neither should see the other's rules.
+ * gowa's equivalent is a single global string shared by every device.
+ */
+export const rules = sqliteTable(
+  "rules",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    virtualDeviceId: text("virtual_device_id")
+      .notNull()
+      .references(() => virtualDevices.id, { onDelete: "cascade" }),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+    /** Lower runs first. */
+    priority: integer("priority").notNull().default(100),
+    stopOnMatch: integer("stop_on_match", { mode: "boolean" }).notNull().default(false),
+    match: text("match", { mode: "json" }).$type<Record<string, JsonValue>>().notNull(),
+    actions: text("actions", { mode: "json" }).$type<JsonValue[]>().notNull(),
+    /** Incremented on edit, so a change is visible in an audit trail. */
+    version: integer("version").notNull().default(1),
+    /**
+     * Set when a rule is disabled for exceeding its match budget.
+     *
+     * Recorded rather than silently flipping `enabled`, so an operator can see
+     * why a rule stopped firing instead of assuming someone turned it off.
+     */
+    disabledReason: text("disabled_reason"),
+    ...timestamps,
+  },
+  (t) => [
+    // Same composite target as outbound_messages: two independent foreign keys
+    // would permit a rule pairing one environment's binding with another's id.
+    foreignKey({
+      columns: [t.virtualDeviceId, t.environmentId],
+      foreignColumns: [virtualDevices.id, virtualDevices.environmentId],
+      name: "rules_binding_environment_fk",
+    }).onDelete("cascade"),
+    uniqueIndex("rules_binding_name_key").on(t.virtualDeviceId, t.name),
+    index("rules_binding_priority_idx").on(t.virtualDeviceId, t.priority),
+  ],
+);
+
 export const projectsRelations = relations(projects, ({ many }) => ({
   environments: many(environments),
 }));
@@ -429,3 +477,5 @@ export type ConsentEvent = typeof consentEvents.$inferSelect;
 export type VirtualDevice = typeof virtualDevices.$inferSelect;
 export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 export type OutboundMessage = typeof outboundMessages.$inferSelect;
+export type Rule = typeof rules.$inferSelect;
+export type NewRule = typeof rules.$inferInsert;

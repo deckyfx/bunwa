@@ -167,6 +167,27 @@ CREATE TABLE `projects` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `projects_slug_key` ON `projects` (`slug`);--> statement-breakpoint
+CREATE TABLE `rules` (
+	`id` text PRIMARY KEY NOT NULL,
+	`virtual_device_id` text NOT NULL,
+	`environment_id` text NOT NULL,
+	`name` text NOT NULL,
+	`enabled` integer DEFAULT true NOT NULL,
+	`priority` integer DEFAULT 100 NOT NULL,
+	`stop_on_match` integer DEFAULT false NOT NULL,
+	`match` text NOT NULL,
+	`actions` text NOT NULL,
+	`version` integer DEFAULT 1 NOT NULL,
+	`disabled_reason` text,
+	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
+	`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
+	FOREIGN KEY (`virtual_device_id`) REFERENCES `virtual_devices`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`virtual_device_id`,`environment_id`) REFERENCES `virtual_devices`(`id`,`environment_id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE UNIQUE INDEX `rules_binding_name_key` ON `rules` (`virtual_device_id`,`name`);--> statement-breakpoint
+CREATE INDEX `rules_binding_priority_idx` ON `rules` (`virtual_device_id`,`priority`);--> statement-breakpoint
 CREATE TABLE `virtual_devices` (
 	`id` text PRIMARY KEY NOT NULL,
 	`environment_id` text NOT NULL,
