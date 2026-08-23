@@ -109,6 +109,80 @@ export const apiKeys = sqliteTable(
   ],
 );
 
+/**
+ * Where an environment's events are delivered.
+ *
+ * One target per environment for now. When virtual devices arrive in §1.5 they
+ * gain an optional override, which is why delivery rows below key on the
+ * environment rather than on this table's id — the queue must not have to move
+ * when the target does.
+ */
+export const environmentWebhooks = sqliteTable("environment_webhooks", {
+  environmentId: text("environment_id")
+    .primaryKey()
+    .references(() => environments.id, { onDelete: "cascade" }),
+  url: text("url").notNull(),
+  /** Signing secret. Encrypted at rest is §2 work; it is never logged or returned. */
+  secret: text("secret").notNull(),
+  enabled: integer("enabled", { mode: "boolean" }).notNull().default(true),
+  /** Null means every event this environment is entitled to. */
+  eventFilter: text("event_filter", { mode: "json" }).$type<string[] | null>(),
+  maxAttempts: integer("max_attempts").notNull().default(8),
+  circuitState: text("circuit_state", { enum: ["closed", "open", "half_open"] }).notNull().default("closed"),
+  circuitOpenedAt: integer("circuit_opened_at", { mode: "timestamp_ms" }),
+  consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+  ...timestamps,
+});
+
+/**
+ * One event, queued for one destination.
+ *
+ * Persisted before it is acknowledged, so a crash between accepting an event
+ * and delivering it loses nothing. Attempts live in their own table rather than
+ * as a counter here, because "why did this customer not receive their event" is
+ * a question about the attempts, not about the current state.
+ */
+export const deliveries = sqliteTable(
+  "deliveries",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    /** Stable across retries; consumers deduplicate on it. */
+    eventId: text("event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    payload: text("payload", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    state: text("state", { enum: ["pending", "delivered", "failed", "dead"] }).notNull().default("pending"),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    nextAttemptAt: integer("next_attempt_at", { mode: "timestamp_ms" }).notNull(),
+    deliveredAt: integer("delivered_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (t) => [
+    // The worker's claim query: due work for a destination, oldest first.
+    index("deliveries_due_idx").on(t.state, t.nextAttemptAt),
+    index("deliveries_environment_idx").on(t.environmentId),
+    uniqueIndex("deliveries_event_environment_key").on(t.eventId, t.environmentId),
+  ],
+);
+
+/** One HTTP attempt. Kept so a delivery question is a query, not archaeology. */
+export const deliveryAttempts = sqliteTable(
+  "delivery_attempts",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    deliveryId: text("delivery_id")
+      .notNull()
+      .references(() => deliveries.id, { onDelete: "cascade" }),
+    attemptedAt: integer("attempted_at", { mode: "timestamp_ms" }).notNull(),
+    statusCode: integer("status_code"),
+    error: text("error"),
+    durationMs: integer("duration_ms").notNull(),
+  },
+  (t) => [index("delivery_attempts_delivery_idx").on(t.deliveryId)],
+);
+
 export const projectsRelations = relations(projects, ({ many }) => ({
   environments: many(environments),
 }));
@@ -128,3 +202,8 @@ export type Environment = typeof environments.$inferSelect;
 export type NewEnvironment = typeof environments.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
 export type NewApiKey = typeof apiKeys.$inferInsert;
+export type EnvironmentWebhook = typeof environmentWebhooks.$inferSelect;
+export type NewEnvironmentWebhook = typeof environmentWebhooks.$inferInsert;
+export type Delivery = typeof deliveries.$inferSelect;
+export type NewDelivery = typeof deliveries.$inferInsert;
+export type DeliveryAttempt = typeof deliveryAttempts.$inferSelect;

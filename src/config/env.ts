@@ -121,6 +121,15 @@ export class Config {
    * keys. Enabling it is a deliberate act, not a deployment oversight.
    */
   readonly adminApiEnabled: boolean;
+  /**
+   * Permit webhook targets that are plain http, or private/loopback addresses.
+   *
+   * Deliberately its own switch rather than derived from NODE_ENV. Deriving a
+   * security posture from the environment name means an unset or mistyped
+   * NODE_ENV silently disables an SSRF control — and "it was only meant for
+   * development" is exactly how that reaches a deployment.
+   */
+  readonly allowInsecureWebhookTargets: boolean;
 
   constructor(source: Record<string, string | undefined> = Bun.env) {
     this.nodeEnv = oneOf(source, "NODE_ENV", NODE_ENVS, "development");
@@ -135,6 +144,10 @@ export class Config {
     this.migrateStrict = boolean(source, "MIGRATE_STRICT", this.nodeEnv === "production");
     this.runtimeDir = optional(source, "RUNTIME_DIR", ".runtime");
     this.adminApiEnabled = boolean(source, "ADMIN_API_ENABLED", false);
+    this.allowInsecureWebhookTargets = boolean(source, "ALLOW_INSECURE_WEBHOOK_TARGETS", false);
+    if (this.allowInsecureWebhookTargets && this.isProduction) {
+      throw new ConfigError("ALLOW_INSECURE_WEBHOOK_TARGETS must not be true in production");
+    }
   }
 
   /**
@@ -169,6 +182,7 @@ export class Config {
       migrateStrict: this.migrateStrict,
       runtimeDir: this.runtimeDir,
       adminApiEnabled: this.adminApiEnabled,
+      allowInsecureWebhookTargets: this.allowInsecureWebhookTargets,
     };
   }
 }

@@ -79,6 +79,20 @@ describe("Config", () => {
     expect(prod.isProduction).toBe(true);
   });
 
+  test("insecure webhook targets are off by default, in every environment", () => {
+    // Derived from NODE_ENV, an unset or mistyped environment name silently
+    // disabled an SSRF control. An end-to-end run accepted 169.254.169.254
+    // under that logic.
+    expect(new Config(base).allowInsecureWebhookTargets).toBe(false);
+    expect(new Config({ ...base, NODE_ENV: "development" }).allowInsecureWebhookTargets).toBe(false);
+  });
+
+  test("refuses to start with insecure webhook targets enabled in production", () => {
+    expect(
+      () => new Config({ ...base, NODE_ENV: "production", ALLOW_INSECURE_WEBHOOK_TARGETS: "true" }),
+    ).toThrow("must not be true in production");
+  });
+
   test("describe() reports the database location", () => {
     expect(new Config(base).describe()["database"]).toBe("./data/db/bunwa.sqlite");
   });
