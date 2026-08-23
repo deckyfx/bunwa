@@ -125,6 +125,37 @@ CREATE TABLE `environments` (
 --> statement-breakpoint
 CREATE UNIQUE INDEX `environments_project_slug_key` ON `environments` (`project_id`,`slug`);--> statement-breakpoint
 CREATE INDEX `environments_project_idx` ON `environments` (`project_id`);--> statement-breakpoint
+CREATE TABLE `idempotency_keys` (
+	`key` text NOT NULL,
+	`environment_id` text NOT NULL,
+	`request_hash` text NOT NULL,
+	`response` text NOT NULL,
+	`status_code` integer NOT NULL,
+	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
+	PRIMARY KEY(`environment_id`, `key`),
+	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `idempotency_created_idx` ON `idempotency_keys` (`created_at`);--> statement-breakpoint
+CREATE TABLE `outbound_messages` (
+	`id` text PRIMARY KEY NOT NULL,
+	`virtual_device_id` text NOT NULL,
+	`environment_id` text NOT NULL,
+	`engine_message_id` text NOT NULL,
+	`type` text NOT NULL,
+	`recipient` text NOT NULL,
+	`state` text DEFAULT 'accepted' NOT NULL,
+	`accepted_at` integer NOT NULL,
+	`acked_at` integer,
+	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
+	`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
+	FOREIGN KEY (`virtual_device_id`) REFERENCES `virtual_devices`(`id`) ON UPDATE no action ON DELETE cascade,
+	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade
+);
+--> statement-breakpoint
+CREATE INDEX `outbound_engine_message_idx` ON `outbound_messages` (`engine_message_id`);--> statement-breakpoint
+CREATE INDEX `outbound_environment_idx` ON `outbound_messages` (`environment_id`);--> statement-breakpoint
+CREATE INDEX `outbound_state_accepted_idx` ON `outbound_messages` (`state`,`accepted_at`);--> statement-breakpoint
 CREATE TABLE `projects` (
 	`id` text PRIMARY KEY NOT NULL,
 	`slug` text NOT NULL,

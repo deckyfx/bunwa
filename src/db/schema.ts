@@ -11,7 +11,7 @@
  * driver-specific column, and timestamps as epoch milliseconds.
  */
 import { relations, sql } from "drizzle-orm";
-import { index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /** Shared audit columns. Every table carries them; none is nullable. */
 const timestamps = {
@@ -312,6 +312,73 @@ export const deliveryAttempts = sqliteTable(
   (t) => [index("delivery_attempts_delivery_idx").on(t.deliveryId)],
 );
 
+/**
+ * Replayed responses for idempotent requests.
+ *
+ * Scoped to the environment so a key reused between staging and production is
+ * not a collision. `requestHash` guards the other direction: the same key with
+ * a different body is a caller bug, and returning the first response would send
+ * one message while reporting another.
+ */
+export const idempotencyKeys = sqliteTable(
+  "idempotency_keys",
+  {
+    key: text("key").notNull(),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    requestHash: text("request_hash").notNull(),
+    response: text("response", { mode: "json" }).$type<Record<string, unknown>>().notNull(),
+    statusCode: integer("status_code").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .default(sql`(unixepoch() * 1000)`),
+  },
+  (t) => [
+    primaryKey({ columns: [t.environmentId, t.key] }),
+    index("idempotency_created_idx").on(t.createdAt),
+  ],
+);
+
+/**
+ * Messages bunwa has sent, and their delivery state.
+ *
+ * Kept because acceptance is not delivery: gowa reported a device connected for
+ * 203 seconds after a silent drop (docs/12), so a send that returned a message
+ * id proves only that the engine took it. The ack that arrives later — or does
+ * not — is what says whether the OTP reached anyone.
+ */
+export const outboundMessages = sqliteTable(
+  "outbound_messages",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    virtualDeviceId: text("virtual_device_id")
+      .notNull()
+      .references(() => virtualDevices.id, { onDelete: "cascade" }),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    /** The engine's id for the message, used to match acks. */
+    engineMessageId: text("engine_message_id").notNull(),
+    type: text("type", {
+      enum: ["text", "image", "document", "link", "audio", "video"],
+    }).notNull(),
+    recipient: text("recipient").notNull(),
+    state: text("state", { enum: ["accepted", "delivered", "read", "undelivered"] })
+      .notNull()
+      .default("accepted"),
+    acceptedAt: integer("accepted_at", { mode: "timestamp_ms" }).notNull(),
+    ackedAt: integer("acked_at", { mode: "timestamp_ms" }),
+    ...timestamps,
+  },
+  (t) => [
+    index("outbound_engine_message_idx").on(t.engineMessageId),
+    index("outbound_environment_idx").on(t.environmentId),
+    // Unacked sends are swept to message.undelivered, so this is a hot query.
+    index("outbound_state_accepted_idx").on(t.state, t.acceptedAt),
+  ],
+);
+
 export const projectsRelations = relations(projects, ({ many }) => ({
   environments: many(environments),
 }));
@@ -341,3 +408,5 @@ export type NewDevice = typeof devices.$inferInsert;
 export type DeviceConsent = typeof deviceConsents.$inferSelect;
 export type ConsentEvent = typeof consentEvents.$inferSelect;
 export type VirtualDevice = typeof virtualDevices.$inferSelect;
+export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
+export type OutboundMessage = typeof outboundMessages.$inferSelect;

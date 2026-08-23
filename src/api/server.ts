@@ -12,6 +12,7 @@ import { config } from "../config/env";
 import { db } from "../db";
 import { adminRoutes } from "./routes/admin";
 import { deviceRoutes } from "./routes/devices";
+import { messageRoutes } from "./routes/messages";
 import { projectRoutes } from "./routes/project";
 import type { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
@@ -166,6 +167,7 @@ export function createApp(registry?: EngineRegistry) {
     // readiness checks must never be able to end up behind a plugin's auth.
     .use(projectRoutes)
     .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
+    .use(registry === undefined ? new Elysia() : messageRoutes(registry))
 
 
     // Mounted only when explicitly enabled. The admin surface has no
