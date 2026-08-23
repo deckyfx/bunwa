@@ -204,13 +204,28 @@ describe("findings the group-count check missed", () => {
     }
   });
 
-  test("a quantified alternation is refused", () => {
-    // (a|aa)+ is the classic overlapping-branch blowup and compiles fine.
-    // Deciding whether branches genuinely overlap needs real analysis, so any
-    // quantified alternation is refused — conservative on purpose.
+  test("a quantified alternation is refused when its branches can overlap", () => {
+    // The hazard is one branch consuming a prefix of what another consumes,
+    // which leaves the engine a choice to backtrack over.
     for (const source of ["(a|aa)+$", "(x|xy)*", "(foo|foobar){2,}"]) {
       expect(() => compilePattern(source)).toThrow(/exponential|nests/);
     }
+  });
+
+  test("a quantified alternation of disjoint literals is allowed", () => {
+    // Refusing these too was the first version, and it rejected a pattern
+    // straight out of this project's brief. POST and PUT share a first letter
+    // and still cannot both match — they diverge at the second.
+    for (const source of ["(?:PAY|SEND)+", "(?:GET|POST|PUT)+", "(foo|bar)+", "(?:a|b|c)+"]) {
+      expect(() => compilePattern(source)).not.toThrow();
+    }
+  });
+
+  test("a branch that is not a plain literal is still refused", () => {
+    // Anything with a metacharacter cannot be compared as text, so it is
+    // treated as able to overlap.
+    expect(() => compilePattern("(a|[bc])+")).toThrow(/exponential|nests/);
+    expect(() => compilePattern("(a|b+)+")).toThrow(/exponential|nests/);
   });
 
   test("an unquantified alternation is still fine", () => {
@@ -234,10 +249,40 @@ describe("findings the group-count check missed", () => {
 
 describe("a rule that keeps timing out is disabled, not just logged", () => {
   test("evaluate reports the rule id, which is what can address a row", () => {
-    // It reported names. A name cannot address a row, so the disable step
-    // could not be written at all — the budget was detected and then ignored,
-    // leaving a pathological pattern running on every message for ever.
-    const rule = prepareRule(baseRule({ name: "slow" }), "rule-123");
-    expect(rule.id).toBe("rule-123");
+    // Asserting that prepareRule preserves the id proved nothing about
+    // evaluate, which is the function that has to report it — a regression
+    // dropping rule.id there would have passed. Second time I have written a
+    // test whose name promised more than its assertion.
+    const rule = prepareRule(
+      baseRule({ name: "slow", match: { all: [{ field: "data.text", op: "matches", value: "^x" }] } }),
+      "rule-123",
+    );
+    // Force the budget to be exceeded so the timeout path actually runs.
+    const result = evaluate({ event: event(), rules: [rule], matchTimeoutMs: 0 });
+    expect(result.timedOut).toEqual(["rule-123"]);
+    expect(result.matched).toHaveLength(0);
+  });
+});
+
+describe("group syntax is not repetition", () => {
+  test("non-capturing and named groups are accepted when quantified", () => {
+    // Counting the `?` in a group prefix rejected these, all of them ordinary.
+    // A safety check that refuses common patterns is one that gets removed.
+    for (const source of ["(?:foo)+", "(?:(?:ab))+", "(?<year>\\d{4})+", "(?:PAY|SEND)+"]) {
+      expect(() => compilePattern(source)).not.toThrow();
+    }
+  });
+
+  test("a fixed count inside a quantified group is safe; a range is not", () => {
+    // (\d{4})+ consumes exactly four every time, so it cannot blow up.
+    // (\d{1,4})+ can split the same input many ways, which is the whole hazard.
+    expect(() => compilePattern("(\\d{4})+")).not.toThrow();
+    expect(() => compilePattern("(\\d{1,4})+")).toThrow(/exponential|nests/);
+  });
+
+  test("the dangerous shapes are still refused", () => {
+    for (const source of ["(a?)+", "(x?){1,}", "(?:a+)+", "(a+)+", "(a|aa)+"]) {
+      expect(() => compilePattern(source)).toThrow(/exponential|nests/);
+    }
   });
 });

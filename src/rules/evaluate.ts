@@ -18,6 +18,14 @@ export interface EvaluationInput {
   chainDepth?: number;
   /** True when bunwa itself produced this event. */
   selfOriginated?: boolean;
+  /**
+   * Per-match budget, in milliseconds.
+   *
+   * Injectable so the timeout path can be exercised deterministically. Without
+   * it that branch could only be reached with a genuinely pathological pattern,
+   * which is precisely what the compiler refuses to accept.
+   */
+  matchTimeoutMs?: number;
 }
 
 export interface PlannedAction {
@@ -68,7 +76,7 @@ export function evaluate(input: EvaluationInput): Evaluation {
   const ordered = [...input.rules].filter((r) => r.enabled).sort((a, b) => a.priority - b.priority);
 
   for (const rule of ordered) {
-    const result = matchRule(rule, input.event);
+    const result = matchRule(rule, input.event, input.matchTimeoutMs);
     if (result.timedOut) {
       timedOut.push(rule.id);
       // A rule that cannot be evaluated in budget does not match. Treating a
@@ -93,12 +101,12 @@ interface RuleMatch {
   timedOut: boolean;
 }
 
-function matchRule(rule: PreparedRule, event: Record<string, unknown>): RuleMatch {
+function matchRule(rule: PreparedRule, event: Record<string, unknown>, timeoutMs?: number): RuleMatch {
   const captures: Record<string, string> = {};
   let timedOut = false;
 
   const check = (condition: Condition): boolean => {
-    const outcome = test(condition, event, rule.compiled);
+    const outcome = test(condition, event, rule.compiled, timeoutMs);
     if (outcome.timedOut) timedOut = true;
     Object.assign(captures, outcome.captures);
     return outcome.passed;
@@ -134,6 +142,7 @@ function test(
   condition: Condition,
   event: Record<string, unknown>,
   compiled: Map<string, CompiledPattern>,
+  timeoutMs?: number,
 ): ConditionResult {
   const actual = readPath(event, condition.field);
   const none = { captures: {}, timedOut: false };
@@ -169,7 +178,7 @@ function test(
       // Raw, not lowercased. Case sensitivity belongs to the pattern author —
       // folding the subject silently defeats `[A-Z]` and every other
       // case-bearing construct they wrote.
-      const result = runMatch(pattern, typeof actual === "string" ? actual : String(actual ?? ""));
+      const result = runMatch(pattern, typeof actual === "string" ? actual : String(actual ?? ""), timeoutMs);
       return { passed: result.matched, captures: result.captures, timedOut: result.timedOut };
     }
   }

@@ -80,6 +80,13 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  // resetDatabase closes the memoised handle; this one was created directly
+  // and would otherwise keep a descriptor and its WAL files open per case.
+  try {
+    database.$client.close();
+  } catch {
+    // Already closed.
+  }
   rmSync(dir, { recursive: true, force: true });
   resetConfig();
   resetDatabase();

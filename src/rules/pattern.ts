@@ -109,7 +109,7 @@ function hasNestedQuantifier(source: string): boolean {
     // the group differently. Refusing a safe pattern costs an error message;
     // accepting an unsafe one costs the node.
     if (containsQuantifier(body)) return true;
-    if (containsAlternation(body)) return true;
+    if (containsAlternation(body) && alternationCanOverlap(stripGroupPrefix(body))) return true;
   }
 
   return false;
@@ -121,6 +121,86 @@ function isQuantifier(source: string, index: number): boolean {
   if (char === "+" || char === "*") return true;
   if (char !== "{") return false;
   return /^\{\d+(?:,\d*)?\}/.test(source.slice(index));
+}
+
+/**
+ * Whether a quantified group's alternation can backtrack.
+ *
+ * `(a|aa)+` is catastrophic because both branches can match the same input,
+ * so the engine can split a run of `a`s in exponentially many ways.
+ * `(?:PAY|SEND)+` cannot: the branches start with different characters, so at
+ * every position at most one applies and there is nothing to backtrack over.
+ *
+ * Refusing both was the first version, and it rejected a pattern straight out
+ * of this project's own brief. A check that blocks the obvious use case is one
+ * that gets switched off, which leaves the dangerous patterns unguarded too.
+ *
+ * The test is conservative: branches are compared on the set of characters
+ * each can begin with, and anything not a plain literal — a class, a group, an
+ * escape — counts as "could be anything" and is refused.
+ */
+function alternationCanOverlap(body: string): boolean {
+  const branches = splitTopLevel(body);
+  if (branches.length < 2) return false;
+
+  const literals = branches.map(asLiteral);
+  // A branch that is not a plain literal could match anything, so it is
+  // treated as overlapping everything.
+  if (literals.some((l) => l === null)) return true;
+
+  // Overlap means one branch can consume a prefix of what another consumes,
+  // leaving the engine a choice to backtrack over. For literals that is
+  // exactly "one is a prefix of the other": `a` and `aa` overlap, `POST` and
+  // `PUT` do not — they share a first character but diverge immediately, so at
+  // most one can ever apply.
+  for (let i = 0; i < literals.length; i++) {
+    for (let j = i + 1; j < literals.length; j++) {
+      const a = literals[i]!;
+      const b = literals[j]!;
+      if (a.startsWith(b) || b.startsWith(a)) return true;
+    }
+  }
+  return false;
+}
+
+/** A branch's literal text, or null if it contains any regex construct. */
+function asLiteral(branch: string): string | null {
+  if (branch === "") return null; // an empty branch matches anything
+  // Any metacharacter means this cannot be compared as plain text.
+  if (/[[\](){}\\.*+?|^$]/.test(branch)) return null;
+  return branch;
+}
+
+/** Split on top-level `|`, ignoring escapes, classes and nested groups. */
+function splitTopLevel(body: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let current = "";
+  for (let i = 0; i < body.length; i++) {
+    const char = body[i]!;
+    if (char === "\\") {
+      current += char + (body[i + 1] ?? "");
+      i++;
+      continue;
+    }
+    if (char === "[") {
+      const close = body.indexOf("]", i);
+      const end = close === -1 ? body.length : close + 1;
+      current += body.slice(i, end);
+      i = end - 1;
+      continue;
+    }
+    if (char === "(") depth++;
+    else if (char === ")") depth--;
+    if (char === "|" && depth === 0) {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts;
 }
 
 /** Whether a group body contains a top-level alternation. */
@@ -155,22 +235,57 @@ function containsAlternation(body: string): boolean {
  * safe. The distinction is which side of the group the `?` sits on.
  */
 function containsQuantifier(body: string): boolean {
-  for (let i = 0; i < body.length; i++) {
-    const char = body[i];
+  // A group prefix opens with `?` — `(?:`, `(?=`, `(?<name>` — and that `?` is
+  // syntax, not repetition. Counting it rejected `(?:foo)+` and
+  // `(?<year>\d{4})+`, both perfectly ordinary, which is how a safety check
+  // stops being used.
+  const withoutPrefix = GROUP_PREFIX.test(body) ? body.replace(GROUP_PREFIX, "") : body;
+
+  for (let i = 0; i < withoutPrefix.length; i++) {
+    const char = withoutPrefix[i];
     if (char === "\\") {
       i++;
       continue;
     }
     if (char === "[") {
-      while (i < body.length && body[i] !== "]") {
-        if (body[i] === "\\") i++;
+      while (i < withoutPrefix.length && withoutPrefix[i] !== "]") {
+        if (withoutPrefix[i] === "\\") i++;
         i++;
       }
       continue;
     }
-    if (isQuantifier(body, i) || body[i] === "?") return true;
+    if (withoutPrefix[i] === "(") {
+      // A nested group's own prefix is syntax too.
+      const rest = withoutPrefix.slice(i + 1);
+      const prefix = GROUP_PREFIX.exec(rest);
+      if (prefix !== null) i += prefix[0].length;
+      continue;
+    }
+    if (isRepeating(withoutPrefix, i) || withoutPrefix[i] === "?") return true;
   }
   return false;
+}
+
+/** Remove a leading group prefix so the body can be analysed on its own. */
+function stripGroupPrefix(body: string): string {
+  return body.replace(GROUP_PREFIX, "");
+}
+
+/** `?:`, `?=`, `?!`, `?<=`, `?<!`, `?<name>` — group syntax, not repetition. */
+const GROUP_PREFIX = /^\?(?::|=|!|<=|<!|<[A-Za-z_$][\w$]*>)/;
+
+/**
+ * Whether a *variable-length* quantifier begins at `index`.
+ *
+ * `{4}` is excluded: a fixed count consumes the same span every time, so
+ * `(\d{4})+` is deterministic and cannot blow up. `{4,}` and `{2,8}` can.
+ */
+function isRepeating(source: string, index: number): boolean {
+  const char = source[index];
+  if (char === "+" || char === "*") return true;
+  if (char !== "{") return false;
+  // Variable only: a comma means an open or ranged bound.
+  return /^\{\d+,\d*\}/.test(source.slice(index));
 }
 
 export interface CompiledPattern {
