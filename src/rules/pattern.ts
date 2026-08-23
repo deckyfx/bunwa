@@ -146,7 +146,14 @@ function containsAlternation(body: string): boolean {
   return false;
 }
 
-/** Whether a group body quantifies anything, ignoring escapes and classes. */
+/**
+ * Whether a group body quantifies anything, ignoring escapes and classes.
+ *
+ * `?` counts here but deliberately not in `isQuantifier`. `(a?)+` backtracks
+ * like `(a*)+` because the optional branch lets the same input be split many
+ * ways — but a group merely *made* optional, `(ab)?`, repeats nothing and is
+ * safe. The distinction is which side of the group the `?` sits on.
+ */
 function containsQuantifier(body: string): boolean {
   for (let i = 0; i < body.length; i++) {
     const char = body[i];
@@ -161,7 +168,7 @@ function containsQuantifier(body: string): boolean {
       }
       continue;
     }
-    if (isQuantifier(body, i)) return true;
+    if (isQuantifier(body, i) || body[i] === "?") return true;
   }
   return false;
 }

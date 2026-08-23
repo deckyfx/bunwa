@@ -110,7 +110,9 @@ export class RuleStore {
     database: Database = db(),
   ): Promise<void> {
     await this.requireRule(environmentId, virtualDeviceId, ruleId, database);
-    await database.delete(rules).where(eq(rules.id, ruleId));
+    // Repeated on the statement: the check above is a separate read, and an
+    // await between a guard and the thing it guards is not a guard.
+    await database.delete(rules).where(and(eq(rules.id, ruleId), eq(rules.environmentId, environmentId)));
   }
 
   /**

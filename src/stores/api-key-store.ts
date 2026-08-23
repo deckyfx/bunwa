@@ -6,9 +6,9 @@
  * once and never stored, and a key that is revoked or expired authenticates
  * nothing regardless of how valid its hash is.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
-import { generateApiKey, prefixOf, verifyApiKey } from "../auth/api-key";
+import { DUMMY_KEY_HASH, generateApiKey, prefixOf, verifyApiKey } from "../auth/api-key";
 import { db, type Database } from "../db";
 import { apiKeys, environments, projects, type ApiKey } from "../db/schema";
 import { NotFoundError, ValidationError } from "./errors";
@@ -21,6 +21,14 @@ export interface ResolvedKey {
   projectId: string;
   scopes: string[];
 }
+
+/**
+ * Most candidates one prefix may select before the rest are ignored.
+ *
+ * One is expected. Anything more is a collision or a probe, and each candidate
+ * costs an Argon2id verification.
+ */
+const MAX_PREFIX_CANDIDATES = 5;
 
 export class ApiKeyStore {
   /**
@@ -76,7 +84,22 @@ export class ApiKeyStore {
     // not become a query on attacker-controlled text.
     if (prefix === null) return null;
 
-    const candidates = await database.select().from(apiKeys).where(eq(apiKeys.keyPrefix, prefix));
+    // Capped. The prefix includes six characters of the secret, so a legitimate
+    // request selects one row; a large result set means someone is probing, and
+    // an uncapped query would have this loop run Argon2id once per row.
+    const candidates = await database
+      .select()
+      .from(apiKeys)
+      .where(eq(apiKeys.keyPrefix, prefix))
+      .limit(MAX_PREFIX_CANDIDATES);
+
+    if (candidates.length === 0) {
+      // Verify against a dummy hash anyway. Returning here without hashing
+      // makes an unknown prefix measurably faster than a known one, which tells
+      // an attacker when a prefix guess is correct.
+      await verifyApiKey(presented, await DUMMY_KEY_HASH);
+      return null;
+    }
 
     for (const candidate of candidates) {
       // Verify before checking validity, so a revoked key and an unknown one
@@ -120,19 +143,30 @@ export class ApiKeyStore {
    * put authentication behind the database's write lock, and an approximate
    * last-used time is worth more than the latency it would cost to be exact.
    */
-  static touch(id: string, database: Database = db()): void {
+  static touch(id: string, environmentId: string, database: Database = db()): void {
     // Rejection handled rather than swallowed silently: an unhandled rejection
     // in Bun can terminate the process, and losing the service because a
     // last-used timestamp failed to write would be an absurd way to go down.
     void database
       .update(apiKeys)
       .set({ lastUsedAt: new Date() })
-      .where(eq(apiKeys.id, id))
+      // The id here came from a row this process just authenticated, so it is
+      // already proven — but the predicate costs nothing and keeps the rule
+      // "every mutation names its tenant" true without exceptions to remember.
+      .where(and(eq(apiKeys.id, id), eq(apiKeys.environmentId, environmentId)))
       .catch((err: unknown) => {
         log.warn("failed to record api key use", { error: err instanceof Error ? err.message : String(err) });
       });
   }
 
+  /**
+   * Every key in one environment.
+   *
+   * Joined through environments rather than filtered on the key's own column:
+   * that join *is* the tenant boundary here, and a caller supplying another
+   * project's environment id gets nothing rather than someone else's keys.
+   * Never returns a hash or a plaintext — only what a dashboard may show.
+   */
   static async listForEnvironment(
     projectId: string,
     environmentId: string,
@@ -159,10 +193,16 @@ export class ApiKeyStore {
     const target = existing.find((k) => k.id === id);
     if (target === undefined) throw new NotFoundError(`api key ${id} not found`);
 
+    // The ownership check above is a separate read with an await between it and
+    // this statement. A predicate that is not on the statement is not enforced
+    // by the database, so the environment is repeated here — and `isNull`
+    // makes revocation idempotent rather than silently re-stamping a key that
+    // was already revoked, which would move its revokedAt forward and lose when
+    // it actually happened.
     const [updated] = await database
       .update(apiKeys)
       .set({ revokedAt: new Date(), updatedAt: new Date() })
-      .where(eq(apiKeys.id, id))
+      .where(and(eq(apiKeys.id, id), eq(apiKeys.environmentId, environmentId), isNull(apiKeys.revokedAt)))
       .returning();
     if (updated === undefined) throw new NotFoundError(`api key ${id} not found`);
     return updated;

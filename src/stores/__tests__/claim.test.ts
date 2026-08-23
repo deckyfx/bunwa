@@ -26,6 +26,7 @@ let database: Database;
 let grandeProd: string;
 let grandeStaging: string;
 let rivalProd: string;
+let rivalId: string;
 let grandeId: string;
 
 const NUMBER = "+628123456789";
@@ -44,6 +45,7 @@ beforeEach(async () => {
   const grande = await ProjectStore.create({ slug: "grande", displayName: "Grande" }, database);
   const rival = await ProjectStore.create({ slug: "rival", displayName: "Rival" }, database);
   grandeId = grande.id;
+  rivalId = rival.id;
   grandeProd = (await EnvironmentStore.create({ projectId: grande.id, slug: "production" }, database)).id;
   grandeStaging = (await EnvironmentStore.create({ projectId: grande.id, slug: "staging" }, database)).id;
   rivalProd = (await EnvironmentStore.create({ projectId: rival.id, slug: "production" }, database)).id;
@@ -398,5 +400,38 @@ describe("an expired consent with no other claim", () => {
     const freshEnv = (await EnvironmentStore.create({ projectId: grandeId, slug: "fresh" }, database)).id;
     const again = await claim(freshEnv, "fresh-alias");
     expect(again.outcome).toBe("pending_pairing");
+  });
+});
+
+describe("a granted consent does not lapse", () => {
+  test("it still stands a year later", async () => {
+    // The TTL belongs to the question, not the answer. Writing an expiry onto
+    // a grant meant every consent silently lapsed after 24 hours and the
+    // project had to ask the customer again the next day.
+    await claim(grandeProd, "otp-sender");
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    const consent = await DeviceStore.consentFor(device!.id, grandeId, database);
+    expect(consent!.status).toBe("granted");
+    expect(consent!.expiresAt).toBeNull();
+
+    const later = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000);
+    const result = await DeviceStore.claim(
+      { environmentId: grandeStaging, msisdn: NUMBER, alias: "later" },
+      database,
+      later,
+    );
+    expect(result.outcome).toBe("active");
+  });
+
+  test("a pending challenge still lapses", async () => {
+    // The distinction must hold in both directions, or an unanswered question
+    // would block the device for ever.
+    await claim(grandeProd, "otp-sender");
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    const rival = await claim(rivalProd, "theirs");
+    expect(rival.outcome).toBe("awaiting_confirmation");
+
+    const pending = await DeviceStore.consentFor(device!.id, rivalId, database);
+    expect(pending!.expiresAt).not.toBeNull();
   });
 });

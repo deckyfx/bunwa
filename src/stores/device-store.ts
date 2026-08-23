@@ -29,10 +29,12 @@ export const CONSENT_TTL_MS = 24 * 60 * 60 * 1000;
 /**
  * A consent's status, accounting for its expiry.
  *
- * `expiresAt` is the deadline for *answering a request*, not a lifetime on the
+ * `expiresAt` is the deadline for *answering a request*, and only ever that.
+ * A granted consent carries none: it stands until the phone holder revokes it.
+ * It is not a lifetime on the
  * answer: consent does not lapse, it is revoked. Reading `status` alone made
  * the `granted → active` row of the table below wrong, because both
- * grantImplicitConsent and requestConsent write an expiresAt and nothing ever
+ * requestConsent writes one, grantImplicitConsent does not, and nothing ever
  * transitions a granted row, so a grant older than 24 hours still read as
  * granted while its row claimed to have expired.
  *
@@ -43,7 +45,11 @@ function effectiveStatus(
   now: Date,
 ): "granted" | "pending" | "denied" | "revoked" | "expired" | "none" {
   if (consent === null) return "none";
-  if (consent.status === "pending" && consent.expiresAt.getTime() <= now.getTime()) return "expired";
+  // Only a pending challenge lapses. A grant has no expiry — the column is
+  // null for one — so a missing deadline means "does not expire", not "expired".
+  if (consent.status === "pending" && consent.expiresAt !== null && consent.expiresAt.getTime() <= now.getTime()) {
+    return "expired";
+  }
   return consent.status;
 }
 
@@ -284,7 +290,10 @@ export class DeviceStore {
         respondedAt: now,
         responseChannel: "dashboard",
         evidence: { implicit: "granted by pairing for this project" },
-        expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
+        // No deadline on a grant — the insert branch, matching the update
+        // branch below. Setting one here is how every implicitly-granted
+        // consent silently lapsed after 24 hours.
+        expiresAt: null,
       })
       // Upserts only over an expired row. onConflictDoNothing left a stale
       // `expired` consent in place while pairing proceeded, so the device
@@ -298,7 +307,12 @@ export class DeviceStore {
           respondedAt: now,
           responseChannel: "dashboard",
           requestedByEnvironmentId: environmentId,
-          expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
+          // No expiry on a grant. The TTL belongs to the *question*, not the
+          // answer: a challenge lapses if nobody replies, but a consent the
+          // phone holder gave stands until they revoke it. Writing an expiry
+          // here meant every granted consent silently lapsed after 24 hours and
+          // the project had to ask again.
+          expiresAt: null,
           // Rotated, not cleared — the column is not nullable. The effect is
           // what matters: any challenge the phone holder still holds stops
           // working, and respondWithin rejects a non-pending row anyway, so
@@ -329,7 +343,12 @@ export class DeviceStore {
     // they have already been asked to make. Consent is per project, so one
     // outstanding question per project is the correct number.
     const existing = await this.consentFor(deviceId, projectId, database);
-    if (existing !== null && existing.status === "pending" && existing.expiresAt.getTime() > now.getTime()) {
+    // A pending row with no deadline cannot happen — requestConsent always
+    // sets one — but reading it as still-live is the safe interpretation:
+    // reusing an outstanding question beats issuing a second challenge to a
+    // phone holder who is already looking at one.
+    const stillLive = existing?.expiresAt === null || (existing?.expiresAt?.getTime() ?? 0) > now.getTime();
+    if (existing !== null && existing.status === "pending" && stillLive) {
       return existing;
     }
 
@@ -400,7 +419,7 @@ export class DeviceStore {
     if (consent.status !== "pending") {
       throw new ConflictError(`this consent request is already ${consent.status}`);
     }
-    if (consent.expiresAt.getTime() <= now.getTime()) {
+    if (consent.expiresAt !== null && consent.expiresAt.getTime() <= now.getTime()) {
       await database
         .update(deviceConsents)
         .set({ status: "expired", updatedAt: now })

@@ -101,7 +101,10 @@ export async function send(
         [SIGNATURE_HEADER]: sign(body, secret, options.now),
       },
       body,
-      signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
+      // What is left of the budget after resolution, not a fresh allowance —
+      // otherwise a slow lookup and a slow response together exceed the limit
+      // the caller was promised.
+      signal: AbortSignal.timeout(Math.max(1, ATTEMPT_TIMEOUT_MS - Math.round(performance.now() - began))),
       redirect: "manual",
     });
 

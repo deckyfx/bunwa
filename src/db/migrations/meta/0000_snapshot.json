@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "546a2b61-2948-473a-a475-23cad8371165",
+  "id": "e95b43c1-b729-41ed-b379-8e3a417a8073",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "api_keys": {
@@ -495,7 +495,7 @@
           "name": "expires_at",
           "type": "integer",
           "primaryKey": false,
-          "notNull": true,
+          "notNull": false,
           "autoincrement": false
         },
         "created_at": {
@@ -1073,12 +1073,13 @@
         }
       },
       "indexes": {
-        "outbound_engine_message_idx": {
-          "name": "outbound_engine_message_idx",
+        "outbound_environment_engine_message_key": {
+          "name": "outbound_environment_engine_message_key",
           "columns": [
+            "environment_id",
             "engine_message_id"
           ],
-          "isUnique": false
+          "isUnique": true
         },
         "outbound_environment_idx": {
           "name": "outbound_environment_idx",

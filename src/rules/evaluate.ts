@@ -193,20 +193,37 @@ function compare(op: "gt" | "gte" | "lt" | "lte", a: unknown, b: unknown): boole
   const left = toComparable(a);
   const right = toComparable(b);
   if (left === null || right === null) return false;
-  if (op === "gt") return left > right;
-  if (op === "gte") return left >= right;
-  if (op === "lt") return left < right;
-  return left <= right;
+  // Comparing a date to a number is a rule that cannot mean anything sensible;
+  // answering it would be worse than refusing.
+  if (left.kind !== right.kind) return false;
+  if (op === "gt") return left.value > right.value;
+  if (op === "gte") return left.value >= right.value;
+  if (op === "lt") return left.value < right.value;
+  return left.value <= right.value;
 }
 
-/** A number, a numeric string, or a parseable date — otherwise null. */
-function toComparable(value: unknown): number | null {
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+/** A comparable value, tagged with what kind it is. */
+interface Comparable {
+  kind: "number" | "date";
+  value: number;
+}
+
+/**
+ * Interpret a value for ordering, keeping track of what it is.
+ *
+ * The kind matters. A date parses to a millisecond count, so comparing a
+ * timestamp against the number 5 silently asks whether 1.7e12 > 5 and always
+ * answers yes. Mismatched kinds now compare false rather than producing a
+ * confident wrong answer.
+ */
+function toComparable(value: unknown): Comparable | null {
+  if (typeof value === "number") return Number.isFinite(value) ? { kind: "number", value } : null;
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : { kind: "date", value: value.getTime() };
   const text = String(value ?? "").trim();
   if (text === "") return null;
-  if (/^-?\d+(?:\.\d+)?$/.test(text)) return Number(text);
+  if (/^-?\d+(?:\.\d+)?$/.test(text)) return { kind: "number", value: Number(text) };
   const parsed = Date.parse(text);
-  return Number.isNaN(parsed) ? null : parsed;
+  return Number.isNaN(parsed) ? null : { kind: "date", value: parsed };
 }
 
 /**

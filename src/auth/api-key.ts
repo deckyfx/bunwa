@@ -95,6 +95,21 @@ export function prefixOf(presented: string): string | null {
  * for the derivation, so this must never be short-circuited by a cheaper check
  * on the plaintext.
  */
+/**
+ * A hash of a key that does not exist, for equalising timing.
+ *
+ * An unknown prefix returns without hashing while a known one pays for Argon2id,
+ * and that difference is measurable — it tells an attacker when a prefix guess
+ * is right, which is the expensive half of finding a key. Verifying against
+ * this makes both paths cost the same.
+ *
+ * Computed once at module load rather than per request.
+ */
+export const DUMMY_KEY_HASH: Promise<string> = Bun.password.hash(
+  "bw_live_nonexistent_0000000000000000000000000000000000000000",
+  { algorithm: "argon2id" },
+);
+
 export async function verifyApiKey(presented: string, hash: string): Promise<boolean> {
   try {
     return await Bun.password.verify(presented, hash);

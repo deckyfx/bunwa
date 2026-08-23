@@ -73,7 +73,7 @@ export const requireApiKey = new Elysia({ name: "requireApiKey" })
       throw new AuthError(401, "invalid-credential", "Unauthorized", "the API key is not valid", path);
     }
 
-    ApiKeyStore.touch(resolved.apiKey.id);
+    ApiKeyStore.touch(resolved.apiKey.id, resolved.environmentId);
 
     const auth: AuthContext = {
       projectId: resolved.projectId,

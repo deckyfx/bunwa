@@ -101,6 +101,7 @@ export class DeliveryStore {
 
   /** Record an attempt and its outcome, moving the delivery on. */
   static async recordAttempt(
+    environmentId: string,
     deliveryId: string,
     outcome: { ok: boolean; statusCode: number | null; error: string | null; durationMs: number },
     next: { state: Delivery["state"]; nextAttemptAt: Date | null },
@@ -125,7 +126,7 @@ export class DeliveryStore {
         ...(next.state === "delivered" ? { deliveredAt: new Date() } : {}),
         updatedAt: new Date(),
       })
-      .where(eq(deliveries.id, deliveryId));
+      .where(and(eq(deliveries.id, deliveryId), eq(deliveries.environmentId, environmentId)));
   }
 
   /** Scoped by project: a caller cannot read another tenant's delivery log. */
@@ -161,11 +162,16 @@ export class DeliveryStore {
    * Leaving the row due meant it was re-claimed every pass, filling the batch
    * and starving every other environment.
    */
-  static async defer(deliveryId: string, until: Date, database: Database = db()): Promise<void> {
+  static async defer(
+    environmentId: string,
+    deliveryId: string,
+    until: Date,
+    database: Database = db(),
+  ): Promise<void> {
     await database
       .update(deliveries)
       .set({ nextAttemptAt: until, updatedAt: new Date() })
-      .where(eq(deliveries.id, deliveryId));
+      .where(and(eq(deliveries.id, deliveryId), eq(deliveries.environmentId, environmentId)));
   }
 
   /**
@@ -234,8 +240,9 @@ export class DeliveryStore {
 
     const [updated] = await database
       .update(deliveries)
+      // Scoped on the statement, not only by the ownership read above.
       .set({ state: "pending", attemptCount: 0, nextAttemptAt: new Date(), updatedAt: new Date() })
-      .where(eq(deliveries.id, deliveryId))
+      .where(and(eq(deliveries.id, deliveryId), eq(deliveries.environmentId, owned.delivery.environmentId)))
       .returning();
     if (updated === undefined) throw new NotFoundError(`delivery ${deliveryId} not found`);
     return updated;

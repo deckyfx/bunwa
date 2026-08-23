@@ -184,7 +184,16 @@ export const deviceConsents = sqliteTable(
     responseChannel: text("response_channel", { enum: ["whatsapp_reply", "dashboard", "operator"] }),
     /** Replying JID, message id, IP — what proves they agreed, months later. */
     evidence: text("evidence", { mode: "json" }).$type<Record<string, unknown>>().notNull().default({}),
-    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * When the *question* lapses, not the answer.
+     *
+     * Nullable, because a granted consent does not expire — it stands until the
+     * phone holder revokes it. Only a pending challenge has a deadline. Making
+     * this notNull meant every grant carried one, and effectiveStatus then read
+     * a 24-hour-old consent as expired, so a project that had been given
+     * permission had to ask again the next day.
+     */
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
     ...timestamps,
   },
   (t) => [uniqueIndex("device_consents_device_project_key").on(t.deviceId, t.projectId)],
@@ -399,7 +408,11 @@ export const outboundMessages = sqliteTable(
       foreignColumns: [virtualDevices.id, virtualDevices.environmentId],
       name: "outbound_messages_binding_environment_fk",
     }).onDelete("cascade"),
-    index("outbound_engine_message_idx").on(t.engineMessageId),
+    // Unique per environment, not merely indexed. recordAck resolves an ack by
+    // this id, and two rows sharing one would make that resolution ambiguous —
+    // which the consumer now detects and refuses, but the database should not
+    // permit in the first place.
+    uniqueIndex("outbound_environment_engine_message_key").on(t.environmentId, t.engineMessageId),
     index("outbound_environment_idx").on(t.environmentId),
     // Unacked sends are swept to message.undelivered, so this is a hot query.
     index("outbound_state_accepted_idx").on(t.state, t.acceptedAt),

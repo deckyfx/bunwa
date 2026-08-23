@@ -68,8 +68,7 @@ export async function runOnce(options: WorkerOptions = {}): Promise<number> {
       // Terminal, not deferred. The join in claimDue requires a webhook row, so
       // reaching here means it was deleted mid-pass — there is nowhere to send
       // this and retrying forever would hide that rather than surface it.
-      await DeliveryStore.recordAttempt(
-        item.delivery.id,
+      await DeliveryStore.recordAttempt(item.delivery.environmentId, item.delivery.id,
         { ok: false, statusCode: null, error: "no webhook is configured for this environment", durationMs: 0 },
         { state: "dead", nextAttemptAt: null },
         database,
@@ -78,7 +77,7 @@ export async function runOnce(options: WorkerOptions = {}): Promise<number> {
       continue;
     }
     if (!circuitAllows(webhook.circuitState, webhook.circuitOpenedAt, now)) {
-      await DeliveryStore.defer(item.delivery.id, new Date(now.getTime() + CIRCUIT_PROBE_AFTER_MS), database);
+      await DeliveryStore.defer(item.delivery.environmentId, item.delivery.id, new Date(now.getTime() + CIRCUIT_PROBE_AFTER_MS), database);
       continue;
     }
 
@@ -92,7 +91,7 @@ export async function runOnce(options: WorkerOptions = {}): Promise<number> {
     );
 
     if (outcome.ok) {
-      await DeliveryStore.recordAttempt(item.delivery.id, outcome, { state: "delivered", nextAttemptAt: null }, database);
+      await DeliveryStore.recordAttempt(item.delivery.environmentId, item.delivery.id, outcome, { state: "delivered", nextAttemptAt: null }, database);
       await closeCircuit(item.delivery.environmentId, database);
       log.debug("delivered", { deliveryId: item.delivery.id, statusCode: outcome.statusCode });
       continue;
@@ -100,8 +99,7 @@ export async function runOnce(options: WorkerOptions = {}): Promise<number> {
 
     const attemptCount = item.delivery.attemptCount + 1;
     const retryAt = nextAttemptAt(attemptCount, item.maxAttempts, now);
-    await DeliveryStore.recordAttempt(
-      item.delivery.id,
+    await DeliveryStore.recordAttempt(item.delivery.environmentId, item.delivery.id,
       outcome,
       retryAt === null ? { state: "dead", nextAttemptAt: null } : { state: "pending", nextAttemptAt: retryAt },
       database,

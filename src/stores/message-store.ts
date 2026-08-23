@@ -16,7 +16,25 @@ import { NotFoundError } from "./errors";
 /** How long to wait for an ack before calling a message undelivered. */
 export const ACK_TIMEOUT_MS = 60_000;
 
+/**
+ * Which states an acknowledgement may advance from.
+ *
+ * Shared by both entry points so they cannot drift. `undelivered` is included
+ * because the sweep is a timeout, not a verdict: a late ack proves the message
+ * arrived after all, and the row should say so rather than keep a guess.
+ */
+function ackableFrom(status: "delivered" | "read"): OutboundMessage["state"][] {
+  return status === "read" ? ["accepted", "delivered", "undelivered"] : ["accepted", "undelivered"];
+}
+
 export class MessageStore {
+  /**
+   * Record that the engine took a message.
+   *
+   * Acceptance, not delivery — the two are separated by up to 203 seconds of
+   * silence (docs/12), so this row starts as `accepted` and only an ack moves
+   * it on. Nothing here should be read as proof the customer received anything.
+   */
   static async recordAccepted(
     input: {
       virtualDeviceId: string;
@@ -49,10 +67,10 @@ export class MessageStore {
     status: "delivered" | "read",
     database: Database = db(),
   ): Promise<OutboundMessage | null> {
-    const allowedFrom: OutboundMessage["state"][] = status === "read" ? ["accepted", "delivered"] : ["accepted"];
+    const allowedFrom = ackableFrom(status);
     const [updated] = await database
       .update(outboundMessages)
-      .set({ state: status, ackedAt: new Date() })
+      .set({ state: status, ackedAt: new Date(), updatedAt: new Date() })
       .where(
         and(
           eq(outboundMessages.id, id),
@@ -64,6 +82,13 @@ export class MessageStore {
     return updated ?? null;
   }
 
+  /**
+   * Acknowledge by engine id, within one environment.
+   *
+   * Kept alongside recordAckById because the delivery path has the engine's id
+   * and not ours. Both share ackableFrom so the two entry points cannot drift
+   * on which states an ack may advance from.
+   */
   static async recordAck(
     environmentId: string,
     engineMessageId: string,
@@ -76,8 +101,7 @@ export class MessageStore {
     // read, but the bridge gives no ordering guarantee across retries or
     // reconnects, and a late `delivered` overwriting `read` would make a
     // message appear to regress.
-    const allowedFrom: Array<OutboundMessage["state"]> =
-      status === "read" ? ["accepted", "delivered", "undelivered"] : ["accepted", "undelivered"];
+    const allowedFrom = ackableFrom(status);
 
     const [updated] = await database
       .update(outboundMessages)
@@ -105,11 +129,16 @@ export class MessageStore {
   static async findUnacked(
     olderThanMs = ACK_TIMEOUT_MS,
     now: Date = new Date(),
+    limit = 500,
     database: Database = db(),
   ): Promise<OutboundMessage[]> {
+    // Bounded. An unbounded sweep loads every unacked message ever sent the
+    // first time it runs against a busy environment, which is precisely when
+    // the sweep matters and precisely when it cannot afford to.
     return database
       .select()
       .from(outboundMessages)
+      .limit(limit)
       .where(
         and(
           eq(outboundMessages.state, "accepted"),

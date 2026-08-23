@@ -68,7 +68,7 @@ CREATE TABLE `device_consents` (
 	`responded_at` integer,
 	`response_channel` text,
 	`evidence` text DEFAULT '{}' NOT NULL,
-	`expires_at` integer NOT NULL,
+	`expires_at` integer,
 	`created_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	`updated_at` integer DEFAULT (unixepoch() * 1000) NOT NULL,
 	FOREIGN KEY (`device_id`) REFERENCES `devices`(`id`) ON UPDATE no action ON DELETE cascade,
@@ -154,7 +154,7 @@ CREATE TABLE `outbound_messages` (
 	FOREIGN KEY (`virtual_device_id`,`environment_id`) REFERENCES `virtual_devices`(`id`,`environment_id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE INDEX `outbound_engine_message_idx` ON `outbound_messages` (`engine_message_id`);--> statement-breakpoint
+CREATE UNIQUE INDEX `outbound_environment_engine_message_key` ON `outbound_messages` (`environment_id`,`engine_message_id`);--> statement-breakpoint
 CREATE INDEX `outbound_environment_idx` ON `outbound_messages` (`environment_id`);--> statement-breakpoint
 CREATE INDEX `outbound_state_accepted_idx` ON `outbound_messages` (`state`,`accepted_at`);--> statement-breakpoint
 CREATE TABLE `projects` (

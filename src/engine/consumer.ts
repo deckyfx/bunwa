@@ -27,6 +27,18 @@ import type { DeviceEngine, EngineEvent } from "./types";
  * A set rather than an inline check, so a new pairing event cannot quietly opt
  * into fan-out by omission.
  */
+/** Consecutive budget breaches before a rule is switched off. */
+const TIMEOUT_BREACHES_BEFORE_DISABLE = 3;
+
+/**
+ * Breaches per rule, in memory.
+ *
+ * Deliberately not persisted: a restart clearing the count is the right
+ * behaviour, since the alternative is a rule disabled by a transient load spike
+ * staying disabled for ever with nothing recording why.
+ */
+const timeoutCounts = new Map<string, number>();
+
 const PAIRING_CREDENTIAL_EVENTS = new Set<EngineEvent["type"]>(["device.qr", "device.pair_code"]);
 
 /**
@@ -320,8 +332,51 @@ async function fanOut(event: EngineEvent, engineKind: string, database: Database
  * accident.
  */
 function withoutGlobalIds(event: EngineEvent): Record<string, unknown> {
-  const { deviceId: _global, type: _type, ...rest } = event as Record<string, unknown> & { deviceId: string };
-  return rest;
+  switch (event.type) {
+    case "device.connected":
+      return { jid: event.jid, push_name: event.pushName };
+    case "device.disconnected":
+      return { reason: event.reason, will_retry: event.willRetry };
+    case "device.logged_out":
+      return { reason: event.reason };
+    case "device.degraded":
+      return { attempts: event.attempts, last_error: event.lastError };
+    case "device.recovered":
+      return { downtime_ms: event.downtimeMs };
+    case "message.ack":
+      return { message_id: event.messageId, status: event.status };
+    case "call.offer":
+      // Nothing about the caller's device or the owner's naming of them: the
+      // stage 0 capture showed gowa forwarding both (docs/12).
+      return { from: event.from, call_id: event.callId };
+    case "message.received":
+      return {
+        id: event.message.id,
+        from: event.message.from,
+        from_lid: event.message.fromLid,
+        chat_id: event.message.chatId,
+        chat_lid: event.message.chatLid,
+        is_from_me: event.message.isFromMe,
+        timestamp: event.message.timestamp.toISOString(),
+        body: event.message.body,
+        media:
+          event.message.media === null
+            ? null
+            : {
+                kind: event.message.media.kind,
+                url: event.message.media.url,
+                mime_type: event.message.media.mimeType,
+                filename: event.message.media.filename,
+                caption: event.message.media.caption,
+                size_bytes: event.message.media.sizeBytes,
+              },
+      };
+    // Pairing credentials never reach fan-out (see PAIRING_CREDENTIAL_EVENTS),
+    // so they have no body here on purpose.
+    case "device.qr":
+    case "device.pair_code":
+      return {};
+  }
 }
 
 /**
