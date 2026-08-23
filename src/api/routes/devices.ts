@@ -82,6 +82,9 @@ export function deviceRoutes(registry: EngineRegistry) {
             }
           }
           await pool.engine.provision(result.device.id);
+          // Recorded after provision succeeds, so a device is never counted
+          // against a pool that failed to take it.
+          await DeviceStore.assignPool(result.device.id, pool.id, pool.kind === "native" ? "native" : "gowa", result.device.id);
           const session = await pool.engine.startPairing(result.device.id, body.pairingMethod ?? "qr");
           return {
             outcome: result.outcome,

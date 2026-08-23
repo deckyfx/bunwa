@@ -23,6 +23,15 @@ reviews:
   # applied. Each is answered by an inline comment at the site and, where the
   # assumption could change, by a test. Re-raising them costs a review slot.
   path_instructions:
+    - path: "src/stores/device-store.ts"
+      instructions: >-
+        The consent state machine is enumerated exhaustively over (this
+        project's consent status x whether anyone else holds a standing claim),
+        with the table written out in a comment above the branch. Four
+        consecutive reviews found a bug here because each fix handled only the
+        combination that had been surfaced. If reporting a case, say which row
+        of that table is wrong rather than proposing another special case.
+
     - path: "src/delivery/sender.ts"
       instructions: >-
         Do not report that the DNS rebinding window is open, or ask for the

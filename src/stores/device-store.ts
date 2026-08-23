@@ -20,6 +20,7 @@ import {
   type DeviceConsent,
   type VirtualDevice,
 } from "../db/schema";
+import { withTransaction } from "../db/transaction";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 
 /** How long a phone holder has to answer before the request lapses. */
@@ -66,7 +67,7 @@ export class DeviceStore {
     // A failure partway through — a unique-constraint clash on the binding, say
     // — would otherwise leave the consent committed, and the retry would then
     // see a granted consent and take the `active` path with no binding at all.
-    return database.transaction(async (tx) => this.claimWithin(tx as unknown as Database, input, now));
+    return withTransaction(database, () => this.claimWithin(database, input, now));
   }
 
   private static async claimWithin(
@@ -96,45 +97,70 @@ export class DeviceStore {
       throw new ConflictError(`this environment is already bound to ${msisdn}`, "msisdn");
     }
 
+    /*
+     * The consent state machine, enumerated.
+     *
+     * This is the fourth pass finding a bug here, and every previous fix
+     * handled whichever combination a reviewer had surfaced — device state,
+     * then other-project consent, then this project's pending request, then a
+     * revoked one. Each was correct and each left the next case open. So the
+     * table below is exhaustive over (this project's consent × any other
+     * standing claim), and every row is a deliberate decision rather than a
+     * fallthrough:
+     *
+     *   this project    others hold?   outcome
+     *   ─────────────────────────────────────────────────────────────────
+     *   granted         any            active — the product's whole point
+     *   pending         any            awaiting (reuse the live challenge)
+     *   denied          any            awaiting (they may say yes now)
+     *   revoked         any            awaiting (they may say yes now)
+     *   expired         yes            awaiting — someone else holds it
+     *   expired         no             new device: pair, implicit consent
+     *   none            yes            awaiting — someone else holds it
+     *   none            no             new device: pair, implicit consent
+     */
     const consent = await this.consentFor(device.id, environment.projectId, database);
-    const projectHasConsent = consent !== null && consent.status === "granted";
+    const mine = consent?.status ?? "none";
 
-    // Whether any project has a claim on this device already.
-    //
-    // Keying the first branch on `device.state === "unpaired"` alone was wrong,
-    // and the tests caught it: a device stays unpaired until an engine actually
-    // pairs it, so a second project claiming the same number in that window
-    // would also be treated as the first — granted implicit consent and access
-    // with nobody asked. The question is not "has it paired?" but "has anyone
-    // else already claimed it?".
-    // Any standing claim at all, by anyone including this project.
-    //
-    // The rule is "is this device new to the system?", not "is it new to this
-    // project" and not "has it paired". Both narrower forms were wrong and both
-    // were caught by tests: keying on device state let a second project slip in
-    // before pairing completed, and ignoring this project's own *pending*
-    // request let its second environment grant itself what the first was still
-    // waiting to be given.
-    const claimed = await this.hasStandingClaim(device.id, database);
-
-    // Genuinely new to the system: the customer scans once, and pairing implies
-    // consent for the project that caused it — they chose to pair for it.
-    if (!claimed) {
-      await this.grantImplicitConsent(device.id, environment.projectId, environment.id, now, database);
-      const virtualDevice = await this.bind(environment.id, device.id, alias, input.scopes ?? [], "pending_pairing", database);
-      return { outcome: "pending_pairing", virtualDevice, device };
-    }
-
-    // Already consented to this project — including by a sibling environment,
-    // because consent is per project. This is the branch the product exists for.
-    if (projectHasConsent) {
+    if (mine === "granted") {
       const virtualDevice = await this.bind(environment.id, device.id, alias, input.scopes ?? [], "active", database, now);
       return { outcome: "active", virtualDevice, device };
     }
 
-    // Paired, but this project has never been granted it. Ask the phone holder.
+    // Only "expired" and "none" can reach the new-device branch, and only when
+    // nobody else holds the device. Everything else is a decision that has been
+    // made, or a question already outstanding, and must be asked rather than
+    // assumed.
+    const undecided = mine === "expired" || mine === "none";
+    const claimedByAnyone = await this.hasStandingClaim(device.id, database);
+
+    if (undecided && !claimedByAnyone) {
+      // Genuinely new to the system. The customer scans once, and pairing for
+      // a project is consent for it — they chose to pair for this product.
+      await this.grantImplicitConsent(device.id, environment.projectId, environment.id, now, database);
+      const virtualDevice = await this.bind(
+        environment.id,
+        device.id,
+        alias,
+        input.scopes ?? [],
+        "pending_pairing",
+        database,
+      );
+      return { outcome: "pending_pairing", virtualDevice, device };
+    }
+
+    // Everything else asks. A pending request is reused rather than replaced,
+    // so a second environment does not invalidate a challenge the phone holder
+    // may already be looking at.
     const pending = await this.requestConsent(device.id, environment.projectId, environment.id, now, database);
-    const virtualDevice = await this.bind(environment.id, device.id, alias, input.scopes ?? [], "pending_consent", database);
+    const virtualDevice = await this.bind(
+      environment.id,
+      device.id,
+      alias,
+      input.scopes ?? [],
+      "pending_consent",
+      database,
+    );
     return { outcome: "awaiting_confirmation", virtualDevice, device, consent: pending };
   }
 
@@ -232,16 +258,24 @@ export class DeviceStore {
         evidence: { implicit: "granted by pairing for this project" },
         expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
       })
-      // No upsert: an implicit grant must never overwrite a row. If one exists
-      // it records a decision — including a refusal — and pairing for a
-      // project is not consent to override it.
-      .onConflictDoNothing()
+      // Upserts only over an expired row. onConflictDoNothing left a stale
+      // `expired` consent in place while pairing proceeded, so the device
+      // ended up paired for a project whose consent said it had lapsed — and
+      // no audit row was written either. A decision (granted, denied, revoked)
+      // is never reached here: the caller has already excluded those.
+      .onConflictDoUpdate({
+        target: [deviceConsents.deviceId, deviceConsents.projectId],
+        set: {
+          status: "granted",
+          respondedAt: now,
+          responseChannel: "dashboard",
+          requestedByEnvironmentId: environmentId,
+          expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
+          updatedAt: now,
+        },
+      })
       .returning();
-    if (created === undefined) {
-      const existing = await this.consentFor(deviceId, projectId, database);
-      if (existing === null) throw new Error("insert returned no row");
-      return existing;
-    }
+    if (created === undefined) throw new Error("upsert returned no row");
     await this.audit(created.id, "granted", "system", "system", { implicit: true }, database);
     return created;
   }
@@ -309,8 +343,8 @@ export class DeviceStore {
   ): Promise<DeviceConsent> {
     // Atomic: the decision, its audit row and the bindings it releases must
     // land together, or a customer's "yes" is recorded with nothing activated.
-    return database.transaction(async (tx) =>
-      this.respondWithin(tx as unknown as Database, challengeToken, decision, channel, evidence, now),
+    return withTransaction(database, () =>
+      this.respondWithin(database, challengeToken, decision, channel, evidence, now),
     );
   }
 
@@ -368,9 +402,7 @@ export class DeviceStore {
     database: Database = db(),
     now: Date = new Date(),
   ): Promise<void> {
-    await database.transaction(async (tx) =>
-      this.revokeWithin(tx as unknown as Database, deviceId, projectId, actor, now),
-    );
+    await withTransaction(database, () => this.revokeWithin(database, deviceId, projectId, actor, now));
   }
 
   private static async revokeWithin(
@@ -480,6 +512,26 @@ export class DeviceStore {
       if (row.poolId !== null) counts.set(row.poolId, Number(row.count));
     }
     return counts;
+  }
+
+  /**
+   * Record which engine pool holds a device.
+   *
+   * Nothing wrote enginePoolId, so countByPool saw every device as unassigned,
+   * choosePool always read zero usage, and the bounded capacity that
+   * ADR-0003 rests on had no effect whatsoever.
+   */
+  static async assignPool(
+    deviceId: string,
+    poolId: string,
+    engineKind: "gowa" | "native",
+    engineDeviceId: string,
+    database: Database = db(),
+  ): Promise<void> {
+    await database
+      .update(devices)
+      .set({ enginePoolId: poolId, engineKind, engineDeviceId, updatedAt: new Date() })
+      .where(eq(devices.id, deviceId));
   }
 
   /** Everything using this device, for the operator "who can use my number" view. */

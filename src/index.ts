@@ -58,9 +58,19 @@ async function main(): Promise<void> {
     log.info("shutting down", { signal });
     // Await the delivery pass in flight before the server: anything unfinished
     // stays queued and resumes next start, but a half-written attempt does not.
-    await stopWorker();
-    await registry.closeAll();
+    // Order matters. Stop accepting requests first: closing engines while
+    // traffic is still arriving fails those requests for no reason. Then drain
+    // the delivery pass in flight, then release the engines.
     await server.stop(false);
+    await stopWorker();
+    // Engine cleanup must not be able to prevent the process exiting — a
+    // rejected close with shutdown already marked in progress would leave it
+    // hung with no way for a later signal to recover it.
+    await registry.closeAll().catch((err: unknown) => {
+      log.warn("engine cleanup failed during shutdown", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
     process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));

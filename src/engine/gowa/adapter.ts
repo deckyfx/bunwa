@@ -23,9 +23,11 @@ import {
   type SendAction,
   type SendResult,
 } from "../types";
+import { lookup } from "node:dns/promises";
+
 import { INITIAL_MEMORY, reconcile, type DeviceMemory } from "./reconciler";
 import { config } from "../../config/env";
-import { validateWebhookTarget } from "../../delivery/target";
+import { isAddressAllowed, validateWebhookTarget } from "../../delivery/target";
 import { log } from "../../observability/logger";
 
 export interface GowaAdapterOptions {
@@ -37,6 +39,14 @@ export interface GowaAdapterOptions {
   requestTimeoutMs?: number;
   /** Injected in tests so no socket is opened. */
   fetchImpl?: typeof fetch;
+  /**
+   * Injected in tests so no DNS query is made.
+   *
+   * Injected rather than skipped under a flag: the resolve-then-check is a
+   * security control, and a suite that disabled it would assert against a
+   * different code path than production runs.
+   */
+  lookupImpl?: (hostname: string) => Promise<Array<{ address: string }>>;
 }
 
 /** gowa's envelope. Every response carries it. */
@@ -169,7 +179,7 @@ export class GowaAdapter implements DeviceEngine {
   }
 
   async send(deviceId: string, action: SendAction): Promise<SendResult> {
-    const { path, body, multipart } = this.toGowaSend(action);
+    const { path, body, multipart } = await this.toGowaSend(action);
     const result = await this.request<{ message_id?: string }>("POST", path, body, {
       deviceId,
       multipart,
@@ -180,11 +190,13 @@ export class GowaAdapter implements DeviceEngine {
   }
 
   /** Map a SendAction onto gowa's endpoint and payload shape. */
-  private toGowaSend(action: SendAction): { path: string; body: Record<string, string>; multipart: boolean } {
+  private async toGowaSend(
+    action: SendAction,
+  ): Promise<{ path: string; body: Record<string, string>; multipart: boolean }> {
     const to = action.to;
     if (action.to.trim() === "") throw new EngineError("recipient is required", false);
 
-    const mediaUrl = (ref: { url: string } | { base64: string; mimeType: string }): string => {
+    const mediaUrl = async (ref: { url: string } | { base64: string; mimeType: string }): Promise<string> => {
       if ("url" in ref) return this.assertSafeUrl(ref.url);
       // gowa's *_url fields take a URL; base64 would need a multipart upload,
       // which is deferred rather than silently mishandled.
@@ -202,7 +214,7 @@ export class GowaAdapter implements DeviceEngine {
             // gowa fetches this URL server-side to build the preview — measured
             // in docs/12. Handing it a caller-supplied address unchecked makes
             // gowa the SSRF vector instead of bunwa.
-            link: this.assertSafeUrl(action.url),
+            link: await this.assertSafeUrl(action.url),
             ...(action.caption === undefined ? {} : { caption: action.caption }),
           },
           multipart: false,
@@ -210,7 +222,7 @@ export class GowaAdapter implements DeviceEngine {
       case "image":
         return {
           path: "/send/image",
-          body: { phone: to, image_url: mediaUrl(action.media), ...(action.caption === undefined ? {} : { caption: action.caption }) },
+          body: { phone: to, image_url: await mediaUrl(action.media), ...(action.caption === undefined ? {} : { caption: action.caption }) },
           multipart: true,
         };
       case "document":
@@ -218,7 +230,7 @@ export class GowaAdapter implements DeviceEngine {
           path: "/send/file",
           body: {
             phone: to,
-            file_url: mediaUrl(action.media),
+            file_url: await mediaUrl(action.media),
             // Without this the recipient sees gowa's generated storage name.
             // For the PDF requirement that is the whole point: an invoice must
             // arrive as invoice-2026-08.pdf, not 1787394484-6cdd….pdf.
@@ -228,11 +240,11 @@ export class GowaAdapter implements DeviceEngine {
           multipart: true,
         };
       case "audio":
-        return { path: "/send/audio", body: { phone: to, audio_url: mediaUrl(action.media) }, multipart: true };
+        return { path: "/send/audio", body: { phone: to, audio_url: await mediaUrl(action.media) }, multipart: true };
       case "video":
         return {
           path: "/send/video",
-          body: { phone: to, video_url: mediaUrl(action.media), ...(action.caption === undefined ? {} : { caption: action.caption }) },
+          body: { phone: to, video_url: await mediaUrl(action.media), ...(action.caption === undefined ? {} : { caption: action.caption }) },
           multipart: true,
         };
     }
@@ -387,16 +399,41 @@ export class GowaAdapter implements DeviceEngine {
    * bunwa's own outbound requests would leave the same hole reachable one hop
    * further along. Non-retryable: a private address will not become public.
    */
-  private assertSafeUrl(raw: string): string {
+  private async assertSafeUrl(raw: string): Promise<string> {
+    const allowInsecure = config().allowInsecureWebhookTargets;
+    let url: URL;
     try {
-      validateWebhookTarget(raw, { allowInsecure: config().allowInsecureWebhookTargets });
-      return raw;
+      url = validateWebhookTarget(raw, { allowInsecure });
     } catch (err) {
       throw new EngineError(
         `refusing to pass an unsafe URL to the engine: ${err instanceof Error ? err.message : String(err)}`,
         false,
       );
     }
+
+    if (allowInsecure) return raw;
+
+    // Resolve here too. Validation only inspects the literal, and gowa will
+    // resolve the name itself inside the container — so a public-looking host
+    // pointing at a private address would be fetched by gowa even though bunwa
+    // would have refused it.
+    //
+    // KNOWN GAP, same as src/delivery/sender.ts: this narrows the rebinding
+    // window, it cannot close it. gowa does its own DNS lookup and there is no
+    // way to hand it a pinned address, so a resolver that answers differently
+    // for gowa than for us is still followed. Closing it needs bunwa to fetch
+    // the resource itself and pass gowa a URL it controls — tracked in docs/08.
+    const resolve = this.options.lookupImpl ?? ((hostname: string) => lookup(hostname, { all: true }));
+    let resolved: Array<{ address: string }>;
+    try {
+      resolved = await resolve(url.hostname);
+    } catch {
+      throw new EngineError(`refusing to pass a URL that does not resolve: ${url.hostname}`, false);
+    }
+    if (resolved.length === 0 || resolved.some((entry) => !isAddressAllowed(entry.address))) {
+      throw new EngineError("refusing to pass a URL resolving to a private or loopback address", false);
+    }
+    return raw;
   }
 
   /** Classify a gowa message. Unrecognised means retryable, deliberately. */

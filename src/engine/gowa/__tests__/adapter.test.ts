@@ -24,8 +24,16 @@ function stubGowa(routes: Record<string, unknown>, record?: Array<{ url: string;
   }) as unknown as typeof fetch;
 }
 
+/** Resolves to a public address, so the SSRF check runs without needing DNS. */
+const publicLookup = async () => [{ address: "93.184.216.34" }];
+
 const adapter = (fetchImpl: typeof fetch) =>
-  new GowaAdapter({ baseUrl: "http://127.0.0.1:3100", fetchImpl, pollIntervalMs: 999_999 });
+  new GowaAdapter({
+    baseUrl: "http://127.0.0.1:3100",
+    fetchImpl,
+    lookupImpl: publicLookup,
+    pollIntervalMs: 999_999,
+  });
 
 describe("provision", () => {
   test("is idempotent — an existing slot is success, not failure", async () => {
@@ -101,6 +109,21 @@ describe("send mapping", () => {
     await expect(engine.send("d1", { type: "text", to: "  ", text: "x" })).rejects.toMatchObject({
       retryable: false,
     });
+  });
+
+  test("a media URL resolving to a private address is refused before gowa sees it", async () => {
+    // gowa resolves the name itself inside the container, so validating only
+    // the literal would let a public-looking host reach loopback one hop on.
+    const blocked = new GowaAdapter({
+      baseUrl: "http://127.0.0.1:3100",
+      fetchImpl: stubGowa({ "/send/": { code: "SUCCESS", results: { message_id: "x" } } }),
+      lookupImpl: async () => [{ address: "169.254.169.254" }],
+      pollIntervalMs: 999_999,
+    });
+    await expect(
+      blocked.send("d1", { type: "image", to: "+62811", media: { url: "https://evil.example/x.png" } }),
+    ).rejects.toMatchObject({ retryable: false });
+    await blocked.close();
   });
 
   test("base64 media is refused rather than silently mishandled", async () => {

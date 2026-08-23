@@ -204,7 +204,9 @@ export class Config {
       runtimeDir: this.runtimeDir,
       adminApiEnabled: this.adminApiEnabled,
       allowInsecureWebhookTargets: this.allowInsecureWebhookTargets,
-      gowa: this.gowaBaseUrl ?? "(disabled)",
+      // Redacted: a base URL may carry basic-auth credentials for the engine,
+      // and describe() is written to the application log at every start.
+      gowa: this.gowaBaseUrl === null ? "(disabled)" : redactUrl(this.gowaBaseUrl),
       enginePoolCapacity: this.enginePoolCapacity,
     };
   }
