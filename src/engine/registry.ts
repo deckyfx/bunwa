@@ -63,13 +63,6 @@ export class EngineRegistry {
   }
 
   /**
-   * Close every engine, then clear.
-   *
-   * allSettled, not all: one engine that throws on close must not leave the
-   * others open and the registry populated — this runs during shutdown, where
-   * the alternative is a process that will not exit.
-   */
-  /**
    * The pool holding a device, or the only pool if it has no assignment yet.
    *
    * Returns undefined rather than guessing when there are several pools and no
@@ -82,6 +75,13 @@ export class EngineRegistry {
     return all.length === 1 ? all[0] : undefined;
   }
 
+  /**
+   * Close every engine, then clear.
+   *
+   * allSettled, not all: one engine that throws on close must not leave the
+   * others open and the registry populated — this runs during shutdown, where
+   * the alternative is a process that will not exit.
+   */
   async closeAll(): Promise<void> {
     const results = await Promise.allSettled(this.list().map((p) => p.engine.close()));
     this.pools.clear();

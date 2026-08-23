@@ -88,7 +88,7 @@ export class DeviceStore {
     // A failure partway through — a unique-constraint clash on the binding, say
     // — would otherwise leave the consent committed, and the retry would then
     // see a granted consent and take the `active` path with no binding at all.
-    return withTransaction(database, () => this.claimWithin(database, input, now));
+    return withTransaction(database, (tx) => this.claimWithin(tx, input, now));
   }
 
   private static async claimWithin(
@@ -366,8 +366,8 @@ export class DeviceStore {
   ): Promise<DeviceConsent> {
     // Atomic: the decision, its audit row and the bindings it releases must
     // land together, or a customer's "yes" is recorded with nothing activated.
-    return withTransaction(database, () =>
-      this.respondWithin(database, challengeToken, decision, channel, evidence, now),
+    return withTransaction(database, (tx) =>
+      this.respondWithin(tx, challengeToken, decision, channel, evidence, now),
     );
   }
 
@@ -425,7 +425,7 @@ export class DeviceStore {
     database: Database = db(),
     now: Date = new Date(),
   ): Promise<void> {
-    await withTransaction(database, () => this.revokeWithin(database, deviceId, projectId, actor, now));
+    await withTransaction(database, (tx) => this.revokeWithin(tx, deviceId, projectId, actor, now));
   }
 
   private static async revokeWithin(

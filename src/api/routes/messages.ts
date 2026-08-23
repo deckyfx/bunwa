@@ -125,6 +125,12 @@ export function messageRoutes(registry: EngineRegistry) {
         }
 
         let response: { messageId: string; state: string; acceptedAt: string };
+        // Tracks whether the engine has taken the message. Once it has,
+        // WhatsApp may already have delivered it, so the reservation must
+        // stand even if the bookkeeping afterwards fails — releasing it would
+        // let the caller's retry send a second OTP, which is the exact bug the
+        // reservation exists to prevent, moved one line further down.
+        let engineAccepted = false;
         try {
           const { binding, deviceId } = await resolveSendableDevice(auth, params.ref);
 
@@ -146,6 +152,8 @@ export function messageRoutes(registry: EngineRegistry) {
             );
           }
 
+          engineAccepted = true;
+
           const recorded = await MessageStore.recordAccepted({
             virtualDeviceId: binding.id,
             environmentId: auth.environmentId,
@@ -163,10 +171,26 @@ export function messageRoutes(registry: EngineRegistry) {
             acceptedAt: recorded.acceptedAt.toISOString(),
           };
         } catch (err) {
-          // The side effect did not happen, so the reservation must not outlive
-          // the attempt — otherwise the caller's retry is told a request is in
-          // flight for ever.
-          await IdempotencyStore.release(auth.environmentId, key);
+          if (engineAccepted) {
+            // The message is out. Complete the reservation with the failure so
+            // a retry replays it rather than sending again — the caller needs
+            // to know the send happened even though the response did not.
+            await IdempotencyStore.complete(auth.environmentId, key, {
+              statusCode: 500,
+              response: {
+                type: "https://bunwa.dev/errors/accepted-but-unrecorded",
+                title: "Message was sent but could not be recorded",
+                status: 500,
+                detail: "The engine accepted this message. Do not retry: it would send a duplicate.",
+              },
+            });
+            log.error("message sent but not recorded", err, { type: body.type });
+          } else {
+            // The side effect never happened, so the reservation must not
+            // outlive the attempt — otherwise the caller's retry is told a
+            // request is in flight for ever.
+            await IdempotencyStore.release(auth.environmentId, key);
+          }
           throw err;
         }
 

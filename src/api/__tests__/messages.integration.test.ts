@@ -20,6 +20,7 @@ import { FakeEngine } from "../../engine/fake";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { DeviceStore } from "../../stores/device-store";
 import { EnvironmentStore } from "../../stores/environment-store";
+import { MessageStore } from "../../stores/message-store";
 import { ProjectStore } from "../../stores/project-store";
 import { handleEngineEvent } from "../../engine/consumer";
 import { resetConfig } from "../../config/env";
@@ -265,5 +266,36 @@ describe("idempotency findings from review", () => {
       }),
     );
     expect(res.status).toBe(200);
+  });
+});
+
+describe("the reservation must outlive a partial failure", () => {
+  test("a failure after the engine accepted does not free the key for a retry", async () => {
+    // The catch released the reservation for *any* error inside the try,
+    // including one raised after the engine had already sent. WhatsApp holds
+    // the message; freeing the key lets the retry send a second one — the
+    // duplicate-OTP bug, one line further down than where it was fixed.
+    const database = createDatabase(join(dir, "t.sqlite"));
+    const idem = crypto.randomUUID();
+
+    // Break the bookkeeping that runs after a successful send.
+    const original = MessageStore.recordAccepted;
+    (MessageStore as unknown as { recordAccepted: unknown }).recordAccepted = async () => {
+      throw new Error("bookkeeping failed");
+    };
+    try {
+      expect((await send(otp, idem)).status).toBe(500);
+    } finally {
+      (MessageStore as unknown as { recordAccepted: unknown }).recordAccepted = original;
+    }
+
+    // The key must still be claimed, and completed rather than released.
+    const rows = database.all<{ response: string | null }>(sql`select response from idempotency_keys`);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.response).not.toBeNull();
+
+    // A retry replays the failure instead of sending again.
+    const retry = await send(otp, idem);
+    expect(retry.headers.get("idempotent-replay")).toBe("true");
   });
 });

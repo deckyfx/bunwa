@@ -14,6 +14,9 @@ import { GowaAdapter } from "./engine/gowa/adapter";
 import { startEngineConsumer } from "./engine/consumer";
 import { log } from "./observability/logger";
 
+/** How long to let in-flight requests finish before closing connections. */
+const SHUTDOWN_DRAIN_MS = 10_000;
+
 async function main(): Promise<void> {
   let cfg: Config;
   try {
@@ -67,9 +70,27 @@ async function main(): Promise<void> {
     // Order matters. Stop accepting requests first: closing engines while
     // traffic is still arriving fails those requests for no reason. Then drain
     // the delivery pass in flight, then release the engines.
-    await server.stop(false);
-    await Promise.all(stopConsumers.map((stop) => stop()));
-    await stopWorker();
+    //
+    // Bounded: server.stop(false) waits indefinitely for in-flight requests, so
+    // one stuck handler would block every later step and the process would
+    // never exit. After the deadline, close connections and move on.
+    await Promise.race([
+      server.stop(false),
+      Bun.sleep(SHUTDOWN_DRAIN_MS).then(() => {
+        log.warn("drain deadline reached; closing remaining connections", { afterMs: SHUTDOWN_DRAIN_MS });
+        return server.stop(true);
+      }),
+    ]);
+
+    // allSettled, not all: one consumer failing to stop must not skip the
+    // worker, the engines and the exit, leaving the process alive with
+    // everything open and no way for a later signal to retry.
+    for (const result of await Promise.allSettled(stopConsumers.map((stop) => stop()))) {
+      if (result.status === "rejected") log.warn("engine consumer failed to stop", { error: String(result.reason) });
+    }
+    await stopWorker().catch((err: unknown) => {
+      log.warn("delivery worker failed to stop", { error: err instanceof Error ? err.message : String(err) });
+    });
     // Engine cleanup must not be able to prevent the process exiting — a
     // rejected close with shutdown already marked in progress would leave it
     // hung with no way for a later signal to recover it.

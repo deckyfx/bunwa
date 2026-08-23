@@ -66,7 +66,25 @@ export class IdempotencyStore {
 
     if (inserted.length > 0) return { state: "reserved" };
 
-    // Lost the race, or a previous attempt reserved and has not finished.
+    // The insert lost to an existing row. That row is either a live
+    // reservation, a completed response, or a stale one past its TTL that
+    // lookup() reports as absent — which would leave the caller told a request
+    // is in flight for ever, until an unrelated sweep happened to run.
+    const [existingRow] = await database
+      .select()
+      .from(idempotencyKeys)
+      .where(and(eq(idempotencyKeys.environmentId, environmentId), eq(idempotencyKeys.key, key)))
+      .limit(1);
+
+    if (existingRow !== undefined && existingRow.createdAt.getTime() + IDEMPOTENCY_TTL_MS <= now.getTime()) {
+      // Expired: take it over rather than waiting for the sweep.
+      await database
+        .update(idempotencyKeys)
+        .set({ requestHash, response: null, statusCode: null, createdAt: now })
+        .where(and(eq(idempotencyKeys.environmentId, environmentId), eq(idempotencyKeys.key, key)));
+      return { state: "reserved" };
+    }
+
     const raced = await this.lookup(environmentId, key, requestHash, database, now);
     return raced !== null ? { state: "replay", stored: raced } : { state: "in_flight" };
   }

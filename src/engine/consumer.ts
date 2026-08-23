@@ -19,7 +19,14 @@ import { EVENT_SCHEMA_VERSION, type EventEnvelope, type EventType } from "../eve
 import { log, withContext } from "../observability/logger";
 import type { DeviceEngine, EngineEvent } from "./types";
 
-/** Handle one engine event: update state, then fan out to entitled tenants. */
+/**
+ * Apply one engine event to the control plane.
+ *
+ * The bridge between an engine, which knows about sockets, and the control
+ * plane, which knows about tenants. Exported so it can be driven directly in
+ * tests and by the consumer loop below — and deliberately the only place an
+ * engine event causes a write, so the device state machine has one owner.
+ */
 export async function handleEngineEvent(
   event: EngineEvent,
   database: Database = db(),
@@ -153,15 +160,25 @@ function withoutGlobalIds(event: EngineEvent): Record<string, unknown> {
  * Each event is handled in its own logging context, so an event and the
  * deliveries it produces share one correlation id.
  */
+/**
+ * Follow an engine's event stream for the life of the process.
+ *
+ * Returns a stop function that releases the subscription and then waits for the
+ * event in flight, so shutdown neither hangs on an idle stream nor exits
+ * mid-write.
+ */
 export function startEngineConsumer(engine: DeviceEngine, database: Database = db()): () => Promise<void> {
   let stopped = false;
+  const iterator = engine.subscribe()[Symbol.asyncIterator]();
 
   // Retained rather than discarded, so shutdown can await it. Dropping the task
   // let process.exit run while an event was mid-write — the delivery half
   // enqueued, the state half not.
   const task = (async () => {
-    for await (const event of engine.subscribe()) {
-      if (stopped) return;
+    for (;;) {
+      const next = await iterator.next();
+      if (next.done === true || stopped) return;
+      const event = next.value;
       try {
         await withContext({ correlationId: crypto.randomUUID() }, () =>
           handleEngineEvent(event, database, engine.kind),
@@ -176,6 +193,10 @@ export function startEngineConsumer(engine: DeviceEngine, database: Database = d
 
   return async () => {
     stopped = true;
+    // Return the iterator first. `stopped` is only checked after an event
+    // arrives, so an idle stream would leave the task parked and shutdown
+    // waiting on it indefinitely.
+    await iterator.return?.().catch(() => undefined);
     await task.catch(() => undefined);
   };
 }

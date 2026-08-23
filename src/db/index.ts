@@ -28,6 +28,14 @@ export type Database = ReturnType<typeof createDatabase>;
  *
  * `:memory:` is accepted and skips directory creation.
  */
+/** Where each handle was opened, so a transaction can open its own. */
+const paths = new WeakMap<object, string>();
+
+/** The file a handle was opened against, for opening a sibling connection. */
+export function pathOf(database: object): string | undefined {
+  return paths.get(database);
+}
+
 export function createDatabase(path: string) {
   if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
   const sqlite = new BunDatabase(path, { create: true });
@@ -42,7 +50,9 @@ export function createDatabase(path: string) {
   // lock; without this a concurrent write surfaces as SQLITE_BUSY.
   sqlite.exec("PRAGMA busy_timeout = 5000");
 
-  return drizzle(sqlite, { schema });
+  const handle = drizzle(sqlite, { schema });
+  paths.set(handle, path);
+  return handle;
 }
 
 let instance: Database | undefined;

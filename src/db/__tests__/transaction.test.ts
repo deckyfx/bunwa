@@ -8,6 +8,10 @@
  * anyone looking.
  */
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { sql } from "drizzle-orm";
 
 import { createDatabase } from "../index";
@@ -103,5 +107,34 @@ describe("serialisation", () => {
       database.run(sql`insert into t (v) values ('after')`);
     });
     expect(database.all(sql`select v from t`)).toHaveLength(1);
+  });
+});
+
+describe("isolation from the shared handle", () => {
+  test("a plain write on the outer handle is not swept into the transaction", async () => {
+    // Queueing transaction callers was not enough: a direct write issued after
+    // an await inside the callback ran inside the open transaction and was
+    // rolled back with it. A dedicated connection makes that impossible.
+    const dir = mkdtempSync(join(tmpdir(), "bunwa-tx-"));
+    const path = join(dir, "t.sqlite");
+    const outer = createDatabase(path);
+    outer.run(sql`create table t (id integer primary key, v text)`);
+
+    try {
+      await withTransaction(outer, async (tx) => {
+        tx.run(sql`insert into t (v) values ('inside')`);
+        throw new Error("boom");
+      });
+    } catch {
+      /* expected */
+    }
+    // The transaction's own write is gone.
+    expect(outer.all(sql`select v from t`)).toHaveLength(0);
+
+    // And an unrelated write on the outer handle survives, because it was
+    // never part of that transaction.
+    outer.run(sql`insert into t (v) values ('outside')`);
+    expect(outer.all(sql`select v from t`)).toHaveLength(1);
+    rmSync(dir, { recursive: true, force: true });
   });
 });
