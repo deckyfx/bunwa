@@ -109,7 +109,7 @@ function hasNestedQuantifier(source: string): boolean {
     // the group differently. Refusing a safe pattern costs an error message;
     // accepting an unsafe one costs the node.
     if (containsQuantifier(body)) return true;
-    if (containsAlternation(body) && alternationCanOverlap(stripGroupPrefix(body))) return true;
+    if (hasOverlappingAlternation(body)) return true;
   }
 
   return false;
@@ -201,6 +201,60 @@ function splitTopLevel(body: string): string[] {
   }
   parts.push(current);
   return parts;
+}
+
+/**
+ * Whether a quantified body contains an overlapping alternation at any depth.
+ *
+ * Scanning only the top level let a single extra pair of parentheses hide the
+ * hazard: `((a|aa))+` is exactly as catastrophic as `(a|aa)+`, and the inner
+ * group put the `|` out of view. Nesting is the cheapest possible evasion, so
+ * the analysis has to follow it.
+ */
+function hasOverlappingAlternation(body: string): boolean {
+  const stripped = stripGroupPrefix(body);
+  if (containsAlternation(stripped) && alternationCanOverlap(stripped)) return true;
+  // Then every group inside it, at any depth.
+  return nestedGroupBodies(stripped).some((inner) => hasOverlappingAlternation(inner));
+}
+
+/** The body of each group directly inside `source`, unnested one level. */
+function nestedGroupBodies(source: string): string[] {
+  const bodies: string[] = [];
+  for (let i = 0; i < source.length; i++) {
+    const char = source[i];
+    if (char === "\\") {
+      i++;
+      continue;
+    }
+    if (char === "[") {
+      const close = source.indexOf("]", i);
+      i = close === -1 ? source.length : close;
+      continue;
+    }
+    if (char !== "(") continue;
+
+    // Find this group's matching close, respecting nesting.
+    let depth = 1;
+    let j = i + 1;
+    for (; j < source.length && depth > 0; j++) {
+      const c = source[j];
+      if (c === "\\") {
+        j++;
+        continue;
+      }
+      if (c === "[") {
+        const close = source.indexOf("]", j);
+        j = close === -1 ? source.length : close;
+        continue;
+      }
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+    }
+    bodies.push(source.slice(i + 1, j - 1));
+    i = j - 1;
+  }
+  return bodies;
 }
 
 /** Whether a group body contains a top-level alternation. */

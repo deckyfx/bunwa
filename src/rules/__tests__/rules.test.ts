@@ -286,3 +286,20 @@ describe("group syntax is not repetition", () => {
     }
   });
 });
+
+describe("nesting must not hide an overlapping alternation", () => {
+  test("an extra pair of parentheses is not a way past the check", () => {
+    // ((a|aa))+ is exactly as catastrophic as (a|aa)+, and the inner group put
+    // the `|` out of view of a top-level scan. Nesting is the cheapest
+    // possible evasion, so the analysis follows it to any depth.
+    for (const source of ["((a|aa))+$", "(?:(a|aa)){2,}$", "(((x|xy)))+"]) {
+      expect(() => compilePattern(source)).toThrow(/exponential|nests/);
+    }
+  });
+
+  test("nesting a disjoint alternation is still fine", () => {
+    // The recursion must not turn into a blanket refusal of nested groups.
+    expect(() => compilePattern("((?:PAY|SEND))+")).not.toThrow();
+    expect(() => compilePattern("(?:(GET|POST))+")).not.toThrow();
+  });
+});

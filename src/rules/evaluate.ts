@@ -57,6 +57,20 @@ export interface Evaluation {
  * reply is itself a message, so without them a rule that answers a message
  * answers its own answer, for ever.
  */
+/**
+ * Decide what a rule set does with an event, without doing any of it.
+ *
+ * Pure by design: an event and rules in, a plan out. Nothing here sends,
+ * writes or calls an engine, which is what lets the dry-run endpoint be
+ * honest — it runs exactly this function rather than an approximation, so a
+ * rule can be tested against a real captured event without messaging a
+ * customer.
+ *
+ * Reports timed-out rules by **id** rather than name, because the caller
+ * disables them and a name cannot address a row. A pattern that blows its
+ * budget counts as not matching: firing actions on a condition that was never
+ * fully evaluated is worse than not firing at all.
+ */
 export function evaluate(input: EvaluationInput): Evaluation {
   // Events bunwa caused are excluded by default. This is the difference between
   // a rule engine and a message loop.
