@@ -27,6 +27,14 @@ export interface DeviceMemory {
   /** Consecutive failed polls, for deciding when to give up. */
   failedPolls: number;
   disconnectedSince: Date | null;
+  /**
+   * Whether a device.degraded was emitted and not yet answered.
+   *
+   * Without it a device that degraded and then answered a poll with unchanged
+   * booleans took no branch at all: failedPolls reset silently and the tenant
+   * who was told the device was in trouble was never told it was fine.
+   */
+  degraded: boolean;
 }
 
 export const INITIAL_MEMORY: DeviceMemory = {
@@ -35,6 +43,7 @@ export const INITIAL_MEMORY: DeviceMemory = {
   lastKnownJid: null,
   failedPolls: 0,
   disconnectedSince: null,
+  degraded: false,
 };
 
 /** Failed polls before a device is called degraded rather than disconnected. */
@@ -64,7 +73,7 @@ export function reconcile(
     const failedPolls = memory.failedPolls + 1;
     if (failedPolls === DEGRADED_AFTER_FAILED_POLLS) {
       return {
-        memory: { ...memory, failedPolls },
+        memory: { ...memory, failedPolls, degraded: true },
         events: [{ type: "device.degraded", deviceId, attempts: failedPolls, lastError: "engine unreachable" }],
       };
     }
@@ -78,13 +87,24 @@ export function reconcile(
     lastKnownJid: observed.jid ?? memory.lastKnownJid,
     failedPolls: 0,
     disconnectedSince: memory.disconnectedSince,
+    degraded: false,
   };
+
+  // Answering at all ends a degradation, whatever the answer says. A tenant
+  // told a device was in trouble must be told when it is not.
+  if (memory.degraded) {
+    events.push({
+      type: "device.recovered",
+      deviceId,
+      downtimeMs: memory.disconnectedSince === null ? 0 : now.getTime() - memory.disconnectedSince.getTime(),
+    });
+  }
 
   const wasUsable = memory.connected && memory.loggedIn;
   const isUsable = observed.connected && observed.loggedIn;
 
   if (!wasUsable && isUsable) {
-    if (memory.disconnectedSince !== null) {
+    if (memory.disconnectedSince !== null && !memory.degraded) {
       events.push({
         type: "device.recovered",
         deviceId,

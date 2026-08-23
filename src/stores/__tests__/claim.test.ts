@@ -226,6 +226,38 @@ describe("consent lifecycle", () => {
     expect(bindings.find((b) => b.environmentId === grandeProd)!.status).not.toBe("revoked");
   });
 
+  test("a revoked project cannot re-grant itself by claiming again", async () => {
+    // The predicate counted only granted and pending, so after a revocation the
+    // device looked unclaimed, the next claim took the "new device" branch, and
+    // grantImplicitConsent set the row back to granted — silently undoing an
+    // explicit refusal by the phone holder.
+    await claim(grandeProd, "otp-sender");
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    await DeviceStore.revokeConsent(device!.id, grandeId, "phone_holder", database);
+
+    const grandeOther = (await EnvironmentStore.create({ projectId: grandeId, slug: "other" }, database)).id;
+    const again = await claim(grandeOther, "sneaky");
+
+    // It may ask again — the customer might say yes this time — but it must
+    // ask. Auto-granting is what the bug did.
+    expect(again.outcome).toBe("awaiting_confirmation");
+    expect((await DeviceStore.consentFor(device!.id, grandeId, database))!.status).toBe("pending");
+
+    // And the revocation stays on the record regardless of what happens next.
+    const trail = await database.select().from(consentEvents);
+    expect(trail.some((e) => e.action === "revoked")).toBe(true);
+  });
+
+  test("a different project cannot inherit a revoked device either", async () => {
+    await claim(grandeProd, "otp-sender");
+    const device = await DeviceStore.findByMsisdn(NUMBER, database);
+    await DeviceStore.revokeConsent(device!.id, grandeId, "phone_holder", database);
+
+    const rival = await claim(rivalProd, "theirs");
+    // Must ask, not assume the device is free because nobody currently holds it.
+    expect(rival.outcome).toBe("awaiting_confirmation");
+  });
+
   test("every decision is written to an immutable trail with its evidence", async () => {
     await claim(grandeProd, "otp-sender");
     const rival = await claim(rivalProd, "theirs");

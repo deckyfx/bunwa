@@ -9,6 +9,8 @@ import { config, ConfigError, type Config } from "./config/env";
 import { createServer } from "./api/server";
 import { MigrationManager } from "./db/migration-manager";
 import { startWorker } from "./delivery/worker";
+import { EngineRegistry } from "./engine/registry";
+import { GowaAdapter } from "./engine/gowa/adapter";
 import { log } from "./observability/logger";
 
 async function main(): Promise<void> {
@@ -29,21 +31,40 @@ async function main(): Promise<void> {
   // an unattended schema change is not something a deploy should decide.
   await MigrationManager.init();
 
-  const server = createServer();
+  // One gowa pool for now. Capacity is bounded because a process holding every
+  // device is the blast radius ADR-0003 exists to avoid.
+  const registry = new EngineRegistry();
+  if (cfg.gowaBaseUrl !== null) {
+    registry.register({
+      id: "gowa-1",
+      kind: "gowa",
+      capacity: cfg.enginePoolCapacity,
+      engine: new GowaAdapter({ baseUrl: cfg.gowaBaseUrl }),
+    });
+  }
+
+  const server = createServer(registry);
   // In-process for now; moving it out is the same trigger as moving off SQLite.
   const stopWorker = startWorker({ allowInsecure: cfg.allowInsecureWebhookTargets });
   log.info("bunwa started", { ...cfg.describe(), url: server.url.toString() });
 
   /** Drain in-flight requests before exiting, so a deploy drops nothing. */
-  const shutdown = (signal: string): void => {
+  // Idempotent: two signals in quick succession must not run this twice and
+  // race each other to process.exit.
+  let shuttingDown = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log.info("shutting down", { signal });
-    // The worker is stopped first so a pass in flight is not interrupted
-    // mid-attempt; anything unfinished is still queued and resumes next start.
-    stopWorker();
-    void server.stop(false).then(() => process.exit(0));
+    // Await the delivery pass in flight before the server: anything unfinished
+    // stays queued and resumes next start, but a half-written attempt does not.
+    await stopWorker();
+    await registry.closeAll();
+    await server.stop(false);
+    process.exit(0);
   };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
 await main();

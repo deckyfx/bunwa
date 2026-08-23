@@ -23,6 +23,7 @@ const paired: DeviceMemory = {
   lastKnownJid: "628123@s.whatsapp.net",
   failedPolls: 0,
   disconnectedSince: null,
+  degraded: false,
 };
 
 describe("transitions", () => {
@@ -79,6 +80,29 @@ describe("transitions", () => {
     expect(events.map((e) => e.type)).toEqual(["device.recovered", "device.connected"]);
     const recovered = events[0] as { downtimeMs: number };
     expect(recovered.downtimeMs).toBeGreaterThanOrEqual(5_000);
+  });
+});
+
+describe("degradation", () => {
+  test("a device that degrades and then answers reports recovery", async () => {
+    // Previously the booleans were unchanged when it answered, so no branch
+    // ran, failedPolls reset silently, and the tenant told the device was in
+    // trouble was never told it was fine again.
+    let memory = paired;
+    for (let i = 0; i < DEGRADED_AFTER_FAILED_POLLS; i++) memory = reconcile("d1", memory, null).memory;
+    expect(memory.degraded).toBe(true);
+
+    const { events, memory: after } = reconcile("d1", memory, status(true, true, "628123@s.whatsapp.net"));
+    expect(events.map((e) => e.type)).toContain("device.recovered");
+    expect(after.degraded).toBe(false);
+  });
+
+  test("recovery is reported once, not on every later poll", () => {
+    let memory = paired;
+    for (let i = 0; i < DEGRADED_AFTER_FAILED_POLLS; i++) memory = reconcile("d1", memory, null).memory;
+    const first = reconcile("d1", memory, status(true, true, "628123@s.whatsapp.net"));
+    const second = reconcile("d1", first.memory, status(true, true, "628123@s.whatsapp.net"));
+    expect(second.events).toHaveLength(0);
   });
 });
 

@@ -23,6 +23,19 @@ reviews:
   # applied. Each is answered by an inline comment at the site and, where the
   # assumption could change, by a test. Re-raising them costs a review slot.
   path_instructions:
+    - path: "src/delivery/sender.ts"
+      instructions: >-
+        Do not report that the DNS rebinding window is open, or ask for the
+        connection to be pinned to the validated address. It is a known and
+        documented gap, explained in a comment at the site: Bun's fetch has no
+        option to bind a connection to a resolved IP while preserving the Host
+        header and TLS SNI (1.4 supports only tls, unix, proxy and verbose),
+        and Bun.dns exposes only lookup. What is achievable is done — resolve
+        immediately before the request, and refuse if any returned address is
+        blocked rather than only the first. Closing it needs a hand-rolled HTTP
+        client over Bun.connect, which is tracked in docs/08 under stage 2
+        hardening rather than attempted in the foundation.
+
     - path: "src/db/migration-manager.ts"
       instructions: >-
         Do not report a missing mkdir in materialise(). Bun.write creates

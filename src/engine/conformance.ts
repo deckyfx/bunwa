@@ -17,12 +17,16 @@ export interface ConformanceHarness {
   /** A fresh engine, once per test. */
   create(): Promise<DeviceEngine> | DeviceEngine;
   /**
-   * Bring a provisioned device to connected-and-logged-in.
+   * Whether this engine can reach a paired device unattended.
    *
-   * Real engines need a phone, so returning false is how an engine says "I
-   * cannot reach this state unattended". Those tests are then reported as
-   * skipped rather than passing, so a partial pass is visible instead of hidden.
+   * Declared up front rather than discovered from `pair()` returning false: a
+   * runtime bail-out leaves the test callback returning normally, and the
+   * runner records that as a **pass**. Seven checks were reported green for an
+   * engine that had never run them. Bun needs the answer before the case is
+   * registered, so `skipIf` can mark it skipped.
    */
+  canPairUnattended: boolean;
+  /** Bring a provisioned device to connected-and-logged-in. */
   pair?(engine: DeviceEngine, deviceId: string): Promise<boolean>;
   destroy?(engine: DeviceEngine): Promise<void>;
 }
@@ -127,16 +131,13 @@ export function runConformanceSuite(name: string, harness: ConformanceHarness): 
 
     describe("with a paired device", () => {
       const pairedTest = (label: string, fn: (engine: DeviceEngine) => Promise<void>): void => {
-        test(label, async () => {
+        // skipIf, not an early return: a callback that returns is a pass, and a
+        // pass for a check that never ran is worse than no check at all.
+        test.skipIf(!harness.canPairUnattended)(label, async () => {
           await withEngine(async (engine) => {
             await engine.provision("d1");
             const paired = (await harness.pair?.(engine, "d1")) ?? false;
-            if (!paired) {
-              // Recorded, not silently passed: the engine has declared it
-              // cannot reach this state unattended.
-              console.warn(`  skipped for ${name}: "${label}" needs a live device`);
-              return;
-            }
+            if (!paired) throw new Error(`${name} declared canPairUnattended but pair() failed`);
             await fn(engine);
           });
         });

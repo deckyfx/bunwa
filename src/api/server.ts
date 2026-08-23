@@ -11,7 +11,9 @@ import { sql } from "drizzle-orm";
 import { config } from "../config/env";
 import { db } from "../db";
 import { adminRoutes } from "./routes/admin";
+import { deviceRoutes } from "./routes/devices";
 import { projectRoutes } from "./routes/project";
+import type { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
 import { ConflictError, NotFoundError, ValidationError } from "../stores/errors";
 import { log, withContext, sanitiseCorrelationId } from "../observability/logger";
@@ -69,8 +71,13 @@ async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?
   }
 }
 
-/** Build the application. Exported unstarted so tests can drive it directly. */
-export function createApp() {
+/**
+ * Build the application. Exported unstarted so tests can drive it directly.
+ *
+ * The engine registry is optional: most routes never touch an engine, and
+ * requiring one would make every HTTP test stand up a fake.
+ */
+export function createApp(registry?: EngineRegistry) {
   return new Elysia()
     // Correlation id first, so every later hook and handler logs under it.
     .derive({ as: "global" }, ({ request, set }) => {
@@ -135,6 +142,7 @@ export function createApp() {
     }))
 
     .use(projectRoutes)
+    .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
 
     /** Readiness. Answers "can this process serve traffic?", dependencies included. */
     .get("/readyz", async ({ set }) => {
@@ -160,8 +168,8 @@ export function createApp() {
 }
 
 /** Wrap the app so every request runs inside a logging context. */
-export function createServer() {
-  const app = createApp();
+export function createServer(registry?: EngineRegistry) {
+  const app = createApp(registry);
   const cfg = config();
 
   return Bun.serve({

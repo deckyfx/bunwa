@@ -62,6 +62,18 @@ export class DeviceStore {
     database: Database = db(),
     now: Date = new Date(),
   ): Promise<ClaimOutcome> {
+    // Atomic: the flow writes a device, a consent, an audit row and a binding.
+    // A failure partway through — a unique-constraint clash on the binding, say
+    // — would otherwise leave the consent committed, and the retry would then
+    // see a granted consent and take the `active` path with no binding at all.
+    return database.transaction(async (tx) => this.claimWithin(tx as unknown as Database, input, now));
+  }
+
+  private static async claimWithin(
+    database: Database,
+    input: { environmentId: string; msisdn: string; alias: string; scopes?: string[] },
+    now: Date,
+  ): Promise<ClaimOutcome> {
     const msisdn = this.normaliseMsisdn(input.msisdn);
     const alias = input.alias.trim();
     if (alias === "") throw new ValidationError("alias is required", "alias");
@@ -177,7 +189,12 @@ export class DeviceStore {
       .select({ status: deviceConsents.status })
       .from(deviceConsents)
       .where(eq(deviceConsents.deviceId, deviceId));
-    return rows.some((r) => r.status === "granted" || r.status === "pending");
+    // `revoked` and `denied` count. They are decisions the phone holder made,
+    // not an absence of one — and excluding them meant the next claim took the
+    // "new device" branch and re-granted implicit consent, silently undoing an
+    // explicit refusal. Only `expired` is treated as no claim: nobody decided
+    // anything, the question simply lapsed.
+    return rows.some((r) => r.status !== "expired");
   }
 
   static async consentFor(
@@ -214,12 +231,16 @@ export class DeviceStore {
         evidence: { implicit: "granted by pairing for this project" },
         expiresAt: new Date(now.getTime() + CONSENT_TTL_MS),
       })
-      .onConflictDoUpdate({
-        target: [deviceConsents.deviceId, deviceConsents.projectId],
-        set: { status: "granted", respondedAt: now, updatedAt: now },
-      })
+      // No upsert: an implicit grant must never overwrite a row. If one exists
+      // it records a decision — including a refusal — and pairing for a
+      // project is not consent to override it.
+      .onConflictDoNothing()
       .returning();
-    if (created === undefined) throw new Error("insert returned no row");
+    if (created === undefined) {
+      const existing = await this.consentFor(deviceId, projectId, database);
+      if (existing === null) throw new Error("insert returned no row");
+      return existing;
+    }
     await this.audit(created.id, "granted", "system", "system", { implicit: true }, database);
     return created;
   }
@@ -279,6 +300,21 @@ export class DeviceStore {
     database: Database = db(),
     now: Date = new Date(),
   ): Promise<DeviceConsent> {
+    // Atomic: the decision, its audit row and the bindings it releases must
+    // land together, or a customer's "yes" is recorded with nothing activated.
+    return database.transaction(async (tx) =>
+      this.respondWithin(tx as unknown as Database, challengeToken, decision, channel, evidence, now),
+    );
+  }
+
+  private static async respondWithin(
+    database: Database,
+    challengeToken: string,
+    decision: "granted" | "denied",
+    channel: "whatsapp_reply" | "dashboard" | "operator",
+    evidence: Record<string, unknown>,
+    now: Date,
+  ): Promise<DeviceConsent> {
     const [consent] = await database
       .select()
       .from(deviceConsents)
@@ -324,6 +360,18 @@ export class DeviceStore {
     actor: "phone_holder" | "operator",
     database: Database = db(),
     now: Date = new Date(),
+  ): Promise<void> {
+    await database.transaction(async (tx) =>
+      this.revokeWithin(tx as unknown as Database, deviceId, projectId, actor, now),
+    );
+  }
+
+  private static async revokeWithin(
+    database: Database,
+    deviceId: string,
+    projectId: string,
+    actor: "phone_holder" | "operator",
+    now: Date,
   ): Promise<void> {
     const consent = await this.consentFor(deviceId, projectId, database);
     if (consent === null) throw new NotFoundError("no consent to revoke");
@@ -378,6 +426,28 @@ export class DeviceStore {
     database: Database,
   ): Promise<void> {
     await database.insert(consentEvents).values({ consentId, action, actor, channel, evidence });
+  }
+
+  /**
+   * This environment's bindings.
+   *
+   * Returns virtual devices, never the global device id: two projects sharing a
+   * phone must not be able to correlate their traffic through a shared
+   * identifier.
+   */
+  static async listForEnvironment(environmentId: string, database: Database = db()) {
+    return database
+      .select({
+        virtualDeviceId: virtualDevices.id,
+        alias: virtualDevices.alias,
+        status: virtualDevices.status,
+        scopes: virtualDevices.scopes,
+        msisdn: devices.msisdn,
+        deviceState: devices.state,
+      })
+      .from(virtualDevices)
+      .innerJoin(devices, eq(virtualDevices.deviceId, devices.id))
+      .where(eq(virtualDevices.environmentId, environmentId));
   }
 
   /** Everything using this device, for the operator "who can use my number" view. */

@@ -11,7 +11,7 @@ import { db, type Database } from "../db";
 import { environmentWebhooks } from "../db/schema";
 import { DeliveryStore } from "../stores/delivery-store";
 import { log, withContext } from "../observability/logger";
-import { CIRCUIT_FAILURE_THRESHOLD, circuitAllows, nextAttemptAt } from "./backoff";
+import { CIRCUIT_FAILURE_THRESHOLD, CIRCUIT_PROBE_AFTER_MS, circuitAllows, nextAttemptAt } from "./backoff";
 import { send, type SendOptions } from "./sender";
 
 export interface WorkerOptions extends SendOptions {
@@ -40,11 +40,18 @@ export async function runOnce(options: WorkerOptions = {}): Promise<number> {
       .from(environmentWebhooks)
       .where(eq(environmentWebhooks.environmentId, item.delivery.environmentId))
       .limit(1);
-    if (webhook === undefined) continue;
-
-    // An open circuit stops the worker spending itself on a target that is
-    // reliably failing, which would otherwise starve every other tenant.
-    if (!circuitAllows(webhook.circuitState, webhook.circuitOpenedAt, now)) continue;
+    // Deferred rather than skipped. `claimDue` orders globally by
+    // nextAttemptAt, so leaving a blocked environment's rows due meant its
+    // twenty oldest deliveries filled every batch and no other tenant was
+    // served at all until the circuit closed.
+    if (webhook === undefined) {
+      await DeliveryStore.defer(item.delivery.id, new Date(now.getTime() + 60_000), database);
+      continue;
+    }
+    if (!circuitAllows(webhook.circuitState, webhook.circuitOpenedAt, now)) {
+      await DeliveryStore.defer(item.delivery.id, new Date(now.getTime() + CIRCUIT_PROBE_AFTER_MS), database);
+      continue;
+    }
 
     attempted += 1;
     const body = JSON.stringify(item.delivery.payload);
@@ -102,25 +109,40 @@ async function recordFailure(environmentId: string, now: Date, database: Databas
     .where(eq(environmentWebhooks.environmentId, environmentId))
     .returning();
 
-  if (updated !== undefined && updated.consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD && updated.circuitState !== "open") {
+  if (updated !== undefined && updated.consecutiveFailures >= CIRCUIT_FAILURE_THRESHOLD) {
+    // circuitOpenedAt is advanced on *every* failure while open, not only on
+    // the transition. Setting it once meant the probe window elapsed and never
+    // re-armed: sixty seconds after opening, the breaker let every delivery
+    // through again and stayed that way however hard the target kept failing.
     await database
       .update(environmentWebhooks)
       .set({ circuitState: "open", circuitOpenedAt: now, updatedAt: now })
       .where(eq(environmentWebhooks.environmentId, environmentId));
-    log.warn("webhook circuit opened", { environmentId, consecutiveFailures: updated.consecutiveFailures });
+    if (updated.circuitState !== "open") {
+      log.warn("webhook circuit opened", { environmentId, consecutiveFailures: updated.consecutiveFailures });
+    }
   }
 }
 
-/** Start the loop. Returns a function that stops it. */
-export function startWorker(options: WorkerOptions = {}): () => void {
+/**
+ * Start the loop.
+ *
+ * Returns a stop function that **awaits the pass in flight**. Stopping only
+ * future scheduling let shutdown call process.exit while a webhook request or
+ * a state update was still running — the delivery would be recorded as
+ * attempted, or not recorded at all, depending on where it was cut.
+ */
+export function startWorker(options: WorkerOptions = {}): () => Promise<void> {
   const interval = options.intervalMs ?? 1000;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let inFlight: Promise<void> = Promise.resolve();
 
   const tick = async (): Promise<void> => {
     if (stopped) return;
     try {
-      await runOnce(options);
+      inFlight = runOnce(options).then(() => undefined);
+      await inFlight;
     } catch (err) {
       // A failed pass must not kill the loop: the next tick may succeed, and a
       // dead worker silently stops every tenant's delivery.
@@ -132,8 +154,11 @@ export function startWorker(options: WorkerOptions = {}): () => void {
   };
 
   timer = setTimeout(() => void tick(), interval);
-  return () => {
+  return async () => {
     stopped = true;
     if (timer !== undefined) clearTimeout(timer);
+    // Swallowed: a pass that fails during shutdown has already been logged, and
+    // rejecting here would stop the rest of the shutdown from running.
+    await inFlight.catch(() => undefined);
   };
 }

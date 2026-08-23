@@ -58,7 +58,20 @@ export async function send(
 
     // Resolve and check before connecting. validateWebhookTarget covers literal
     // addresses; a hostname can still resolve into a blocked range, either by
-    // misconfiguration or deliberately (DNS rebinding).
+    // misconfiguration or deliberately.
+    //
+    // KNOWN GAP — this narrows the DNS rebinding window, it does not close it.
+    // Closing it needs the connection bound to the address we validated while
+    // Host and TLS SNI keep the original hostname, and Bun's fetch has no such
+    // option in 1.4 (`tls`, `unix`, `proxy`, `verbose` only); Bun.dns exposes
+    // just `lookup`. A resolver that answers with a public address here and a
+    // private one microseconds later would still be followed.
+    //
+    // What is done instead: resolve immediately before the request so the
+    // window is as small as possible, and refuse if *any* returned address is
+    // blocked rather than only the first. Closing it properly means a
+    // hand-rolled HTTP client over Bun.connect, which is a large amount of
+    // security-critical code to own — tracked rather than attempted here.
     if (options.allowInsecure !== true) {
       const resolve: LookupFn =
         options.lookupImpl ?? ((hostname) => lookup(hostname, { all: true }));

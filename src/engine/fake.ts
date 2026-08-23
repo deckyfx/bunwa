@@ -41,6 +41,8 @@ export class FakeEngine implements DeviceEngine {
 
   private readonly devices = new Map<string, FakeDevice>();
   private readonly listeners = new Set<(event: EngineEvent) => void>();
+  /** Resolvers for parked subscribe() consumers, so close() can release them. */
+  private readonly wakers = new Set<() => void>();
   private closed = false;
 
   constructor(private readonly options: FakeEngineOptions = {}) {}
@@ -151,6 +153,8 @@ export class FakeEngine implements DeviceEngine {
       wake?.();
     };
     this.listeners.add(listener);
+    const waker = (): void => wake?.();
+    this.wakers.add(waker);
 
     try {
       while (!this.closed) {
@@ -163,12 +167,16 @@ export class FakeEngine implements DeviceEngine {
       }
     } finally {
       this.listeners.delete(listener);
+      this.wakers.delete(waker);
     }
   }
 
   async close(): Promise<void> {
     this.closed = true;
-    for (const listener of [...this.listeners]) listener({ type: "device.degraded", deviceId: "", attempts: 0, lastError: "closed" });
+    // Wake parked consumers rather than emitting a fake event at them: a
+    // synthetic device.degraded on shutdown would reach real webhooks.
+    for (const wake of [...this.wakers]) wake();
+    this.wakers.clear();
     this.listeners.clear();
   }
 

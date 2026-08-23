@@ -10,6 +10,7 @@ import { FakeEngine } from "../fake";
 import type { DeviceEngine } from "../types";
 
 runConformanceSuite("FakeEngine", {
+  canPairUnattended: true,
   create: () => new FakeEngine(),
   pair: async (engine: DeviceEngine, deviceId: string) => {
     (engine as FakeEngine).completePairing(deviceId, "628123456789@s.whatsapp.net", "Test");

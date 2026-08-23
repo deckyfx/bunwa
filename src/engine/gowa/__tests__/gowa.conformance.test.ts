@@ -47,13 +47,14 @@ function stubbedGowa(): typeof fetch {
 const live = Bun.env["GOWA_URL"];
 
 runConformanceSuite(live === undefined ? "GowaAdapter (stubbed)" : `GowaAdapter (live ${live})`, {
+  canPairUnattended: false,
   create: () =>
     new GowaAdapter({
       baseUrl: live ?? "http://127.0.0.1:3100",
       pollIntervalMs: 999_999,
       ...(live === undefined ? { fetchImpl: stubbedGowa() } : {}),
     }),
-  // Pairing needs a human with a phone. Declaring that honestly marks the
-  // dependent tests skipped instead of quietly passing them.
+  // Pairing needs a human with a phone, so the dependent cases are registered
+  // as skipped rather than run — and, previously, rather than passed.
   pair: async () => false,
 });

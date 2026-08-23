@@ -49,12 +49,28 @@ export class WebhookStore {
       }
     }
 
+    const [current] = await database
+      .select()
+      .from(environmentWebhooks)
+      .where(eq(environmentWebhooks.environmentId, environmentId))
+      .limit(1);
+
+    // A changed URL is a different destination, so the breaker state belongs to
+    // the old one. Carrying it over would leave a fresh target blocked for the
+    // failures of the address it replaced — exactly when an integrator is
+    // fixing a broken webhook and needs it to work immediately.
+    const targetChanged = current !== undefined && current.url !== input.url;
+    const breakerReset = targetChanged
+      ? { circuitState: "closed" as const, circuitOpenedAt: null, consecutiveFailures: 0 }
+      : {};
+
     const values = {
       environmentId,
       url: input.url,
       secret: input.secret,
       ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
       ...(input.eventFilter === undefined ? {} : { eventFilter: input.eventFilter }),
+      ...breakerReset,
       updatedAt: new Date(),
     };
 

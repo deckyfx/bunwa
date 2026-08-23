@@ -1,0 +1,108 @@
+/**
+ * The claim flow over HTTP — §1.3's remaining surface.
+ *
+ * One call for an integrator: give us a number, get back one of three answers.
+ * The interesting one is `active`, where a customer has already consented to
+ * this project and nothing at all is asked of them.
+ */
+import { Elysia, t } from "elysia";
+
+import { requireApiKey, requireScope } from "../../auth/middleware";
+import { DeviceStore } from "../../stores/device-store";
+import type { EngineRegistry } from "../../engine/registry";
+import { log } from "../../observability/logger";
+import { NotFoundError } from "../../stores/errors";
+
+/**
+ * Build the device routes.
+ *
+ * The registry is injected rather than imported so tests can drive a fake
+ * engine, and so a deployment can hold several pools without this module
+ * knowing how they are chosen.
+ */
+export function deviceRoutes(registry: EngineRegistry) {
+  return new Elysia({ prefix: "/v1" })
+    .use(requireApiKey)
+
+    /**
+     * Claim a phone number for this environment.
+     *
+     * Returns the outcome rather than a device: the caller's next step differs
+     * completely between "show this QR", "you are ready" and "we have messaged
+     * the customer", and flattening that into one shape would hide it.
+     */
+    .post(
+      "/devices/claim",
+      async ({ auth, body, set, path }) => {
+        requireScope(auth, "manage:devices", path);
+
+        const result = await DeviceStore.claim({
+          environmentId: auth.environmentId,
+          msisdn: body.msisdn,
+          alias: body.alias,
+          scopes: body.scopes ?? [],
+        });
+
+        // The virtual device id, never the global device id: two tenants
+        // sharing a phone must not be able to correlate through a shared
+        // identifier.
+        const base = {
+          virtualDeviceId: result.virtualDevice.id,
+          alias: result.virtualDevice.alias,
+          status: result.virtualDevice.status,
+        };
+
+        if (result.outcome === "active") {
+          set.status = 200;
+          log.info("claim satisfied by existing consent", { environmentId: auth.environmentId });
+          return { outcome: result.outcome, ...base };
+        }
+
+        set.status = 201;
+
+        if (result.outcome === "pending_pairing") {
+          // Pairing starts here, not in the store: the store owns consent, the
+          // engine owns sockets, and mixing them is what makes an engine hard
+          // to replace.
+          const pool = registry.list()[0];
+          if (pool === undefined) {
+            log.error("no engine pool is registered; cannot start pairing");
+            throw new NotFoundError("no engine is available to pair this device");
+          }
+          await pool.engine.provision(result.device.id);
+          const session = await pool.engine.startPairing(result.device.id, body.pairingMethod ?? "qr");
+          return {
+            outcome: result.outcome,
+            ...base,
+            pairing: {
+              method: session.method,
+              ...(session.qr === undefined ? {} : { qr: session.qr }),
+              ...(session.pairCode === undefined ? {} : { pairCode: session.pairCode }),
+              expiresAt: session.expiresAt.toISOString(),
+            },
+          };
+        }
+
+        log.info("claim awaiting phone holder confirmation", { environmentId: auth.environmentId });
+        return {
+          outcome: result.outcome,
+          ...base,
+          // The challenge token is deliberately absent. It is the phone
+          // holder's to present, and returning it would let the project confirm
+          // on their behalf — which is the entire thing consent prevents.
+          message: "The phone holder has been asked to confirm. They reply on WhatsApp.",
+        };
+      },
+      {
+        body: t.Object({
+          msisdn: t.String({ minLength: 5, maxLength: 20 }),
+          alias: t.String({ minLength: 1, maxLength: 60 }),
+          scopes: t.Optional(t.Array(t.String())),
+          pairingMethod: t.Optional(t.Union([t.Literal("qr"), t.Literal("code")])),
+        }),
+      },
+    )
+
+    /** This environment's virtual devices. */
+    .get("/devices", async ({ auth }) => DeviceStore.listForEnvironment(auth.environmentId));
+}

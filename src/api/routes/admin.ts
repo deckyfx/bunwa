@@ -8,6 +8,7 @@
 import { Elysia, t } from "elysia";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
+import type { ApiKey } from "../../db/schema";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ProjectStore } from "../../stores/project-store";
 import { log } from "../../observability/logger";
@@ -96,7 +97,7 @@ export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
   );
 
 /** Strip the hash before a key ever leaves the process. */
-function redactKey(key: { keyHash: string } & Record<string, unknown>) {
+function redactKey(key: ApiKey): Omit<ApiKey, "keyHash"> {
   const { keyHash: _hash, ...safe } = key;
   return safe;
 }

@@ -6,7 +6,7 @@
  * fire-and-forget with no retry and no record (docs/01), which is defensible
  * for a single-tenant tool and not for a proxy other businesses depend on.
  */
-import { and, asc, eq, lte, sql } from "drizzle-orm";
+import { and, asc, desc, eq, lte, sql } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import {
@@ -128,6 +128,14 @@ export class DeliveryStore {
   }
 
   /** Scoped by project: a caller cannot read another tenant's delivery log. */
+  /**
+   * Recent deliveries, newest first.
+   *
+   * Ascending under a fixed limit meant an environment with more than fifty
+   * deliveries always saw the same fifty oldest rows — so the log could never
+   * answer the question it exists for, which is about the delivery that just
+   * failed.
+   */
   static async listForEnvironment(
     projectId: string,
     environmentId: string,
@@ -139,9 +147,24 @@ export class DeliveryStore {
       .from(deliveries)
       .innerJoin(environments, eq(deliveries.environmentId, environments.id))
       .where(and(eq(deliveries.environmentId, environmentId), eq(environments.projectId, projectId)))
-      .orderBy(asc(deliveries.createdAt))
-      .limit(limit);
+      // id as a tiebreak: several deliveries can share a millisecond.
+      .orderBy(desc(deliveries.createdAt), desc(deliveries.id))
+      .limit(Math.min(Math.max(limit, 1), 200));
     return rows.map((r) => r.delivery);
+  }
+
+  /**
+   * Push a delivery's next attempt into the future without counting an attempt.
+   *
+   * For work the worker declined to try — an open circuit, a missing webhook.
+   * Leaving the row due meant it was re-claimed every pass, filling the batch
+   * and starving every other environment.
+   */
+  static async defer(deliveryId: string, until: Date, database: Database = db()): Promise<void> {
+    await database
+      .update(deliveries)
+      .set({ nextAttemptAt: until, updatedAt: new Date() })
+      .where(eq(deliveries.id, deliveryId));
   }
 
   static async attemptsFor(

@@ -130,6 +130,16 @@ export class Config {
    * development" is exactly how that reaches a deployment.
    */
   readonly allowInsecureWebhookTargets: boolean;
+  /**
+   * Where the colocated gowa engine listens.
+   *
+   * Null disables the engine entirely, which is the right default for a process
+   * that only serves the admin API or runs migrations — registering a pool that
+   * cannot answer would report every device degraded.
+   */
+  readonly gowaBaseUrl: string | null;
+  /** Devices per engine pool. Bounds the blast radius of one pool failing. */
+  readonly enginePoolCapacity: number;
 
   constructor(source: Record<string, string | undefined> = Bun.env) {
     this.nodeEnv = oneOf(source, "NODE_ENV", NODE_ENVS, "development");
@@ -144,7 +154,18 @@ export class Config {
     this.migrateStrict = boolean(source, "MIGRATE_STRICT", this.nodeEnv === "production");
     this.runtimeDir = optional(source, "RUNTIME_DIR", ".runtime");
     this.adminApiEnabled = boolean(source, "ADMIN_API_ENABLED", false);
+    if (this.adminApiEnabled && this.nodeEnv === "production") {
+      // It mints API keys and has no authentication. "Not mounted by default"
+      // is not enough for something whose accidental exposure hands out
+      // credentials; refuse to start instead.
+      throw new ConfigError(
+        "ADMIN_API_ENABLED must not be true in production: the admin API can mint API keys and has no authentication yet",
+      );
+    }
     this.allowInsecureWebhookTargets = boolean(source, "ALLOW_INSECURE_WEBHOOK_TARGETS", false);
+    const gowa = source["GOWA_BASE_URL"];
+    this.gowaBaseUrl = gowa === undefined || gowa.trim() === "" ? null : gowa.trim();
+    this.enginePoolCapacity = integer(source, "ENGINE_POOL_CAPACITY", 25, 1, 500);
     if (this.allowInsecureWebhookTargets && this.isProduction) {
       throw new ConfigError("ALLOW_INSECURE_WEBHOOK_TARGETS must not be true in production");
     }
@@ -183,6 +204,8 @@ export class Config {
       runtimeDir: this.runtimeDir,
       adminApiEnabled: this.adminApiEnabled,
       allowInsecureWebhookTargets: this.allowInsecureWebhookTargets,
+      gowa: this.gowaBaseUrl ?? "(disabled)",
+      enginePoolCapacity: this.enginePoolCapacity,
     };
   }
 }

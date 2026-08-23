@@ -24,6 +24,8 @@ import {
   type SendResult,
 } from "../types";
 import { INITIAL_MEMORY, reconcile, type DeviceMemory } from "./reconciler";
+import { config } from "../../config/env";
+import { validateWebhookTarget } from "../../delivery/target";
 import { log } from "../../observability/logger";
 
 export interface GowaAdapterOptions {
@@ -59,6 +61,8 @@ export class GowaAdapter implements DeviceEngine {
 
   private readonly memories = new Map<string, DeviceMemory>();
   private readonly listeners = new Set<(event: EngineEvent) => void>();
+  /** Resolvers for parked subscribe() consumers, so close() can release them. */
+  private readonly wakers = new Set<() => void>();
   private poller: ReturnType<typeof setTimeout> | undefined;
   private closed = false;
 
@@ -102,12 +106,24 @@ export class GowaAdapter implements DeviceEngine {
   }
 
   async logout(deviceId: string): Promise<void> {
-    await this.request("POST", `/devices/${encodeURIComponent(deviceId)}/logout`);
+    // request() resolves for any parsable JSON, including {code:"ERROR"} with a
+    // 500. Unchecked, a failed logout looked like success and the control plane
+    // would record a device as logged out while its session was still live.
+    this.assertOk(await this.request("POST", `/devices/${encodeURIComponent(deviceId)}/logout`), "logout failed");
   }
 
   async purge(deviceId: string): Promise<void> {
-    await this.request("DELETE", `/devices/${encodeURIComponent(deviceId)}`);
+    this.assertOk(await this.request("DELETE", `/devices/${encodeURIComponent(deviceId)}`), "purge failed");
+    // Only after gowa confirms. Dropping it on a failed purge would stop the
+    // poller watching a slot that still exists.
     this.memories.delete(deviceId);
+  }
+
+  /** Raise unless gowa reported success. */
+  private assertOk(response: GowaResponse<unknown>, context: string): void {
+    if (response.code !== undefined && response.code !== "SUCCESS") {
+      throw this.toError(response.message ?? context);
+    }
   }
 
   /**
@@ -166,7 +182,7 @@ export class GowaAdapter implements DeviceEngine {
     if (action.to.trim() === "") throw new EngineError("recipient is required", false);
 
     const mediaUrl = (ref: { url: string } | { base64: string; mimeType: string }): string => {
-      if ("url" in ref) return ref.url;
+      if ("url" in ref) return this.assertSafeUrl(ref.url);
       // gowa's *_url fields take a URL; base64 would need a multipart upload,
       // which is deferred rather than silently mishandled.
       throw new EngineError("base64 media is not supported by the gowa engine yet", false);
@@ -178,7 +194,14 @@ export class GowaAdapter implements DeviceEngine {
       case "link":
         return {
           path: "/send/link",
-          body: { phone: to, link: action.url, ...(action.caption === undefined ? {} : { caption: action.caption }) },
+          body: {
+            phone: to,
+            // gowa fetches this URL server-side to build the preview — measured
+            // in docs/12. Handing it a caller-supplied address unchecked makes
+            // gowa the SSRF vector instead of bunwa.
+            link: this.assertSafeUrl(action.url),
+            ...(action.caption === undefined ? {} : { caption: action.caption }),
+          },
           multipart: false,
         };
       case "image":
@@ -212,6 +235,11 @@ export class GowaAdapter implements DeviceEngine {
       wake?.();
     };
     this.listeners.add(listener);
+    // Registered so close() can settle a parked consumer. Without it the
+    // promise below never resolves, the finally never runs, and every consumer
+    // hangs for the life of the process.
+    const waker = (): void => wake?.();
+    this.wakers.add(waker);
     try {
       while (!this.closed) {
         while (queue.length > 0) yield queue.shift()!;
@@ -223,6 +251,7 @@ export class GowaAdapter implements DeviceEngine {
       }
     } finally {
       this.listeners.delete(listener);
+      this.wakers.delete(waker);
     }
   }
 
@@ -230,6 +259,10 @@ export class GowaAdapter implements DeviceEngine {
     this.closed = true;
     if (this.poller !== undefined) clearTimeout(this.poller);
     this.poller = undefined;
+    // Wake before clearing: a parked consumer must observe `closed` and run its
+    // finally, rather than waiting on a promise nothing will ever settle.
+    for (const wake of [...this.wakers]) wake();
+    this.wakers.clear();
     this.listeners.clear();
   }
 
@@ -319,6 +352,25 @@ export class GowaAdapter implements DeviceEngine {
       throw new EngineError(`gowa request failed: ${err instanceof Error ? err.message : String(err)}`, true, {
         cause: err,
       });
+    }
+  }
+
+  /**
+   * Refuse a URL bunwa would not fetch itself.
+   *
+   * gowa resolves and fetches these inside the container, so validating only
+   * bunwa's own outbound requests would leave the same hole reachable one hop
+   * further along. Non-retryable: a private address will not become public.
+   */
+  private assertSafeUrl(raw: string): string {
+    try {
+      validateWebhookTarget(raw, { allowInsecure: config().allowInsecureWebhookTargets });
+      return raw;
+    } catch (err) {
+      throw new EngineError(
+        `refusing to pass an unsafe URL to the engine: ${err instanceof Error ? err.message : String(err)}`,
+        false,
+      );
     }
   }
 

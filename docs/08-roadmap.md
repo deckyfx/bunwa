@@ -154,6 +154,13 @@ polish, scale, or optionality.
 - Rate limiting at the edge
 - Runbooks: device stuck, pool wedged, DLQ growing, consent dispute
 - Security review: tenant isolation, regex DoS, SSRF on webhook URLs, key handling
+- **Close the DNS rebinding window.** Stage 1 validates the resolved address
+  immediately before each request and refuses if any answer is blocked, but
+  Bun's fetch cannot bind a connection to a validated IP while preserving Host
+  and SNI, so a resolver that changes its answer between the check and the
+  connect is still followed. Closing it needs an HTTP client over `Bun.connect`
+  — a meaningful amount of security-critical code to own, and the right size of
+  decision for hardening rather than foundation.
 
 **SSRF deserves naming:** projects supply webhook URLs. Without validation,
 `http://169.254.169.254/` turns your webhook sender into a cloud-metadata
