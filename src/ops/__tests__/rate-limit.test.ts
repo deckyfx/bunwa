@@ -15,7 +15,7 @@ import { sql } from "drizzle-orm";
 import { createDatabase, resetDatabase, type Database } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
 import { resetConfig } from "../../config/env";
-import { LIMITS, consume, peek, reset, sweep, type Limit } from "../rate-limit";
+import { LIMITS, consume, peek, reset, resetBucketRegistry, sweep, type Limit } from "../rate-limit";
 
 let dir: string;
 let database: Database;
@@ -26,6 +26,11 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "bunwa-rl-"));
   resetConfig();
   resetDatabase();
+  // Module-level state, so it outlives a test unless cleared. A leaked
+  // monkey-patched static caused two unrelated failures earlier on this
+  // branch; the same shape of leak here would make a test's verdict depend on
+  // which tests ran before it.
+  resetBucketRegistry();
   Bun.env["NODE_ENV"] = "test";
   Bun.env["LOG_LEVEL"] = "error";
   Bun.env["RUNTIME_DIR"] = dir;
@@ -185,4 +190,26 @@ describe("the sweep must not delete a window that is still open", () => {
     // Window closes at 60_000; swept with an hour of grace after that.
     expect(await sweep(3_600_000, new Date(60_000 + 3_600_001), database)).toBeGreaterThan(0);
   });
+});
+
+describe("one bucket cannot carry two different windows", () => {
+  // Reproduced before the guard existed: a 60s and a 2h limit sharing a bucket
+  // both wrote window_start 0. The row kept the 60s expiry, the sweep collected
+  // it while the 2h window was still open, and the next consume() allowed a
+  // budget that had already been spent.
+  test("a second window on the same bucket is refused", () => {
+    const short: Limit = { bucket: "collide", max: 5, windowMs: 60_000 };
+    const long: Limit = { bucket: "collide", max: 2, windowMs: 7_200_000 };
+
+    expect(consume("s", short, new Date(0), database).allowed).toBe(true);
+    expect(() => consume("s", long, new Date(0), database)).toThrow(RangeError);
+  });
+
+  test("the same bucket with the same window is fine", () => {
+    // The guard must not reject ordinary repeated use.
+    const limit: Limit = { bucket: "stable", max: 3, windowMs: 60_000 };
+    expect(consume("s", limit, new Date(0), database).allowed).toBe(true);
+    expect(consume("s", limit, new Date(1), database).allowed).toBe(true);
+  });
+
 });

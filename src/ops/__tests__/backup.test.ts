@@ -90,8 +90,9 @@ describe("createBackup", () => {
   });
 
   test("overwrites an existing file rather than refusing", async () => {
-    // VACUUM INTO will not overwrite, so createBackup removes first. Failing
-    // here would mean a scheduled backup silently stops after its first run.
+    // VACUUM INTO will not overwrite, so createBackup writes a staging file and
+    // renames it over the destination. Failing here would mean a scheduled
+    // backup silently stops after its first run.
     const target = join(dir, "backups", "fixed-name.sqlite");
     await createBackup(target, database);
     await expect(createBackup(target, database)).resolves.toBeDefined();

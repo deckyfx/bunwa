@@ -56,12 +56,49 @@ export interface Decision {
  * makes a naive read-then-write limiter leak roughly one request per concurrent
  * caller, which is most of them under exactly the load that triggers it.
  */
+/**
+ * Window length seen for each bucket, to catch two limits sharing one.
+ *
+ * A row is identified by (subject, bucket, window_start), so two Limits using
+ * the same bucket with different windows share rows whenever their windows
+ * align. Reproduced: a 60s and a 2h limit on one bucket both wrote window_start
+ * 0; the row kept the 60s expiry, the sweep collected it while the 2h window
+ * was still open, and the next consume() returned allowed for a budget that
+ * had already been spent.
+ *
+ * A bucket is the identity of a limit, so two windows for one bucket is a
+ * configuration error rather than a case to support. Refused loudly here
+ * rather than encoded into the primary key, which would need a table rebuild
+ * to express something no caller should be doing.
+ */
+const bucketWindows = new Map<string, number>();
+
+/** Reset the bucket registry. Tests define ad-hoc limits; production does not. */
+export function resetBucketRegistry(): void {
+  bucketWindows.clear();
+}
+
+function assertBucketIsStable(limit: Limit): void {
+  const seen = bucketWindows.get(limit.bucket);
+  if (seen === undefined) {
+    bucketWindows.set(limit.bucket, limit.windowMs);
+    return;
+  }
+  if (seen !== limit.windowMs) {
+    throw new RangeError(
+      `bucket "${limit.bucket}" is already using a ${seen}ms window; ` +
+        `a second limit cannot reuse it with ${limit.windowMs}ms`,
+    );
+  }
+}
+
 export function consume(
   subject: string,
   limit: Limit,
   now: Date = new Date(),
   database: Database = db(),
 ): Decision {
+  assertBucketIsStable(limit);
   const windowStart = new Date(Math.floor(now.getTime() / limit.windowMs) * limit.windowMs);
   const resetAt = new Date(windowStart.getTime() + limit.windowMs);
 
@@ -69,6 +106,11 @@ export function consume(
     INSERT INTO rate_limits (subject, bucket, window_start, expires_at, count)
     VALUES (${subject}, ${limit.bucket}, ${windowStart.getTime()}, ${resetAt.getTime()}, 1)
     ON CONFLICT (subject, bucket, window_start)
+      -- expires_at is not touched: reaching this row at all means the same
+      -- (subject, bucket, window_start), which requires the same window
+      -- alignment and therefore the same expiry. A MAX() here looked prudent
+      -- and was unreachable — the only route to a differing expiry is one
+      -- bucket carrying two windows, which assertBucketIsStable refuses.
       DO UPDATE SET count = count + 1
     RETURNING count
   `);
