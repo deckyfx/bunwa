@@ -150,3 +150,39 @@ describe("the configured limits", () => {
     expect(LIMITS.claim.max).toBeLessThan(LIMITS.send.max);
   });
 });
+
+describe("the sweep must not delete a window that is still open", () => {
+  test("a live window longer than the retention survives", async () => {
+    // consume() takes any Limit, and the sweep used to delete by windowStart
+    // against a fixed one-hour retention. A two-hour window beginning at 0 was
+    // therefore deleted at 3_600_001 while still live, and the next consume()
+    // started counting from zero — the limiter silently stopped limiting for
+    // exactly the callers given the longest windows.
+    const long: Limit = { bucket: "long", max: 2, windowMs: 7_200_000 };
+
+    const first = consume("subject-long", long, new Date(0), database);
+    expect(first.allowed).toBe(true);
+    const second = consume("subject-long", long, new Date(1_000), database);
+    expect(second.allowed).toBe(true);
+    // Budget spent: the window holds 2.
+    expect(consume("subject-long", long, new Date(2_000), database).allowed).toBe(false);
+
+    // Past the old fixed retention, but the window does not close until
+    // 7_200_000. The row must survive.
+    await sweep(3_600_000, new Date(3_600_001), database);
+
+    expect(
+      consume("subject-long", long, new Date(3_600_002), database).allowed,
+      "the live window was swept and the limit reset",
+    ).toBe(false);
+  });
+
+  test("a closed window is still collected once its grace has passed", async () => {
+    // The sweep must still do its job, or the table grows without bound.
+    const short: Limit = { bucket: "short", max: 5, windowMs: 60_000 };
+    consume("subject-short", short, new Date(0), database);
+
+    // Window closes at 60_000; swept with an hour of grace after that.
+    expect(await sweep(3_600_000, new Date(60_000 + 3_600_001), database)).toBeGreaterThan(0);
+  });
+});

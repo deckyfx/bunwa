@@ -66,8 +66,8 @@ export function consume(
   const resetAt = new Date(windowStart.getTime() + limit.windowMs);
 
   const [row] = database.all<{ count: number }>(sql`
-    INSERT INTO rate_limits (subject, bucket, window_start, count)
-    VALUES (${subject}, ${limit.bucket}, ${windowStart.getTime()}, 1)
+    INSERT INTO rate_limits (subject, bucket, window_start, expires_at, count)
+    VALUES (${subject}, ${limit.bucket}, ${windowStart.getTime()}, ${resetAt.getTime()}, 1)
     ON CONFLICT (subject, bucket, window_start)
       DO UPDATE SET count = count + 1
     RETURNING count
@@ -106,10 +106,21 @@ export function peek(
  *
  * Without this the table grows by one row per subject per window for ever.
  * Called on a timer; nothing depends on it being prompt.
+ *
+ * Deletes on the stored window end, not on windowStart against a fixed
+ * retention. The previous form was correct only while every limit's window was
+ * shorter than the retention — an invariant nothing enforced, on a function
+ * that accepts any exported Limit. A window longer than the retention had its
+ * live row deleted mid-window, and the next consume() restarted the count from
+ * zero: a rate limiter that stops limiting precisely for the callers given the
+ * longest windows.
+ *
+ * `olderThanMs` is a grace period after the window closes, not a guess at how
+ * long a window lasts.
  */
 export async function sweep(olderThanMs = 3_600_000, now: Date = new Date(), database: Database = db()): Promise<number> {
   const cutoff = new Date(now.getTime() - olderThanMs);
-  const removed = await database.delete(rateLimits).where(lt(rateLimits.windowStart, cutoff)).returning();
+  const removed = await database.delete(rateLimits).where(lt(rateLimits.expiresAt, cutoff)).returning();
   return removed.length;
 }
 

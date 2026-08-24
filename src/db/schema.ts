@@ -484,12 +484,24 @@ export const rateLimits = sqliteTable(
     bucket: text("bucket").notNull(),
     /** Start of the current window, truncated to the window size. */
     windowStart: integer("window_start", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * When this window closes: windowStart + the limit's windowMs.
+     *
+     * Stored rather than assumed, because the sweep previously deleted by
+     * windowStart against a fixed one-hour retention. That is only correct
+     * while every limit's window is shorter than the retention — an invariant
+     * nothing enforced, on a `consume(subject, limit)` that accepts any
+     * exported Limit. A longer window would have had its live row deleted
+     * mid-window, resetting the count and letting the caller past the limit.
+     */
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
     count: integer("count").notNull().default(0),
   },
   (t) => [
     primaryKey({ columns: [t.subject, t.bucket, t.windowStart] }),
-    // The sweep deletes by age; without this it scans the whole table.
+    // The sweep deletes by window end; without this it scans the whole table.
     index("rate_limits_window_idx").on(t.windowStart),
+    index("rate_limits_expiry_idx").on(t.expiresAt),
   ],
 );
 

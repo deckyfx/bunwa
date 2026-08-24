@@ -182,6 +182,11 @@ describe("a released migration is immutable", () => {
       hash: "4730d2109199364d0791e02b47562542c56cdc924b5a6c71ab218530396bda3d",
       when: 1787540388134,
     },
+    {
+      tag: "0002_rate_limit_expiry",
+      hash: "fcb348cb11ea796069145be3ec129eb9d8e6a7b849f5c13cd637da647a639714",
+      when: 1787558564082,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
