@@ -9,7 +9,7 @@ import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { sql } from "drizzle-orm";
 
@@ -152,7 +152,7 @@ describe("pruneBackups", () => {
     }
     expect(await pruneBackups(backups, 2)).toHaveLength(1);
 
-    const left = (await listBackups(backups)).map((b) => b.path.split("/").pop());
+    const left = (await listBackups(backups)).map((b) => basename(b.path));
     expect(left).toEqual(["bunwa-20260102-000000.sqlite", "bunwa-20260103-000000.sqlite"]);
   });
 
@@ -299,7 +299,7 @@ describe("retention survives what it finds in the directory", () => {
     expect(pruned).toEqual(["bunwa-20260101-000000.sqlite"]);
 
     // The directory is not a backup, so it is neither listed nor deleted.
-    const listed = (await listBackups(backups)).map((b) => b.path.split("/").pop());
+    const listed = (await listBackups(backups)).map((b) => basename(b.path));
     expect(listed).toEqual(["bunwa-20260102-000000.sqlite", "bunwa-20260103-000000.sqlite"]);
     // stat().isDirectory(), not Bun.file().exists(): exists() returns false for
     // a live directory and for a missing path alike, so the assertion this
@@ -392,7 +392,7 @@ describe("retention only deletes what this tool created", () => {
     // Still there, and still its own content.
     expect(await Bun.file(bystander).text()).toBe("IRREPLACEABLE");
     // And it was never a backup as far as listing is concerned.
-    const listed = (await listBackups(backups)).map((b) => b.path.split("/").pop());
+    const listed = (await listBackups(backups)).map((b) => basename(b.path));
     expect(listed).not.toContain("app-production.sqlite");
   });
 
@@ -413,7 +413,7 @@ describe("retention only deletes what this tool created", () => {
     }
     await createBackup(join(backups, backupFilename(new Date("2026-11-12T13:14:15Z"))), database);
 
-    expect((await listBackups(backups)).map((b) => b.path.split("/").pop())).toEqual([
+    expect((await listBackups(backups)).map((b) => basename(b.path))).toEqual([
       "bunwa-20261112-131415.sqlite",
     ]);
   });
