@@ -215,7 +215,9 @@ describe("the loop refuses an interval that would make it spin", () => {
   // signed integer to 1ms. Measured — Infinity fires after 1ms with a
   // TimeoutOverflowWarning. A one-millisecond loop over three table sweeps is
   // a self-inflicted load with no upper bound.
-  for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+  // 2_147_483_648 is the one that matters most: it is finite, so a guard that
+  // only tests Number.isFinite lets it through, and it fires after 8ms.
+  for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY, 2_147_483_648]) {
     test(`refuses ${String(bad)}`, () => {
       expect(() => startHousekeeping(database, bad)).toThrow(RangeError);
     });
@@ -223,6 +225,13 @@ describe("the loop refuses an interval that would make it spin", () => {
 
   test("accepts a sane interval and stops cleanly", async () => {
     const stop = startHousekeeping(database, 30_000);
+    await stop();
+  });
+
+  test("accepts the largest delay setTimeout actually honours", async () => {
+    // The boundary must be inclusive: 2_147_483_647 is honoured, so rejecting
+    // it would be the guard inventing its own limit.
+    const stop = startHousekeeping(database, 2_147_483_647);
     await stop();
   });
 });

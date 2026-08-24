@@ -168,6 +168,14 @@ export async function runHousekeeping(
   return { idempotencyKeysRemoved, rateLimitRowsRemoved, messagesMarkedUndelivered };
 }
 
+/**
+ * The longest delay setTimeout honours: 2**31 - 1 ms, about 24.9 days.
+ *
+ * Anything larger is silently clamped to 1ms rather than rounded down, so this
+ * is a cliff rather than a ceiling.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+
 /** How often to run. Frequent enough that an undelivered OTP is noticed quickly. */
 export const HOUSEKEEPING_INTERVAL_MS = 30_000;
 
@@ -184,11 +192,18 @@ export function startHousekeeping(
 ): () => Promise<void> {
   // Rejected rather than clamped, because every bad value fails toward running
   // constantly rather than not at all. setTimeout treats NaN as 0, and clamps
-  // anything past a 32-bit signed integer — Infinity included — to 1ms, so
-  // "never run" and "run as fast as possible" are the same argument. This loop
-  // sweeps three tables, so that is a self-inflicted load with no upper bound.
-  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
-    throw new RangeError(`intervalMs must be a finite positive number, got ${String(intervalMs)}`);
+  // anything past a 32-bit signed integer to 1ms, so "never run" and "run as
+  // fast as possible" are the same argument. This loop sweeps three tables, so
+  // that is a self-inflicted load with no upper bound.
+  //
+  // The bound is checked as well as finiteness. The first version of this
+  // guard rejected Infinity and stopped there, even though the reason it gave
+  // was the 32-bit clamp — which a finite 2_147_483_648 hits just as
+  // squarely. Measured: it fires after 8ms with a TimeoutOverflowWarning.
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0 || intervalMs > MAX_TIMER_MS) {
+    throw new RangeError(
+      `intervalMs must be a positive number no greater than ${MAX_TIMER_MS}, got ${String(intervalMs)}`,
+    );
   }
 
   let stopped = false;
