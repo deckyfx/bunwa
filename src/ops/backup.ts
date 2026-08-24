@@ -222,10 +222,21 @@ function isNotFound(err: unknown): boolean {
  * directory" — so one stray directory stopped retention entirely and the disk
  * kept filling.
  */
+/**
+ * The exact shape backupFilename produces, and nothing else.
+ *
+ * Retention deletes what this matches, so matching loosely is deleting
+ * loosely. `*.sqlite` accepted any database in the directory: verified, a file
+ * named app-production.sqlite sorted ahead of the bunwa- names, landed in the
+ * doomed slice, and was removed by a routine prune. A backup tool destroying a
+ * database it did not create is the worst thing in this file.
+ */
+const BACKUP_FILENAME = /^bunwa-\d{8}-\d{6}\.sqlite$/;
+
 async function backupFilesIn(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   return entries
-    .filter((e) => e.isFile() && e.name.endsWith(".sqlite"))
+    .filter((e) => e.isFile() && BACKUP_FILENAME.test(e.name))
     .map((e) => e.name)
     .sort();
 }

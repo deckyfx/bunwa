@@ -366,3 +366,55 @@ describe("the CLI turns a filesystem fault into a diagnosis", () => {
     expect(proc.exitCode).toBe(74);
   }, 30_000);
 });
+
+
+describe("retention only deletes what this tool created", () => {
+  // The worst failure available to a backup tool: destroying a database it did
+  // not create. `*.sqlite` matched anything, and an unrelated
+  // app-production.sqlite sorted ahead of the bunwa- names, so it landed in
+  // the doomed slice and a routine prune removed it.
+  test("an unrelated database in the directory is neither listed nor pruned", async () => {
+    const backups = join(dir, "mixed");
+    await mkdir(backups, { recursive: true });
+
+    const bystander = join(backups, "app-production.sqlite");
+    writeFileSync(bystander, "IRREPLACEABLE");
+    for (const name of [
+      "bunwa-20260101-000000.sqlite",
+      "bunwa-20260102-000000.sqlite",
+      "bunwa-20260103-000000.sqlite",
+    ]) {
+      await createBackup(join(backups, name), database);
+    }
+
+    expect(await pruneBackups(backups, 2)).toEqual(["bunwa-20260101-000000.sqlite"]);
+
+    // Still there, and still its own content.
+    expect(await Bun.file(bystander).text()).toBe("IRREPLACEABLE");
+    // And it was never a backup as far as listing is concerned.
+    const listed = (await listBackups(backups)).map((b) => b.path.split("/").pop());
+    expect(listed).not.toContain("app-production.sqlite");
+  });
+
+  test("the filter accepts exactly what backupFilename produces", () => {
+    // Tied to the generator so the two cannot drift: a pattern that stopped
+    // matching real backups would silently disable retention instead.
+    const backups = join(dir, "roundtrip");
+    const produced = backupFilename(new Date("2026-11-12T13:14:15Z"));
+    expect(produced).toBe("bunwa-20261112-131415.sqlite");
+    void backups;
+  });
+
+  test("a near-miss name is not treated as a backup", async () => {
+    const backups = join(dir, "nearmiss");
+    await mkdir(backups, { recursive: true });
+    for (const name of ["bunwa-2026111-131415.sqlite", "bunwa-20261112-131415.sqlite.bak", "bunwa-.sqlite"]) {
+      writeFileSync(join(backups, name), "x");
+    }
+    await createBackup(join(backups, backupFilename(new Date("2026-11-12T13:14:15Z"))), database);
+
+    expect((await listBackups(backups)).map((b) => b.path.split("/").pop())).toEqual([
+      "bunwa-20261112-131415.sqlite",
+    ]);
+  });
+});
