@@ -106,12 +106,17 @@ export function consume(
     INSERT INTO rate_limits (subject, bucket, window_start, expires_at, count)
     VALUES (${subject}, ${limit.bucket}, ${windowStart.getTime()}, ${resetAt.getTime()}, 1)
     ON CONFLICT (subject, bucket, window_start)
-      -- expires_at is not touched: reaching this row at all means the same
-      -- (subject, bucket, window_start), which requires the same window
-      -- alignment and therefore the same expiry. A MAX() here looked prudent
-      -- and was unreachable — the only route to a differing expiry is one
-      -- bucket carrying two windows, which assertBucketIsStable refuses.
-      DO UPDATE SET count = count + 1
+      -- expires_at can only grow. The claim this replaced — that reaching a
+      -- row means the same alignment and therefore the same expiry — is false
+      -- whenever one window is a multiple of another, and 2h is exactly 120
+      -- times 60s, so their aligned starts coincide.
+      --
+      -- assertBucketIsStable catches that within a process, but it has no
+      -- memory across a restart. Reproduced: a deploy narrowing "otp" from 60s
+      -- to 2h wrote count onto the surviving 60s row, keeping its one-minute
+      -- expiry; the sweep then collected a live 2h window and the next
+      -- consume() started from zero.
+      DO UPDATE SET count = count + 1, expires_at = MAX(rate_limits.expires_at, excluded.expires_at)
     RETURNING count
   `);
 

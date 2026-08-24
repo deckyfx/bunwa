@@ -222,6 +222,37 @@ describe("one bucket cannot carry two different windows", () => {
     expect(() => peek("s", long, new Date(0), database)).toThrow(RangeError);
   });
 
+  test("a restart that widens a bucket's window does not lose the live one", async () => {
+    // The registry is in-memory, so a deploy that changes an existing bucket's
+    // window meets rows written under the old one with no guard in the way.
+    //
+    // The alignments collide: 2h is exactly 120 x 60s, so their window starts
+    // coincide. An earlier version of this file asserted the opposite — that a
+    // different window always means a different row — and used that to justify
+    // dropping MAX() from the upsert as unreachable. Reproduced end to end:
+    // the surviving row kept its one-minute expiry, the sweep collected it
+    // while the 2h window was still open, and the limit reset to zero.
+    const narrow: Limit = { bucket: "otp", max: 5, windowMs: 60_000 };
+    const wide: Limit = { bucket: "otp", max: 2, windowMs: 7_200_000 };
+    const aligned = new Date(7_200_000);
+
+    consume("s", narrow, aligned, database);
+
+    // The restart: the process forgets which window this bucket had.
+    resetBucketRegistry();
+
+    consume("s", wide, aligned, database);
+    expect(consume("s", wide, new Date(7_200_100), database).allowed).toBe(false);
+
+    // An hour past the *old* expiry, still well inside the new window.
+    await sweep(3_600_000, new Date(7_260_000 + 3_600_001), database);
+
+    expect(
+      consume("s", wide, new Date(10_800_000), database).allowed,
+      "the live window was swept and the limit reset",
+    ).toBe(false);
+  });
+
   test("the same bucket with the same window is fine", () => {
     // The guard must not reject ordinary repeated use.
     const limit: Limit = { bucket: "stable", max: 3, windowMs: 60_000 };
