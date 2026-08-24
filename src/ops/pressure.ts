@@ -119,7 +119,16 @@ export async function samplePressure(database?: Database, now: Date = new Date()
   // Rolls on time rather than on read, so sampling is non-destructive and two
   // readers within one window agree.
   const elapsedMs = now.getTime() - busyRetriesSince.getTime();
-  const elapsedMinutes = Math.max(1 / 60, elapsedMs / 60_000);
+  // Never extrapolate from a partial window. The floor used to be one second,
+  // so a single retry sampled 200ms after a rotation reported 60.00/min —
+  // six times PRESSURE_GUIDANCE.busyRetriesPerMinute.act, from one event. Two
+  // scrapers polling a few hundred milliseconds apart were enough, and this
+  // number is what ADR-0005's Postgres trigger rests on.
+  //
+  // Dividing by a whole window rather than by a tenth of one, which would
+  // still report exactly the act threshold for that single retry. It hides
+  // nothing real: 100 retries in ten seconds still reports 100/min.
+  const elapsedMinutes = Math.max(BUSY_WINDOW_MS, elapsedMs) / 60_000;
   const busyRetriesPerMinute = Number((busyRetries / elapsedMinutes).toFixed(2));
   if (elapsedMs >= BUSY_WINDOW_MS) {
     busyRetries = 0;

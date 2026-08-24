@@ -219,6 +219,33 @@ describe("busy retries", () => {
     expect(p.busyRetriesPerMinute).toBeLessThan(35);
   });
 
+  test("a partial window does not extrapolate one retry into an alert", async () => {
+    // The window rotates inside samplePressure, so the gap between a rotation
+    // and the next sample can be milliseconds — two scrapers, or a health
+    // check landing just after one. With a one-second floor on the
+    // denominator, a single retry 200ms in reported 60.00/min: six times the
+    // act threshold, from one event, on the number ADR-0005's trigger rests on.
+    const now = new Date();
+    resetBusyWindow(new Date(now.getTime() - 200));
+    recordBusyRetry();
+
+    const p = await samplePressure(database, now);
+    expect(p.busyRetriesPerMinute).toBeLessThan(PRESSURE_GUIDANCE.busyRetriesPerMinute.act);
+    // One retry in a window is one per window, not sixty.
+    expect(p.busyRetriesPerMinute).toBeCloseTo(1, 2);
+  });
+
+  test("a partial window still surfaces real contention", async () => {
+    // The floor must not hide a genuine burst: not extrapolating is not the
+    // same as under-reporting.
+    const now = new Date();
+    resetBusyWindow(new Date(now.getTime() - 10_000));
+    for (let i = 0; i < 100; i++) recordBusyRetry();
+
+    const p = await samplePressure(database, now);
+    expect(p.busyRetriesPerMinute).toBeGreaterThan(PRESSURE_GUIDANCE.busyRetriesPerMinute.act);
+  });
+
   test("reset clears the window", async () => {
     for (let i = 0; i < 10; i++) recordBusyRetry();
     resetBusyWindow();
