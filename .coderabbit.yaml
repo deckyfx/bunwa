@@ -130,6 +130,17 @@ reviews:
         measured to mean nothing for up to 203 seconds after a silent
         disconnect.
 
+    - path: "src/db/__tests__/migrations.integration.test.ts"
+      instructions: >-
+        Do not report `RELEASED` as a duplicate or repeated declaration. A
+        review of 48c25bd claimed it was declared three times and that the file
+        could not compile; it is declared once, `tsc --noEmit` exits 0, and the
+        file's tests pass. Verify any redeclaration claim against the actual
+        file before reporting it. The RELEASED table is deliberately a
+        hardcoded list of shipped migration hashes and timestamps — it is not
+        duplicated state to be derived from buildSequence(), because deriving
+        it from the thing it is meant to pin would make the test vacuous.
+
     - path: "src/tools/**"
       instructions: >-
         Diagnostic tooling, not production code. Hold it to a lower bar for
