@@ -182,6 +182,15 @@ export function startHousekeeping(
   database: Database = db(),
   intervalMs = HOUSEKEEPING_INTERVAL_MS,
 ): () => Promise<void> {
+  // Rejected rather than clamped, because every bad value fails toward running
+  // constantly rather than not at all. setTimeout treats NaN as 0, and clamps
+  // anything past a 32-bit signed integer — Infinity included — to 1ms, so
+  // "never run" and "run as fast as possible" are the same argument. This loop
+  // sweeps three tables, so that is a self-inflicted load with no upper bound.
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) {
+    throw new RangeError(`intervalMs must be a finite positive number, got ${String(intervalMs)}`);
+  }
+
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inFlight: Promise<void> = Promise.resolve();

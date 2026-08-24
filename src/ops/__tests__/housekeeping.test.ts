@@ -21,7 +21,7 @@ import {
 } from "../../db/schema";
 import { resetConfig } from "../../config/env";
 import { consume, peek } from "../rate-limit";
-import { runHousekeeping, sweepUnacked } from "../housekeeping";
+import { runHousekeeping, startHousekeeping, sweepUnacked } from "../housekeeping";
 import { IdempotencyStore } from "../../stores/idempotency-store";
 
 let dir: string;
@@ -206,5 +206,23 @@ describe("runHousekeeping", () => {
     } finally {
       (IdempotencyStore as { sweep: typeof IdempotencyStore.sweep }).sweep = realSweep;
     }
+  });
+});
+
+describe("the loop refuses an interval that would make it spin", () => {
+  // Every invalid value fails toward running constantly, not toward not
+  // running: setTimeout treats NaN as 0 and clamps anything beyond a 32-bit
+  // signed integer to 1ms. Measured — Infinity fires after 1ms with a
+  // TimeoutOverflowWarning. A one-millisecond loop over three table sweeps is
+  // a self-inflicted load with no upper bound.
+  for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    test(`refuses ${String(bad)}`, () => {
+      expect(() => startHousekeeping(database, bad)).toThrow(RangeError);
+    });
+  }
+
+  test("accepts a sane interval and stops cleanly", async () => {
+    const stop = startHousekeeping(database, 30_000);
+    await stop();
   });
 });
