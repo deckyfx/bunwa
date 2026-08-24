@@ -189,6 +189,21 @@ describe("verification does not author what it inspects", () => {
     expect(await Bun.file(path).exists()).toBe(false);
   });
 
+  test("an unreachable path is reported as unreachable, not as missing", async () => {
+    // A path beneath a regular file fails with ENOTDIR. Reporting that as
+    // "no backup at ..." tells an operator whose BACKUP_DIR is misconfigured
+    // that the backup was never taken — a scheduling problem, not the path
+    // problem it actually is.
+    const notADirectory = join(dir, "regular-file");
+    writeFileSync(notADirectory, "not a directory");
+
+    const result = await verifyBackup(join(notADirectory, "under.sqlite"));
+    expect(result.ok).toBe(false);
+    expect(result.problem).toContain("cannot read");
+    expect(result.problem).toContain("ENOTDIR");
+    expect(result.problem).not.toContain("no backup at");
+  });
+
   test("a directory is not a backup", async () => {
     const result = await verifyBackup(dir);
     expect(result.ok).toBe(false);

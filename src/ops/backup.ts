@@ -112,8 +112,15 @@ export async function verifyBackup(path: string): Promise<VerifyResult> {
   let stats: Stats;
   try {
     stats = await stat(path);
-  } catch {
-    return { ok: false, counts, problem: `no backup at ${path}` };
+  } catch (err) {
+    if (isNotFound(err)) return { ok: false, counts, problem: `no backup at ${path}` };
+    // A path that cannot be reached is a different fault from a backup that was
+    // never taken, and the operator needs to be able to tell them apart.
+    return {
+      ok: false,
+      counts,
+      problem: `cannot read ${path}: ${err instanceof Error ? err.message : String(err)}`,
+    };
   }
   if (!stats.isFile()) return { ok: false, counts, problem: `not a regular file: ${path}` };
 
@@ -174,7 +181,7 @@ export async function pruneBackups(directory: string, keep: number): Promise<str
   try {
     entries = await backupFilesIn(directory);
   } catch (err) {
-    if (isMissingDirectory(err)) return [];
+    if (isNotFound(err)) return [];
     throw err;
   }
   const doomed = entries.slice(0, Math.max(0, entries.length - keep));
@@ -189,15 +196,20 @@ export function backupFilename(at: Date = new Date()): string {
 }
 
 /**
- * True only for "the directory is not there", which is a legitimate empty result.
+ * True only for "it is not there", which is the one legitimately empty answer.
  *
- * Both callers used to catch everything and return empty. EACCES, ENOTDIR and
- * ordinary I/O errors were therefore reported as "no backups" — indistinguishable
- * from a healthy directory that has none. An operator checking a
- * permission-broken path was told backups had never been taken, and retention
- * reported success while pruning nothing, which is the disk filling quietly.
+ * Every filesystem call in this module used to catch everything and report
+ * absence. EACCES, ENOTDIR and ordinary I/O errors were therefore indistinguishable
+ * from a healthy directory with no backups, or from a backup not yet taken. An
+ * operator whose BACKUP_DIR points at a regular file was told the backup did
+ * not exist, and retention reported success while pruning nothing — the disk
+ * filling quietly.
+ *
+ * Named for the condition rather than for the caller: the first version of
+ * this helper was isMissingDirectory and covered the two readdir sites, which
+ * left verifyBackup's stat() reporting ENOTDIR as "no backup at ...".
  */
-function isMissingDirectory(err: unknown): boolean {
+function isNotFound(err: unknown): boolean {
   return (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
 }
 
@@ -232,7 +244,7 @@ export async function listBackups(directory: string): Promise<BackupInfo[]> {
   try {
     entries = await backupFilesIn(directory);
   } catch (err) {
-    if (isMissingDirectory(err)) return [];
+    if (isNotFound(err)) return [];
     throw err;
   }
   return Promise.all(
