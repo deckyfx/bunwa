@@ -46,10 +46,18 @@ export function intOrThrow(raw: string | undefined, fallback: number, name: stri
 }
 
 export const STAGE0 = {
-  /** gowa's REST base URL, as published by deploy/stage0/docker-compose.yml. */
-  gowaBaseUrl: process.env.GOWA_URL ?? "http://127.0.0.1:3000",
-  /** gowa's internal broadcast WebSocket. */
-  gowaWsUrl: process.env.GOWA_WS ?? "ws://127.0.0.1:3000/ws",
+  /**
+   * gowa's REST base URL, as published by deploy/stage0/docker-compose.yml.
+   *
+   * 31782, not 3000: the container still listens on 3000, but the compose file
+   * publishes it on an uncommon host port so it cannot collide with a dev
+   * server. Defaulting to 3000 after that change meant these tools quietly
+   * measured whatever else was on 3000 — the failure mode the uncommon port
+   * was chosen to avoid.
+   */
+  gowaBaseUrl: process.env.GOWA_URL ?? "http://127.0.0.1:31782",
+  /** gowa's internal broadcast WebSocket, on the same published port. */
+  gowaWsUrl: process.env.GOWA_WS ?? "ws://127.0.0.1:31782/ws",
   /** Port the webhook sink listens on; must match WHATSAPP_WEBHOOK in .env. */
   sinkPort: intOrThrow(process.env.SINK_PORT, 3999, "SINK_PORT"),
   /** Shared secret gowa signs webhook payloads with. */

@@ -7,6 +7,7 @@
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -223,5 +224,59 @@ describe("verification does not author what it inspects", () => {
 
     expect(Bun.file(good).size).toBe(before);
     expect(await Bun.file(`${good}-wal`).exists()).toBe(false);
+  });
+});
+
+describe("a failed backup must not destroy the last good one", () => {
+  test("the previous snapshot survives a failed replacement", async () => {
+    // VACUUM INTO refuses to overwrite, so the destination used to be deleted
+    // first. A snapshot that then failed — a full disk, an SQLite error — had
+    // already destroyed the only backup, to produce nothing in its place.
+    const destination = join(dir, "rolling.sqlite");
+    await createBackup(destination, database);
+    const goodSize = Bun.file(destination).size;
+    expect(goodSize).toBeGreaterThan(0);
+    expect((await verifyBackup(destination)).ok).toBe(true);
+
+    // A closed handle fails inside VACUUM INTO, after the point where the old
+    // implementation had already removed the destination.
+    const doomed = createDatabase(join(dir, "doomed.sqlite"));
+    await MigrationManager.runMigrations(doomed);
+    doomed.$client.close();
+
+    await expect(createBackup(destination, doomed)).rejects.toThrow();
+
+    // The backup that was there before is still there, and still usable.
+    expect(Bun.file(destination).size).toBe(goodSize);
+    expect((await verifyBackup(destination)).ok).toBe(true);
+    // And no staging debris is left to be mistaken for a backup.
+    expect(await Bun.file(`${destination}.partial`).exists()).toBe(false);
+  });
+});
+
+describe("retention survives what it finds in the directory", () => {
+  test("a directory named like a backup does not halt pruning", async () => {
+    // `rm(..., { force: true })` suppresses "missing", not "is a directory":
+    // one stray *.sqlite directory made prune reject with ERR_FS_EISDIR, so
+    // retention stopped entirely and the disk kept filling — the exact outage
+    // retention exists to prevent.
+    const backups = join(dir, "retention");
+    await mkdir(backups, { recursive: true });
+    for (const name of [
+      "bunwa-20260101-000000.sqlite",
+      "bunwa-20260102-000000.sqlite",
+      "bunwa-20260103-000000.sqlite",
+    ]) {
+      await createBackup(join(backups, name), database);
+    }
+    await mkdir(join(backups, "bunwa-20260104-000000.sqlite"), { recursive: true });
+
+    const pruned = await pruneBackups(backups, 2);
+    expect(pruned).toEqual(["bunwa-20260101-000000.sqlite"]);
+
+    // The directory is not a backup, so it is neither listed nor deleted.
+    const listed = (await listBackups(backups)).map((b) => b.path.split("/").pop());
+    expect(listed).toEqual(["bunwa-20260102-000000.sqlite", "bunwa-20260103-000000.sqlite"]);
+    expect(await Bun.file(join(backups, "bunwa-20260104-000000.sqlite")).exists()).toBe(false);
   });
 });

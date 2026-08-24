@@ -184,17 +184,23 @@ describe("a released migration is immutable", () => {
     },
   ];
 
-  test("shipped migrations keep the hash and timestamp inspect() compares", () => {
+  test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
     const built = MigrationManager.buildSequence();
 
-    for (const released of RELEASED) {
-      const actual = built.find((m) => m.tag === released.tag);
-      expect(actual, `migration ${released.tag} was removed or renamed`).toBeDefined();
+    // By position, not by lookup. `find` by tag passed when a migration was
+    // inserted ahead of the pinned ones or added unlisted at the end, and
+    // inspect() compares applied rows by sequence position — so a reordering
+    // it would reject was a reordering this test accepted.
+    expect(built.length, "a migration was added or removed without pinning it here").toBe(RELEASED.length);
+
+    RELEASED.forEach((released, i) => {
+      const actual = built[i];
+      expect(actual?.tag, `position ${i} is no longer ${released.tag}`).toBe(released.tag);
       // Both halves of the comparison, because a database records both. Pinning
       // the timestamp alone let the SQL body change freely.
       expect(actual!.hash, `migration ${released.tag} changed its contents`).toBe(released.hash);
       expect(actual!.when, `migration ${released.tag} changed its timestamp`).toBe(released.when);
-    }
+    });
   });
 
   test("a database at the previous release upgrades instead of being rejected", async () => {

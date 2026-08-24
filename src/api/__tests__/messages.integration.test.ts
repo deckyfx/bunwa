@@ -23,7 +23,7 @@ import { EnvironmentStore } from "../../stores/environment-store";
 import { MessageStore } from "../../stores/message-store";
 import { ProjectStore } from "../../stores/project-store";
 import { handleEngineEvent } from "../../engine/consumer";
-import { LIMITS } from "../../ops/rate-limit";
+import { LIMITS, consume } from "../../ops/rate-limit";
 import { resetConfig } from "../../config/env";
 
 let dir: string;
@@ -374,4 +374,34 @@ describe("a runaway caller cannot exhaust a customer's number", () => {
     // belongs to the number rather than to the caller.
     expect((await send(otp, crypto.randomUUID(), second)).status).toBe(429);
   }, 30_000);
+});
+
+describe("the per-key request backstop is actually enforced", () => {
+  test("a key is refused once its request budget is spent", async () => {
+    // LIMITS.request documented itself as covering "everything else, per key"
+    // and had no call site anywhere, so every authenticated route outside send
+    // and claim was unlimited. The constant read, in review, exactly like a
+    // protection that existed.
+    //
+    // The budget is spent directly rather than by issuing 600 requests: the
+    // claim under test is that requireApiKey consults this bucket at all, and
+    // driving it through the network took over a minute and timed out. What
+    // makes it a real test is the subject — `key:<id>` must be the same string
+    // the middleware builds, or nothing here would refuse.
+    const resolved = await ApiKeyStore.resolve(key);
+    expect(resolved).not.toBeNull();
+
+    const list = () =>
+      app.handle(new Request("http://localhost/v1/devices", { headers: { "x-api-key": key } }));
+
+    expect((await list()).status).toBe(200);
+
+    for (let i = 0; i < LIMITS.request.max; i++) {
+      consume(`key:${resolved!.apiKey.id}`, LIMITS.request);
+    }
+
+    const refused = await list();
+    expect(refused.status, "the request backstop never refused").toBe(429);
+    expect(refused.headers.get("retry-after")).toMatch(/^\d+$/);
+  });
 });

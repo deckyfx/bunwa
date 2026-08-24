@@ -272,7 +272,14 @@ export const PRESSURE_GUIDANCE = {
   devicesPerPool: { warn: 20, act: 25, meaning: "pool nearing capacity; a second process is next" },
 } as const;
 
-/** Reset the retry counter and its window. Called after each scrape. */
+/**
+ * Reset the retry counter and its window to a known state.
+ *
+ * No longer called after each scrape — that is what made GET /metrics
+ * destructive, and samplePressure now rotates the window on elapsed time
+ * instead. This remains only so a test can pin the window's start, which is
+ * otherwise process-global state shared between test files.
+ */
 export function resetBusyWindow(now: Date = new Date()): void {
   busyRetries = 0;
   busyRetriesSince = now;

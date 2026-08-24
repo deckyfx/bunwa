@@ -13,7 +13,7 @@
  * worst possible failure, because it looks like it worked.
  */
 import type { Stats } from "node:fs";
-import { mkdir, readdir, rm, stat } from "node:fs/promises";
+import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { sql } from "drizzle-orm";
@@ -59,12 +59,26 @@ export async function createBackup(destination: string, database?: Database): Pr
   try {
     await mkdir(join(destination, ".."), { recursive: true }).catch(() => undefined);
 
-    // VACUUM INTO refuses to overwrite, which is a feature — a backup that
-    // silently replaced a good one with a failed attempt would be worse than no
-    // backup. Remove deliberately, after the caller has chosen the path.
-    await rm(destination, { force: true });
+    // Written to a staging name and moved into place only on success.
+    //
+    // VACUUM INTO refuses to overwrite, so the previous version deleted the
+    // destination first — which meant a snapshot that then failed, on a full
+    // disk or an SQLite error, had destroyed the last good backup to produce
+    // nothing. The window was small and the loss total.
+    //
+    // Same directory, so the final step is a rename within one filesystem
+    // rather than a copy that can half-succeed.
+    const staging = `${destination}.partial`;
+    await rm(staging, { force: true });
 
-    handle.run(sql.raw(`VACUUM INTO '${destination.replace(/'/g, "''")}'`));
+    try {
+      handle.run(sql.raw(`VACUUM INTO '${staging.replace(/'/g, "''")}'`));
+      await rename(staging, destination);
+    } catch (err) {
+      // The previous backup is still where it was; clear only our debris.
+      await rm(staging, { force: true }).catch(() => undefined);
+      throw err;
+    }
   } finally {
     if (owned) {
       try {
@@ -158,7 +172,7 @@ export async function pruneBackups(directory: string, keep: number): Promise<str
   if (keep < 1) throw new Error("keep must be at least 1");
   let entries: string[];
   try {
-    entries = (await readdir(directory)).filter((f) => f.endsWith(".sqlite")).sort();
+    entries = await backupFilesIn(directory);
   } catch {
     return [];
   }
@@ -173,11 +187,28 @@ export function backupFilename(at: Date = new Date()): string {
   return `bunwa-${iso.slice(0, 10).replace(/-/g, "")}-${iso.slice(11, 19).replace(/:/g, "")}.sqlite`;
 }
 
+/**
+ * Names in `directory` that are actually backup files, oldest first.
+ *
+ * Regular files only. A directory named `something.sqlite` was treated as a
+ * backup: it appeared in listings, and prune's `rm(..., { force: true })`
+ * rejected with ERR_FS_EISDIR — force suppresses "missing", not "is a
+ * directory" — so one stray directory stopped retention entirely and the disk
+ * kept filling.
+ */
+async function backupFilesIn(directory: string): Promise<string[]> {
+  const entries = await readdir(directory, { withFileTypes: true });
+  return entries
+    .filter((e) => e.isFile() && e.name.endsWith(".sqlite"))
+    .map((e) => e.name)
+    .sort();
+}
+
 /** List what is in a backup directory, newest last. */
 export async function listBackups(directory: string): Promise<BackupInfo[]> {
   let entries: string[];
   try {
-    entries = (await readdir(directory)).filter((f) => f.endsWith(".sqlite")).sort();
+    entries = await backupFilesIn(directory);
   } catch {
     return [];
   }

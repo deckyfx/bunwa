@@ -9,7 +9,7 @@
  */
 import { Elysia } from "elysia";
 
-import { consume, type Limit } from "../ops/rate-limit";
+import { LIMITS, consume, type Limit } from "../ops/rate-limit";
 import { ApiKeyStore, type ResolvedKey } from "../stores/api-key-store";
 import { log } from "../observability/logger";
 
@@ -75,6 +75,15 @@ export const requireApiKey = new Elysia({ name: "requireApiKey" })
     }
 
     ApiKeyStore.touch(resolved.apiKey.id, resolved.environmentId);
+
+    // The backstop LIMITS.request describes itself as covering "everything
+    // else, per key" — and had no call site at all, so every route outside
+    // send and claim was unlimited. A limit that exists only as a constant
+    // reads in review as though it protects something.
+    //
+    // Applied after resolution, not before: an unauthenticated caller must not
+    // be able to spend a real key's budget by guessing at its id.
+    requireWithinLimit(`key:${resolved.apiKey.id}`, LIMITS.request, path);
 
     const auth: AuthContext = {
       projectId: resolved.projectId,

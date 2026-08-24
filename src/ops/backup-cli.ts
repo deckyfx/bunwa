@@ -60,6 +60,16 @@ async function main(): Promise<void> {
     return;
   }
 
+  // Only a bare invocation takes a backup. Anything else falls through to
+  // here, so `backup verfiy file.sqlite` used to write a snapshot and prune
+  // older ones — a typo in a verification command silently mutating the backup
+  // set is the opposite of what the operator asked for.
+  if (command !== undefined) {
+    console.error(`unknown command: ${command}`);
+    console.error("usage: bun run backup [list | verify <file>]");
+    process.exit(64);
+  }
+
   const destination = join(directory, backupFilename());
   const database = createDatabase(config().databasePath);
   try {
