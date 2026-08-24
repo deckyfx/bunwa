@@ -11,10 +11,16 @@ import { createApp, problem, type Problem } from "../server";
 import { PRESSURE_GUIDANCE, type Pressure } from "../../ops/pressure";
 import { resetConfig } from "../../config/env";
 import { resetDatabase } from "../../db";
+import { captureEnv } from "../../testing/env";
 
 // A path under a file, so opening it fails — SQLite in :memory: always works,
 // which would leave the unreachable-database branch untested.
 const ENV = { NODE_ENV: "test", DATABASE_PATH: "/proc/version/nope.sqlite", LOG_LEVEL: "error" };
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(Object.keys(ENV));
 
 beforeAll(() => {
   resetConfig();
@@ -24,7 +30,7 @@ beforeAll(() => {
 afterAll(() => {
   resetConfig();
   resetDatabase();
-  for (const k of Object.keys(ENV)) delete Bun.env[k];
+  restoreEnv();
 });
 
 const app = createApp();

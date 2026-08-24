@@ -14,9 +14,15 @@ import { join } from "node:path";
 import { MigrationManager, type AppliedMigrationRow } from "../migration-manager";
 import { embeddedFiles, embeddedJournal, embeddedMigrationCount } from "../migrations-embedded";
 import { resetConfig } from "../../config/env";
+import { captureEnv } from "../../testing/env";
 
 const RUNTIME = join(import.meta.dir, ".test-runtime");
 const ENV = { NODE_ENV: "test", DATABASE_PATH: ":memory:", LOG_LEVEL: "error", RUNTIME_DIR: RUNTIME };
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(Object.keys(ENV));
 
 beforeAll(() => {
   resetConfig();
@@ -24,7 +30,7 @@ beforeAll(() => {
 });
 afterAll(async () => {
   resetConfig();
-  for (const k of Object.keys(ENV)) delete Bun.env[k];
+  restoreEnv();
   await rm(RUNTIME, { recursive: true, force: true });
 });
 

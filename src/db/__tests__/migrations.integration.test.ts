@@ -18,6 +18,12 @@ import { createDatabase } from "../index";
 import { MigrationManager } from "../migration-manager";
 import { apiKeys, environments, projects } from "../schema";
 import { resetConfig } from "../../config/env";
+import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
 
 const dirs: string[] = [];
 
@@ -36,7 +42,7 @@ function scratch() {
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   resetConfig();
-  for (const k of ["NODE_ENV", "LOG_LEVEL", "RUNTIME_DIR", "DATABASE_PATH"]) delete Bun.env[k];
+  restoreEnv();
 });
 
 describe("a real migration round trip", () => {

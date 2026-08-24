@@ -13,6 +13,7 @@ import {
   type LogValue,
 } from "../logger";
 import { resetConfig } from "../../config/env";
+import { captureEnv } from "../../testing/env";
 
 /** Capture stdout/stderr for the duration of one call. */
 function capture(fn: () => void): string[] {
@@ -32,13 +33,18 @@ function capture(fn: () => void): string[] {
 
 const ENV = { NODE_ENV: "production", DATABASE_PATH: ":memory:", LOG_LEVEL: "debug" };
 
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(Object.keys(ENV));
+
 beforeEach(() => {
   resetConfig();
   for (const [k, v] of Object.entries(ENV)) Bun.env[k] = v;
 });
 afterEach(() => {
   resetConfig();
-  for (const k of Object.keys(ENV)) delete Bun.env[k];
+  restoreEnv();
 });
 
 describe("redaction", () => {

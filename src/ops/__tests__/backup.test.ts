@@ -20,6 +20,12 @@ import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { resetConfig } from "../../config/env";
 import { backupFilename, createBackup, listBackups, pruneBackups, verifyBackup } from "../backup";
+import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
 
 let dir: string;
 let database: Database;
@@ -53,7 +59,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   resetConfig();
   resetDatabase();
-  for (const k of ["NODE_ENV", "LOG_LEVEL", "RUNTIME_DIR", "DATABASE_PATH"]) delete Bun.env[k];
+  restoreEnv();
 });
 
 describe("createBackup", () => {
@@ -76,7 +82,9 @@ describe("createBackup", () => {
     await createBackup(target, database);
 
     const moved = join(dir, "elsewhere.sqlite");
-    Bun.spawnSync(["cp", target, moved]);
+    // Bun's own copy rather than spawning cp: this test should fail for a
+    // backup reason, not because a runner has no cp on PATH.
+    await Bun.write(moved, Bun.file(target));
     const result = await verifyBackup(moved);
     expect(result.ok).toBe(true);
     expect(result.counts["projects"]).toBe(1);

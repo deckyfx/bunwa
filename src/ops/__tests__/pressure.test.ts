@@ -17,6 +17,12 @@ import { deliveries, devices, outboundMessages, environments, projects, virtualD
 import { resetConfig } from "../../config/env";
 import { ProjectStore } from "../../stores/project-store";
 import { PRESSURE_GUIDANCE, recordBusyRetry, resetBusyWindow, samplePressure } from "../pressure";
+import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
 
 let dir: string;
 let database: Database;
@@ -51,7 +57,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   resetConfig();
   resetDatabase();
-  for (const k of ["NODE_ENV", "LOG_LEVEL", "RUNTIME_DIR", "DATABASE_PATH"]) delete Bun.env[k];
+  restoreEnv();
 });
 
 describe("a quiet system", () => {
