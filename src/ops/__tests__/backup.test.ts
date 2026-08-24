@@ -340,3 +340,29 @@ describe("an unreadable backup directory is not an empty one", () => {
     expect(await pruneBackups(absent, 2)).toEqual([]);
   });
 });
+
+
+describe("the CLI turns a filesystem fault into a diagnosis", () => {
+  // backup.ts rethrows EACCES and ENOTDIR so an operator can tell a broken
+  // path from an empty one. That only helps if the message survives the trip
+  // to the terminal: with no catch at the entry point, a BACKUP_DIR pointing
+  // at a regular file printed a Bun crash dump instead.
+  test("a misconfigured BACKUP_DIR prints the reason and exits 74", async () => {
+    const notADirectory = join(dir, "backup-dir-that-is-a-file");
+    writeFileSync(notADirectory, "not a directory");
+
+    const proc = Bun.spawnSync(["bun", "run", "src/ops/backup-cli.ts", "list"], {
+      env: { ...process.env, BACKUP_DIR: notADirectory },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const stderr = new TextDecoder().decode(proc.stderr);
+    expect(stderr).toContain("backup failed");
+    expect(stderr).toContain("ENOTDIR");
+    // A stack trace means the operator got a crash, not an explanation.
+    expect(stderr).not.toContain("at async backupFilesIn");
+    // 74 is EX_IOERR — distinct from 64 (usage) and 78 (config).
+    expect(proc.exitCode).toBe(74);
+  }, 30_000);
+});

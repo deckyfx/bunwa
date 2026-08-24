@@ -105,4 +105,18 @@ function report(path: string, result: ReturnType<typeof verifyBackup> extends Pr
   console.log(`  ✓ verified: opens, integrity ok, schema current — ${summary}`);
 }
 
-await main();
+// Every other failure in this file prints a diagnosis and picks an exit code.
+// This one did not exist, so once backup.ts started rethrowing EACCES and
+// ENOTDIR instead of reporting them as "no backups", a BACKUP_DIR pointing at
+// a regular file produced a Bun crash dump. The diagnosis those rethrows exist
+// to deliver never reached the operator it was written for.
+//
+// 74 is sysexits' EX_IOERR: the command was well-formed, the filesystem was
+// not cooperative. Distinct from 64 (bad usage) and 78 (bad config) already
+// used above, so a script can tell them apart.
+try {
+  await main();
+} catch (err) {
+  console.error(`backup failed: ${err instanceof Error ? err.message : String(err)}`);
+  process.exit(74);
+}

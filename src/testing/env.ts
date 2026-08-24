@@ -16,6 +16,12 @@
 /**
  * Snapshot `keys`, returning the function that puts them back.
  *
+ * Exists because bun test shares one process across every test file, so a
+ * fixture that deletes the keys it set does not restore the environment — it
+ * strips it for each file that runs afterwards, and the resulting failure
+ * appears somewhere unrelated to the fixture that caused it. Seventeen files
+ * did exactly that before this helper.
+ *
  * A key absent before is deleted on restore, not set to the empty string, so
  * "was not set" and "was set to nothing" stay distinguishable.
  */
