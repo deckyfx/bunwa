@@ -421,7 +421,11 @@ describe("the per-key request backstop is actually enforced", () => {
 
     spend();
     let refused = await list();
-    if (refused.status !== 429) {
+    // Retried only on a success, never on any non-429. `!== 429` also caught a
+    // 500, so an unrelated failure on the first call would be papered over by
+    // a second call that legitimately refused — the test passing while the
+    // thing it names was broken.
+    if (refused.status === 200) {
       // The boundary can only be crossed once in this span, so one refill settles it.
       spend();
       refused = await list();

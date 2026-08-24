@@ -222,21 +222,41 @@ function isNotFound(err: unknown): boolean {
  * directory" — so one stray directory stopped retention entirely and the disk
  * kept filling.
  */
+const BACKUP_FILENAME = /^bunwa-(\d{4})(\d{2})(\d{2})-(\d{2})(\d{2})(\d{2})\.sqlite$/;
+
 /**
- * The exact shape backupFilename produces, and nothing else.
+ * True only for a name backupFilename could actually have produced.
  *
- * Retention deletes what this matches, so matching loosely is deleting
- * loosely. `*.sqlite` accepted any database in the directory: verified, a file
- * named app-production.sqlite sorted ahead of the bunwa- names, landed in the
- * doomed slice, and was removed by a routine prune. A backup tool destroying a
- * database it did not create is the worst thing in this file.
+ * Retention deletes what this admits, so admitting loosely is deleting
+ * loosely. Two rounds of that: `*.sqlite` accepted any database in the
+ * directory — verified, an app-production.sqlite sorted ahead of the bunwa-
+ * names and a routine prune removed it — and the digit-shaped pattern that
+ * replaced it still accepted bunwa-20260230-000000.sqlite, a date that does
+ * not exist and this tool cannot emit.
+ *
+ * Decided by regenerating rather than by validating fields: parse the name,
+ * hand the timestamp back to backupFilename, and require the exact same
+ * string. Impossible dates fail because Date normalises them — 30 February
+ * becomes 2 March and no longer matches — and the check cannot drift from the
+ * generator, because it *is* the generator.
  */
-const BACKUP_FILENAME = /^bunwa-\d{8}-\d{6}\.sqlite$/;
+function isBackupName(name: string): boolean {
+  const m = BACKUP_FILENAME.exec(name);
+  if (m === null) return false;
+
+  const [, year, month, day, hour, minute, second] = m;
+  const at = new Date(
+    Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second)),
+  );
+  if (Number.isNaN(at.getTime())) return false;
+
+  return backupFilename(at) === name;
+}
 
 async function backupFilesIn(directory: string): Promise<string[]> {
   const entries = await readdir(directory, { withFileTypes: true });
   return entries
-    .filter((e) => e.isFile() && BACKUP_FILENAME.test(e.name))
+    .filter((e) => e.isFile() && isBackupName(e.name))
     .map((e) => e.name)
     .sort();
 }

@@ -396,13 +396,48 @@ describe("retention only deletes what this tool created", () => {
     expect(listed).not.toContain("app-production.sqlite");
   });
 
-  test("the filter accepts exactly what backupFilename produces", () => {
-    // Tied to the generator so the two cannot drift: a pattern that stopped
-    // matching real backups would silently disable retention instead.
+  test("the filter accepts what backupFilename produces, across the calendar", async () => {
+    // The previous version of this test claimed to tie the filter to the
+    // generator and never called the filter — it asserted backupFilename's
+    // output and nothing else. A leap day and a year boundary, admitted
+    // through listBackups, which is the path retention actually uses.
     const backups = join(dir, "roundtrip");
-    const produced = backupFilename(new Date("2026-11-12T13:14:15Z"));
-    expect(produced).toBe("bunwa-20261112-131415.sqlite");
-    void backups;
+    await mkdir(backups, { recursive: true });
+
+    const moments = [
+      new Date("2024-02-29T00:00:00Z"),
+      new Date("2026-12-31T23:59:59Z"),
+      new Date("2026-01-01T00:00:00Z"),
+    ];
+    for (const at of moments) await createBackup(join(backups, backupFilename(at)), database);
+
+    expect((await listBackups(backups)).map((b) => basename(b.path)).sort()).toEqual(
+      moments.map((at) => backupFilename(at)).sort(),
+    );
+  });
+
+  test("a date this tool could never emit is not a backup", async () => {
+    // Shape alone was not enough: bunwa-20260230-000000.sqlite is digit-perfect
+    // and 30 February does not exist, so retention would have deleted a
+    // stranger's file that happened to be named that way.
+    const backups = join(dir, "impossible");
+    await mkdir(backups, { recursive: true });
+    for (const name of [
+      "bunwa-20260230-000000.sqlite", // no such day
+      "bunwa-20260101-246000.sqlite", // no such hour
+      "bunwa-20260101-005999.sqlite", // no such second
+      "bunwa-20261301-000000.sqlite", // no such month
+    ]) {
+      writeFileSync(join(backups, name), "someone else's file");
+    }
+    await createBackup(join(backups, backupFilename(new Date("2026-06-01T00:00:00Z"))), database);
+
+    expect((await listBackups(backups)).map((b) => basename(b.path))).toEqual([
+      "bunwa-20260601-000000.sqlite",
+    ]);
+    // And retention leaves them where they are.
+    expect(await pruneBackups(backups, 1)).toEqual([]);
+    expect(await Bun.file(join(backups, "bunwa-20260230-000000.sqlite")).text()).toBe("someone else's file");
   });
 
   test("a near-miss name is not treated as a backup", async () => {
