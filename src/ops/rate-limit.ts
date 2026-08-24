@@ -131,6 +131,12 @@ export function peek(
   now: Date = new Date(),
   database: Database = db(),
 ): Decision {
+  // Guarded as well as consume. Skipping it here was reasoned as "peek does
+  // not write, so it cannot corrupt a row" — true, and beside the point: a
+  // mismatched window makes peek compute a different windowStart, read a
+  // different row, and return remaining and resetAt for a window the caller is
+  // not in. Those become the caller's Retry-After.
+  assertBucketIsStable(limit);
   const windowStart = new Date(Math.floor(now.getTime() / limit.windowMs) * limit.windowMs);
   const [row] = database.all<{ count: number }>(
     sql`SELECT count FROM rate_limits WHERE subject = ${subject} AND bucket = ${limit.bucket} AND window_start = ${windowStart.getTime()}`,

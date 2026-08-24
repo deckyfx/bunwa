@@ -205,6 +205,17 @@ describe("one bucket cannot carry two different windows", () => {
     expect(() => consume("s", long, new Date(0), database)).toThrow(RangeError);
   });
 
+  test("peek is held to the same invariant as consume", () => {
+    // peek does not write, so it cannot corrupt a row — but a mismatched
+    // window makes it read a different one and report remaining and resetAt
+    // for a window the caller is not in, which is what becomes Retry-After.
+    const short: Limit = { bucket: "peeked", max: 5, windowMs: 60_000 };
+    const long: Limit = { bucket: "peeked", max: 2, windowMs: 7_200_000 };
+
+    consume("s", short, new Date(0), database);
+    expect(() => peek("s", long, new Date(0), database)).toThrow(RangeError);
+  });
+
   test("the same bucket with the same window is fine", () => {
     // The guard must not reject ordinary repeated use.
     const limit: Limit = { bucket: "stable", max: 3, windowMs: 60_000 };
