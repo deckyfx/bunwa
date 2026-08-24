@@ -142,56 +142,65 @@ polish, scale, or optionality.
 
 ## Stage 2 — Hardening
 
-**Goal:** something you would put a customer's number on.
-**Estimate:** 3–4 weeks.
+**Goal:** survive the failures that are actually likely, and know when the
+architecture stops coping.
+**Estimate:** 2–3 days.
 
-- Prometheus metrics per device, environment and virtual device
-- OpenTelemetry tracing across control plane → adapter → engine
-- Load test: 100 devices, 50 msg/s, sustained 24 h
-- Chaos: kill engines, blackhole webhook targets, fill disks, corrupt the
-  SQLite WAL
-  <!-- No Redis. This line said "kill Redis" until stage 1 chose SQLite for the
-       delivery queue (ADR-0005), and a chaos plan naming a component that does
-       not exist is worse than one that is short: it reads as covered. The
-       equivalent failure here is the database file itself — a corrupt WAL, a
-       full disk, a handle held open by a crashed process. Revisit when the
-       move to Postgres happens, at which point the queue may move too. -->
-- Backup and restore drill, actually executed
-- Secret handling: encryption at rest for webhook secrets and engine credentials
-- Rate limiting at the edge
-- Runbooks: device stuck, pool wedged, DLQ growing, consent dispute
-- Security review: tenant isolation, regex DoS, SSRF on webhook URLs, key handling
-- **Run tenant regex matching in a terminable worker.** (see `todo.txt`) Static analysis of a
-  regex cannot be complete, and JavaScript cannot pre-empt a running match, so
-  stage 1's budget *detects* a slow pattern rather than preventing it — one
-  pathological regex can still occupy the event loop once. What is in place:
-  RE2-only syntax, refusal of nested quantifiers and quantified alternations, a
-  bounded subject, and a rule disabled after it exceeds its budget. What is
-  missing is the ability to kill a match in progress, which needs it to run
-  somewhere killable.
+This section was three to four weeks until it was read properly. It had been
+written as a generic production-hardening checklist — Prometheus, OpenTelemetry,
+chaos engineering, 24-hour soaks, runbooks — without first asking who the
+tenants are and what can realistically go wrong. Most of it was defending
+against a threat model this project does not have.
 
-- **Close the DNS rebinding window.** (see `todo.txt`) Stage 1 validates the resolved address
-  immediately before each request and refuses if any answer is blocked, but
-  Bun's fetch cannot bind a connection to a validated IP while preserving Host
-  and SNI, so a resolver that changes its answer between the check and the
-  connect is still followed. Closing it needs an HTTP client over `Bun.connect`
-  — a meaningful amount of security-critical code to own, and the right size of
-  decision for hardening rather than foundation.
+The pruned list is what is left after asking, of each item, *what breaks if we
+skip this, and how likely is that?*
 
-**The Postgres trigger.** Row-level security is unavailable on SQLite, so the
-second tenant-isolation layer described in [04](04-data-model.md) is deferred —
-repository scoping and the fan-out direction are currently the only guards. The
-move is triggered by a second process needing the data (delivery workers or
-engine supervisors outside the API process), not by a date; see
-[ADR-0005](adr/0005-postgres-over-sqlite.md).
+### Do now
 
-**SSRF deserves naming:** projects supply webhook URLs. Without validation,
-`http://169.254.169.254/` turns your webhook sender into a cloud-metadata
-exfiltration tool. Allowlist schemes, block private ranges, resolve-then-pin.
+- **Backup and restore, actually executed.** The whole system is one SQLite
+  file. Lose it and every customer re-scans a QR code — the worst day this
+  project can have, and among the cheapest to prevent. A scripted backup, and a
+  restore proven by running against the copy.
 
-**Exit criteria:** 24 h soak at target load with zero event loss, and a chaos
-run where every failure mode has a runbook that a person other than the author
-can follow.
+- **Rate limiting per API key.** One runaway loop in a caller — including one
+  of our own — can exhaust a device's send quota and get the number flagged by
+  WhatsApp. The cost of that is not an error page; it is a customer's phone
+  number being restricted.
+
+- **Four metrics that say when SQLite stops coping.** Everything else defers
+  scaling decisions to "later", and later only works if something tells you it
+  has arrived:
+  - `SQLITE_BUSY` retries per minute — writers contending
+  - delivery queue depth and oldest-pending age — the worker falling behind
+  - send latency p95, split by phase — whether the database or WhatsApp is slow
+  - devices per pool against capacity — what forces a second process, and with
+    it the Postgres and queue-server decisions in
+    [ADR-0005](adr/0005-postgres-over-sqlite.md)
+
+### Do when someone outside these projects holds an API key
+
+Both are in [`todo.txt`](../todo.txt) with full context. Neither is urgent while
+every tenant is one of ours, and both become urgent the same day that changes,
+because they are defences against a tenant rather than against a bug.
+
+- **Killable regex worker** — a rule pattern is tenant-supplied code
+- **DNS-pinned HTTP client** — a webhook URL is a tenant-supplied destination
+
+### Deliberately not doing
+
+Recorded so the omissions read as decisions rather than oversights:
+
+| Dropped | Why |
+| --- | --- |
+| Prometheus/Grafana stack | Structured logs with a correlation id already answer "what happened to this send?". The four metrics above can be a JSON endpoint. |
+| OpenTelemetry tracing | Traces earn their keep across process boundaries. There is one process. |
+| Chaos engineering | For teams with an on-call rotation to exercise. |
+| 24-hour soak | An hour at realistic load tells you nearly as much. Revisit if the density figures are ever load-bearing. |
+| Runbooks | For handing to someone who did not build it. |
+| Secret encryption at rest | Reconsider the day the database file is backed up somewhere you do not control — which the backup work above makes concrete. |
+
+**Exit criteria:** a restore from backup proven by running against it, a send
+quota that cannot be exhausted by one caller, and the four numbers visible.
 
 ---
 
@@ -273,9 +282,9 @@ Ordered by value, not by novelty. Revisit after stage 3 with real usage data.
 | --- | --- | --- | --- |
 | 0 — Understand | 1 wk | 1 wk | Knowledge, measurements |
 | 1 — Control plane | 6–8 wk | 7–9 wk | **All three objectives** |
-| 2 — Hardening | 3–4 wk | 10–13 wk | Production readiness |
-| 3 — Dashboard | 4–6 wk | 14–19 wk | Self-service |
-| 4 — Native engine | 8–12 wk | 22–31 wk | *Optional* independence |
+| 2 — Hardening | 2–3 days | 7–9 wk | Backup, rate limits, the numbers that say when to scale |
+| 3 — Dashboard | 4–6 wk | 11–15 wk | Self-service |
+| 4 — Native engine | 8–12 wk | 19–27 wk | *Optional* independence |
 | 5 — Features | ongoing | — | Differentiation |
 
 Roughly **three months to the thing you actually need**, against roughly six
