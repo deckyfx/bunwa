@@ -18,17 +18,35 @@ import { deliveries, devices, outboundMessages } from "../db/schema";
 /** A counter that survives restarts is not needed here — trends are. */
 let busyRetries = 0;
 let busyRetriesSince = new Date();
+/** Never reset. What a scraper should difference to get a rate it can trust. */
+let busyRetriesTotal = 0;
 
 /**
- * Record that SQLite made a writer wait.
+ * How long a contention window runs before it rolls.
+ *
+ * The window advances on elapsed time, never on being read. It used to reset
+ * on every GET /metrics, which is unauthenticated: a second scraper, a health
+ * check, or anyone at all could clear the count between samples and hold the
+ * reported rate near zero while contention was real.
+ */
+const BUSY_WINDOW_MS = 60_000;
+
+/**
+ * Record that acquiring the write lock took measurably long.
  *
  * The most direct signal that one process is no longer enough: writers are
- * contending for a lock that only one of them can hold. Called from the busy
- * handler rather than inferred, because a retry that succeeded leaves no other
- * trace.
+ * contending for a lock that only one of them can hold.
+ *
+ * This is a threshold on observed wait, not a count of SQLITE_BUSY events.
+ * `PRAGMA busy_timeout` retries inside SQLite and exposes no handler to count,
+ * so the only thing visible from out here is how long `BEGIN IMMEDIATE` took —
+ * see LOCK_WAIT_THRESHOLD_MS in db/transaction.ts. A disk stall or a GC pause
+ * crossing that threshold is counted too. ADR-0005's trigger depends on this
+ * number, so it must not be read as an exact busy count.
  */
 export function recordBusyRetry(): void {
   busyRetries += 1;
+  busyRetriesTotal += 1;
 }
 
 export interface Pressure {
@@ -59,7 +77,14 @@ export interface Pressure {
    * with an old head is not draining, and only the second means the worker
    * cannot keep up.
    */
-  queue: { pending: number; oldestPendingAgeMs: number | null; dead: number };
+  queue: {
+    pending: number;
+    /** Age of the oldest pending delivery, measured from when it was enqueued. */
+    oldestPendingAgeMs: number | null;
+    /** How far past its scheduled attempt the most overdue delivery is; 0 while merely backing off. */
+    oldestOverdueMs: number | null;
+    dead: number;
+  };
 
   /**
    * Send latency, split by where the time went.
@@ -89,8 +114,15 @@ export interface Pressure {
  * not itself become the write contention it is measuring.
  */
 export async function samplePressure(database?: Database, now: Date = new Date()): Promise<Pressure> {
-  const elapsedMinutes = Math.max(1 / 60, (now.getTime() - busyRetriesSince.getTime()) / 60_000);
+  // Rolls on time rather than on read, so sampling is non-destructive and two
+  // readers within one window agree.
+  const elapsedMs = now.getTime() - busyRetriesSince.getTime();
+  const elapsedMinutes = Math.max(1 / 60, elapsedMs / 60_000);
   const busyRetriesPerMinute = Number((busyRetries / elapsedMinutes).toFixed(2));
+  if (elapsedMs >= BUSY_WINDOW_MS) {
+    busyRetries = 0;
+    busyRetriesSince = now;
+  }
 
   try {
     // Resolved inside the try, not in a default parameter: opening the handle
@@ -104,7 +136,7 @@ export async function samplePressure(database?: Database, now: Date = new Date()
     return {
       databaseReachable: false,
       busyRetriesPerMinute,
-      queue: { pending: 0, oldestPendingAgeMs: null, dead: 0 },
+      queue: { pending: 0, oldestPendingAgeMs: null, oldestOverdueMs: null, dead: 0 },
       send: { acceptedLastHour: 0, unackedOlderThanMinute: 0 },
       pools: [],
       databaseBytes: 0,
@@ -119,7 +151,18 @@ async function sampleFromDatabase(
   busyRetriesPerMinute: number,
 ): Promise<Pressure> {
   const [pending] = await database
-    .select({ n: drizzleCount(), oldest: sql<number | null>`MIN(${deliveries.nextAttemptAt})` })
+    .select({
+      n: drizzleCount(),
+      // Enqueue time, not next-attempt time. nextAttemptAt is in the future
+      // for anything under exponential backoff, so a queue where every
+      // delivery has failed repeatedly reported an age of 0 — the reading
+      // that means "healthy" for the one state this field exists to detect.
+      oldest: sql<number | null>`MIN(${deliveries.createdAt})`,
+      // Kept separately because it answers a different question: how far past
+      // due the most overdue delivery is, which is 0 while backoff is simply
+      // waiting.
+      mostOverdue: sql<number | null>`MIN(${deliveries.nextAttemptAt})`,
+    })
     .from(deliveries)
     .where(eq(deliveries.state, "pending"));
 
@@ -147,6 +190,7 @@ async function sampleFromDatabase(
     .groupBy(devices.enginePoolId);
 
   const oldestMs = pending?.oldest ?? null;
+  const mostOverdueMs = pending?.mostOverdue ?? null;
 
   return {
     databaseReachable: true,
@@ -154,6 +198,7 @@ async function sampleFromDatabase(
     queue: {
       pending: Number(pending?.n ?? 0),
       oldestPendingAgeMs: oldestMs === null ? null : Math.max(0, now.getTime() - Number(oldestMs)),
+      oldestOverdueMs: mostOverdueMs === null ? null : Math.max(0, now.getTime() - Number(mostOverdueMs)),
       dead: Number(dead?.n ?? 0),
     },
     send: {
@@ -202,6 +247,11 @@ export const PRESSURE_GUIDANCE = {
 export function resetBusyWindow(now: Date = new Date()): void {
   busyRetries = 0;
   busyRetriesSince = now;
+}
+
+/** The monotonic total, for a scraper that would rather difference it itself. */
+export function busyRetryTotal(): number {
+  return busyRetriesTotal;
 }
 
 export { isNull };

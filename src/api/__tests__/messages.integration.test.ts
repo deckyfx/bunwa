@@ -41,6 +41,14 @@ let engine: FakeEngine;
  * Restoring in afterEach as well as in the test's own finally means a leak
  * cannot survive even if the test throws somewhere unexpected.
  */
+/**
+ * A writable view of the one static this file replaces.
+ *
+ * Typed rather than cast through `unknown`, so a change to recordAccepted's
+ * signature fails here instead of leaving the stub silently wrong.
+ */
+type MessageStoreSeam = { recordAccepted: typeof MessageStore.recordAccepted };
+
 const realRecordAccepted = MessageStore.recordAccepted;
 
 const NUMBER = "+628123456789";
@@ -94,7 +102,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
-  (MessageStore as unknown as { recordAccepted: unknown }).recordAccepted = realRecordAccepted;
+  (MessageStore as MessageStoreSeam).recordAccepted = realRecordAccepted;
   rmSync(dir, { recursive: true, force: true });
   resetConfig();
   resetDatabase();
@@ -294,13 +302,13 @@ describe("the reservation must outlive a partial failure", () => {
 
     // Break the bookkeeping that runs after a successful send.
     const original = MessageStore.recordAccepted;
-    (MessageStore as unknown as { recordAccepted: unknown }).recordAccepted = async () => {
+    (MessageStore as MessageStoreSeam).recordAccepted = async () => {
       throw new Error("bookkeeping failed");
     };
     try {
       expect((await send(otp, idem)).status).toBe(500);
     } finally {
-      (MessageStore as unknown as { recordAccepted: unknown }).recordAccepted = original;
+      (MessageStore as MessageStoreSeam).recordAccepted = original;
     }
 
     // The key must still be claimed, and completed rather than released.

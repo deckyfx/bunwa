@@ -12,13 +12,14 @@
  * a backup that restores cleanly and is silently short of recent data — the
  * worst possible failure, because it looks like it worked.
  */
+import type { Stats } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import { sql } from "drizzle-orm";
 
 import { config } from "../config/env";
-import { createDatabase, type Database } from "../db";
+import { createDatabase, openReadOnly, type Database } from "../db";
 import { MigrationManager } from "../db/migration-manager";
 import { log } from "../observability/logger";
 
@@ -46,18 +47,33 @@ const CRITICAL_TABLES = ["projects", "environments", "api_keys", "devices", "dev
  * `VACUUM INTO` takes a read lock and writes a fully-checkpointed database, so
  * the result needs no WAL alongside it and can be copied elsewhere as one file.
  */
-export async function createBackup(
-  destination: string,
-  database: Database = createDatabase(config().databasePath),
-): Promise<BackupInfo> {
-  await mkdir(join(destination, ".."), { recursive: true }).catch(() => undefined);
+export async function createBackup(destination: string, database?: Database): Promise<BackupInfo> {
+  // Opened here rather than in a default parameter so this function knows
+  // whether it owns the handle. A default that opens a connection makes every
+  // caller who omits the argument leak one, and nothing in the signature says
+  // so — the CLI passes a handle explicitly, so the leak waits for the next
+  // caller instead of showing up now.
+  const owned = database === undefined;
+  const handle = database ?? createDatabase(config().databasePath);
 
-  // VACUUM INTO refuses to overwrite, which is a feature — a backup that
-  // silently replaced a good one with a failed attempt would be worse than no
-  // backup. Remove deliberately, after the caller has chosen the path.
-  await rm(destination, { force: true });
+  try {
+    await mkdir(join(destination, ".."), { recursive: true }).catch(() => undefined);
 
-  database.run(sql.raw(`VACUUM INTO '${destination.replace(/'/g, "''")}'`));
+    // VACUUM INTO refuses to overwrite, which is a feature — a backup that
+    // silently replaced a good one with a failed attempt would be worse than no
+    // backup. Remove deliberately, after the caller has chosen the path.
+    await rm(destination, { force: true });
+
+    handle.run(sql.raw(`VACUUM INTO '${destination.replace(/'/g, "''")}'`));
+  } finally {
+    if (owned) {
+      try {
+        handle.$client.close();
+      } catch {
+        // Already closed.
+      }
+    }
+  }
 
   const info = await stat(destination);
   log.info("backup written", { path: destination, sizeBytes: info.size });
@@ -74,9 +90,22 @@ export async function createBackup(
  */
 export async function verifyBackup(path: string): Promise<VerifyResult> {
   const counts: Record<string, number> = {};
+
+  // Checked before opening, because the opener creates what it cannot find.
+  // Verifying a missing backup used to produce an empty database at that path
+  // and then report "2 migration(s) not applied" — a verdict about a file this
+  // function had just written, and the wrong reason besides.
+  let stats: Stats;
+  try {
+    stats = await stat(path);
+  } catch {
+    return { ok: false, counts, problem: `no backup at ${path}` };
+  }
+  if (!stats.isFile()) return { ok: false, counts, problem: `not a regular file: ${path}` };
+
   let restored: Database;
   try {
-    restored = createDatabase(path);
+    restored = openReadOnly(path);
   } catch (err) {
     return { ok: false, counts, problem: `cannot open: ${err instanceof Error ? err.message : String(err)}` };
   }
@@ -97,6 +126,14 @@ export async function verifyBackup(path: string): Promise<VerifyResult> {
     for (const table of CRITICAL_TABLES) {
       const [row] = restored.all<{ n: number }>(sql.raw(`SELECT COUNT(*) AS n FROM ${table}`));
       counts[table] = Number(row?.n ?? 0);
+    }
+
+    // The failure this function exists to catch, named in its own header: a
+    // file that exists, has plausible size, restores cleanly — and is empty.
+    // Counting the rows without judging them left the operator reading
+    // "verified" above a row of zeros.
+    if (CRITICAL_TABLES.every((table) => counts[table] === 0)) {
+      return { ok: false, counts, problem: "every critical table is empty" };
     }
 
     return { ok: true, counts, problem: null };

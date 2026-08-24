@@ -8,6 +8,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 
 import { createApp, problem, type Problem } from "../server";
+import { PRESSURE_GUIDANCE, type Pressure } from "../../ops/pressure";
 import { resetConfig } from "../../config/env";
 import { resetDatabase } from "../../db";
 
@@ -117,8 +118,9 @@ describe("GET /metrics", () => {
     const res = await get("/metrics");
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      pressure: Record<string, unknown>;
-      guidance: Record<string, { warn: number; act: number; meaning: string }>;
+      pressure: Pressure;
+      guidance: typeof PRESSURE_GUIDANCE;
+      busyRetriesTotal: number;
     };
     expect(Object.keys(body.pressure)).toEqual(
       expect.arrayContaining(["databaseReachable", "busyRetriesPerMinute", "queue", "send", "pools", "databaseBytes"]),
@@ -127,7 +129,7 @@ describe("GET /metrics", () => {
     // endpoint still answers — saying so, rather than reporting zeros or
     // failing. An operator reaching for metrics during a database incident is
     // exactly who needs this to work.
-    expect(body.pressure["databaseReachable"]).toBe(false);
+    expect(body.pressure.databaseReachable).toBe(false);
     // Thresholds travel with the numbers: a metric with no threshold is a
     // number nobody reads.
     for (const g of Object.values(body.guidance)) expect(g.meaning).toBeString();

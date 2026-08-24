@@ -10,7 +10,7 @@ import { sql } from "drizzle-orm";
 
 import { config } from "../config/env";
 import { db } from "../db";
-import { PRESSURE_GUIDANCE, resetBusyWindow, samplePressure } from "../ops/pressure";
+import { PRESSURE_GUIDANCE, busyRetryTotal, samplePressure } from "../ops/pressure";
 import { adminRoutes } from "./routes/admin";
 import { deviceRoutes } from "./routes/devices";
 import { messageRoutes } from "./routes/messages";
@@ -162,9 +162,13 @@ export function createApp(registry?: EngineRegistry) {
      * deployment rather than about any tenant.
      */
     .get("/metrics", async () => {
+      // Deliberately non-destructive. This endpoint is unauthenticated, and
+      // resetting the contention window here let any caller — a second
+      // scraper, a health check, anyone — clear the count between samples and
+      // keep the reported rate near zero while contention was real. The window
+      // rolls on elapsed time inside samplePressure instead.
       const pressure = await samplePressure();
-      resetBusyWindow();
-      return { pressure, guidance: PRESSURE_GUIDANCE };
+      return { pressure, guidance: PRESSURE_GUIDANCE, busyRetriesTotal: busyRetryTotal() };
     })
 
     /** Readiness. Answers "can this process serve traffic?", dependencies included. */

@@ -7,10 +7,12 @@
 import journalJson from "./migrations/meta/_journal.json" with { type: "json" };
 
 import m0000FullSchema from "./migrations/0000_full_schema.sql" with { type: "text" };
+import m0001RateLimits from "./migrations/0001_rate_limits.sql" with { type: "text" };
 
 /** Migration file name to its raw SQL, exactly as drizzle-kit wrote it. */
 const files: Record<string, string> = {
   "0000_full_schema.sql": m0000FullSchema,
+  "0001_rate_limits.sql": m0001RateLimits,
 };
 
 export interface EmbeddedJournalEntry { idx: number; when: number; tag: string; breakpoints: boolean }

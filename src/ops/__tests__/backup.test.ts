@@ -163,3 +163,65 @@ describe("backupFilename", () => {
     expect(early).toBe("bunwa-20260102-030405.sqlite");
   });
 });
+
+describe("verification does not author what it inspects", () => {
+  // Every one of these passed review as "verified" behaviour before: the
+  // function opened the path with create:true, so a missing backup became an
+  // empty database, and the empty database became the verdict.
+  test("a missing backup is reported as missing, and no file appears", async () => {
+    const path = join(dir, "absent", "nope.sqlite");
+    const result = await verifyBackup(path);
+
+    expect(result.ok).toBe(false);
+    expect(result.problem).toContain("no backup at");
+    // The reason matters as much as the verdict: this used to say
+    // "2 migration(s) not applied", describing a file it had just created.
+    expect(await Bun.file(path).exists()).toBe(false);
+  });
+
+  test("a directory is not a backup", async () => {
+    const result = await verifyBackup(dir);
+    expect(result.ok).toBe(false);
+    expect(result.problem).toContain("not a regular file");
+  });
+
+  test("a structurally perfect but empty backup fails", async () => {
+    // Correct schema, current migrations, passes integrity_check, restores
+    // cleanly — and the service is gone. This is the exact failure the module
+    // header names, and counting the rows without judging them let it through.
+    const empty = join(dir, "empty.sqlite");
+    const source = createDatabase(join(dir, "source.sqlite"));
+    await MigrationManager.runMigrations(source);
+    await createBackup(empty, source);
+    source.$client.close();
+
+    const result = await verifyBackup(empty);
+    expect(result.ok).toBe(false);
+    expect(result.problem).toContain("every critical table is empty");
+    expect(result.counts["projects"]).toBe(0);
+  });
+
+  test("a backup with data still verifies", async () => {
+    // The guard above must not reject a good backup.
+    const good = join(dir, "good.sqlite");
+    await createBackup(good, database);
+
+    const result = await verifyBackup(good);
+    expect(result.problem).toBeNull();
+    expect(result.ok).toBe(true);
+    expect(result.counts["projects"]).toBeGreaterThan(0);
+  });
+
+  test("verification cannot write to the backup it opens", async () => {
+    // Read-only is the structural guarantee behind the tests above: no WAL
+    // sidecar appears, and no pragma mutates the file being judged.
+    const good = join(dir, "readonly.sqlite");
+    await createBackup(good, database);
+    const before = Bun.file(good).size;
+
+    expect((await verifyBackup(good)).ok).toBe(true);
+
+    expect(Bun.file(good).size).toBe(before);
+    expect(await Bun.file(`${good}-wal`).exists()).toBe(false);
+  });
+});

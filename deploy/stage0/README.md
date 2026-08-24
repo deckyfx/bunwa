@@ -36,7 +36,7 @@ bun run stage0:ws
 bun run stage0:measure
 ```
 
-Then open <http://127.0.0.1:3000> and pair a device.
+Then open <http://127.0.0.1:31782> and pair a device.
 
 ## The measurement sequence
 
@@ -88,7 +88,9 @@ material from `PASSKEY_*` broadcasts is dropped entirely rather than masked.
 - `Ctrl-C` on `sink.ts` and `wstap.ts` prints a summary of what was observed.
 - Basic auth is off (`APP_BASIC_AUTH=` empty) so `/ws` needs no credentials. With
   it set, gowa accepts `?authorization=base64(user:pass)` on the WebSocket.
-- gowa binds to `127.0.0.1:3000` only — it is not reachable off this machine.
+- gowa binds to `127.0.0.1:31782` only — it is not reachable off this machine.
+  The container still listens on 3000; the compose file publishes it on an
+  uncommon host port so it cannot collide with a dev server.
 
 
 ## Running the conformance suite against live gowa

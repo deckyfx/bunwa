@@ -51,7 +51,12 @@ async function main(): Promise<void> {
       console.error("usage: bun run backup verify <file>");
       process.exit(64);
     }
-    report(argument, await verifyBackup(argument));
+    // Exits non-zero on failure, matching the backup path below. Printing the
+    // failure and returning 0 makes `backup verify` useless to the thing most
+    // likely to run it: a cron job or a CI step that only reads the status.
+    const verified = await verifyBackup(argument);
+    report(argument, verified);
+    if (!verified.ok) process.exit(1);
     return;
   }
 

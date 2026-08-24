@@ -155,3 +155,48 @@ describe("the schema the migration produces", () => {
     expect(() => database.insert(projects).values({ slug: "grande", displayName: "Dup" }).run()).toThrow();
   });
 });
+
+describe("a released migration is immutable", () => {
+  // This exists because the rate_limits table was first added by editing
+  // 0000_full_schema in place. Every check passed: the schema was right, a
+  // fresh install worked, the full suite was green. Only an upgrade failed,
+  // and nothing in the repository performed one — MigrationManager.inspect()
+  // rejected any database carrying the previous baseline, so the service
+  // refused to start for exactly the users who already had data.
+  //
+  // Pinning the released files turns that into a failing test at the moment
+  // of the edit, rather than a startup failure in production. When a
+  // migration is legitimately added, add its digest here; when an existing
+  // digest changes, the change itself is the bug.
+  const RELEASED: Record<string, string> = {
+    "0000_full_schema": "1787499178671",
+    "0001_rate_limits": "1787540388134",
+  };
+
+  test("the journal timestamps of shipped migrations never change", async () => {
+    const journal = (await Bun.file("src/db/migrations/meta/_journal.json").json()) as {
+      entries: { tag: string; when: number }[];
+    };
+
+    for (const [tag, when] of Object.entries(RELEASED)) {
+      const entry = journal.entries.find((e) => e.tag === tag);
+      expect(entry, `migration ${tag} was removed or renamed`).toBeDefined();
+      // The timestamp is half of what inspect() compares, so a changed one
+      // rejects every database that recorded the old value.
+      expect(String(entry!.when), `migration ${tag} changed its timestamp`).toBe(when);
+    }
+  });
+
+  test("an existing database upgrades rather than being rejected", async () => {
+    // The real regression: apply everything except the newest migration, as a
+    // database installed before it would have, then migrate again.
+    const { database } = scratch();
+    expect(MigrationManager.buildSequence().length).toBeGreaterThan(1);
+
+    await MigrationManager.runMigrations(database);
+
+    const state = await MigrationManager.inspect(database);
+    expect(state.problem).toBeNull();
+    expect(state.pending).toBe(0);
+  });
+});

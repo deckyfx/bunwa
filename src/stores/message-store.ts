@@ -155,8 +155,12 @@ export class MessageStore {
    * a caller with any message id the ability to mutate another tenant's row,
    * and an engine-supplied identifier is not a tenant-scoped one.
    */
-  static async markUndelivered(environmentId: string, id: string, database: Database = db()): Promise<void> {
-    await database
+  static async markUndelivered(environmentId: string, id: string, database: Database = db()): Promise<boolean> {
+    // Reports whether the row actually moved. The `accepted` predicate makes
+    // this a compare-and-set: an ack landing between selection and update
+    // leaves it matching nothing, and a caller that assumes success would
+    // announce a delivered message as undelivered.
+    const changed = await database
       .update(outboundMessages)
       .set({ state: "undelivered", updatedAt: new Date() })
       .where(
@@ -165,7 +169,9 @@ export class MessageStore {
           eq(outboundMessages.environmentId, environmentId),
           eq(outboundMessages.state, "accepted"),
         ),
-      );
+      )
+      .returning({ id: outboundMessages.id });
+    return changed.length > 0;
   }
 
   /** Scoped by environment: a message id alone must not reach another tenant's. */

@@ -60,9 +60,18 @@ async function runIn<T>(database: Database, fn: () => Promise<T>): Promise<T> {
   // callback to count. What is observable from out here is how long acquiring
   // the write lock took: instant means no contention, a measurable wait means
   // another writer held it — which is the signal ADR-0005's trigger depends on.
+  //
+  // Measured in a finally, because the worst contention is the case that
+  // throws: when the wait reaches busy_timeout, BEGIN IMMEDIATE raises
+  // SQLITE_BUSY and an unconditional call after it never runs. Counting only
+  // the waits that succeeded made the metric quietest exactly when contention
+  // was at its worst.
   const lockWaitBegan = performance.now();
-  database.run(sql`BEGIN IMMEDIATE`);
-  if (performance.now() - lockWaitBegan > LOCK_WAIT_THRESHOLD_MS) recordBusyRetry();
+  try {
+    database.run(sql`BEGIN IMMEDIATE`);
+  } finally {
+    if (performance.now() - lockWaitBegan > LOCK_WAIT_THRESHOLD_MS) recordBusyRetry();
+  }
   {
     try {
       const result = await fn();

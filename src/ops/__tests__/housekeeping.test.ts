@@ -22,6 +22,7 @@ import {
 import { resetConfig } from "../../config/env";
 import { consume, peek } from "../rate-limit";
 import { runHousekeeping, sweepUnacked } from "../housekeeping";
+import { IdempotencyStore } from "../../stores/idempotency-store";
 
 let dir: string;
 let database: Database;
@@ -101,9 +102,19 @@ describe("sends accepted but never acknowledged", () => {
 
     const queued = (await database.select().from(deliveries)).filter((d) => d.eventType === "message.undelivered");
     expect(queued).toHaveLength(1);
-    const payload = queued[0]!.payload as { data: Record<string, unknown> };
-    expect(payload.data["message_id"]).toBe(message.id);
-    expect(payload.data["virtual_device"]).toBe("otp-sender");
+    const payload = queued[0]!.payload as {
+      environment: { id: string; slug: string };
+      project: { id: string; slug: string };
+      data: { message_id: string; virtual_device: string | null };
+    };
+    expect(payload.data.message_id).toBe(message.id);
+    expect(payload.data.virtual_device).toBe("otp-sender");
+
+    // The tenant must be able to attribute the event. These were empty strings
+    // at first, which is a payload a consumer cannot route.
+    expect(payload.environment.slug).not.toBe("");
+    expect(payload.project.id).not.toBe("");
+    expect(payload.project.slug).not.toBe("");
   });
 
   test("leaves recent sends alone", async () => {
@@ -177,9 +188,23 @@ describe("runHousekeeping", () => {
   test("one failing job does not prevent the others", async () => {
     // These run together; a sweep that throws must not silently stop the sweep
     // that raises undelivered messages.
+    //
+    // The first version of this test named that behaviour and never caused a
+    // failure, so it passed against Promise.all — an implementation with no
+    // isolation whatsoever. A test that cannot fail for the reason it is named
+    // after is worse than no test: it reports the guarantee as covered.
     const now = new Date(5_000_000);
     await acceptedSend(5 * 60_000, now);
-    const result = await runHousekeeping(database, now);
-    expect(result.messagesMarkedUndelivered).toBe(1);
+
+    const realSweep = IdempotencyStore.sweep;
+    (IdempotencyStore as { sweep: typeof IdempotencyStore.sweep }).sweep = () =>
+      Promise.reject(new Error("boom"));
+    try {
+      const result = await runHousekeeping(database, now);
+      expect(result.messagesMarkedUndelivered).toBe(1);
+      expect(result.idempotencyKeysRemoved).toBe(0);
+    } finally {
+      (IdempotencyStore as { sweep: typeof IdempotencyStore.sweep }).sweep = realSweep;
+    }
   });
 });

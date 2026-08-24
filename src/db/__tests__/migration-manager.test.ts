@@ -113,7 +113,13 @@ describe("inspect", () => {
   });
 
   test("rejects a database holding migrations this build does not have", async () => {
-    const rows = [...rowsFor([0]), { hash: "deadbeef", created_at: "9999999999999" }];
+    // Every migration this build carries, plus one it does not. Derived from
+    // buildSequence rather than written as a literal count, because pinning
+    // "one migration" here made this assert the wrong thing the moment a
+    // second was added: the extra row landed on a real migration and failed
+    // as a mismatch instead of as an overrun.
+    const all = MigrationManager.buildSequence().map((_, i) => i);
+    const rows = [...rowsFor(all), { hash: "deadbeef", created_at: "9999999999999" }];
     const state = await MigrationManager.inspect(fakeDb(rows));
     expect(state.problem).toContain("beyond this build");
   });

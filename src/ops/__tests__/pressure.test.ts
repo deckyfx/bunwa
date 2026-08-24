@@ -57,7 +57,7 @@ describe("a quiet system", () => {
   test("reports zeros rather than nulls or absent fields", async () => {
     const p = await samplePressure(database);
     expect(p.busyRetriesPerMinute).toBe(0);
-    expect(p.queue).toEqual({ pending: 0, oldestPendingAgeMs: null, dead: 0 });
+    expect(p.queue).toEqual({ pending: 0, oldestPendingAgeMs: null, oldestOverdueMs: null, dead: 0 });
     expect(p.pools).toEqual([]);
   });
 
@@ -75,8 +75,16 @@ describe("queue depth versus age", () => {
     // is what separates "working hard" from "not draining".
     const now = new Date(1_000_000);
     await database.insert(deliveries).values([
-      { environmentId, eventId: "e1", eventType: "message.received", payload: {}, nextAttemptAt: new Date(now.getTime() - 5 * 60_000) },
-      { environmentId, eventId: "e2", eventType: "message.received", payload: {}, nextAttemptAt: new Date(now.getTime() - 1_000) },
+      {
+        environmentId, eventId: "e1", eventType: "message.received", payload: {},
+        createdAt: new Date(now.getTime() - 5 * 60_000),
+        nextAttemptAt: new Date(now.getTime() - 5 * 60_000),
+      },
+      {
+        environmentId, eventId: "e2", eventType: "message.received", payload: {},
+        createdAt: new Date(now.getTime() - 1_000),
+        nextAttemptAt: new Date(now.getTime() - 1_000),
+      },
     ]);
 
     const p = await samplePressure(database, now);
@@ -84,6 +92,30 @@ describe("queue depth versus age", () => {
     expect(p.queue.oldestPendingAgeMs).toBe(5 * 60_000);
     // Old enough to have crossed the "act" line, which is the point of the age.
     expect(p.queue.oldestPendingAgeMs!).toBeGreaterThanOrEqual(PRESSURE_GUIDANCE.oldestPendingAgeMs.act);
+  });
+
+  test("a queue stuck in backoff still reports its age", async () => {
+    // The state this field exists to detect, and the one it used to miss.
+    // Every delivery has failed repeatedly, so each nextAttemptAt sits in the
+    // future; deriving the age from it clamped to 0 and reported the most
+    // broken queue as the healthiest reading available.
+    const now = new Date(2_000_000);
+    await database.insert(deliveries).values([
+      {
+        environmentId, eventId: "b1", eventType: "message.received", payload: {},
+        createdAt: new Date(now.getTime() - 30 * 60_000),
+        nextAttemptAt: new Date(now.getTime() + 8 * 60_000),
+        attemptCount: 7,
+      },
+    ]);
+
+    const p = await samplePressure(database, now);
+    expect(p.queue.pending).toBe(1);
+    expect(p.queue.oldestPendingAgeMs).toBe(30 * 60_000);
+    expect(p.queue.oldestPendingAgeMs!).toBeGreaterThanOrEqual(PRESSURE_GUIDANCE.oldestPendingAgeMs.act);
+    // Not yet due, so nothing is overdue — the two signals disagree on
+    // purpose, and only one of them means the queue is not draining.
+    expect(p.queue.oldestOverdueMs).toBe(0);
   });
 
   test("counts dead letters separately from pending work", async () => {
