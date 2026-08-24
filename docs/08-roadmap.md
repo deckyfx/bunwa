@@ -202,7 +202,13 @@ Recorded so the omissions read as decisions rather than oversights:
 **Exit criteria:** a restore from backup proven by running against it, a send
 quota that cannot be exhausted by one caller, and the four numbers visible.
 
-**Status:** done. `bun run backup` takes a verified snapshot — it refuses to
+**Status:** done, plus one thing the review of it caught — three sweeps
+(expired idempotency keys, closed rate-limit windows, and sends accepted but
+never acknowledged) existed as tested functions that nothing ever called. The
+third is the one that mattered: it is the whole answer to the measured
+203-second window in which the engine reports a device connected while it
+cannot deliver, and without it the API reported success while an OTP silently
+never arrived. All three now run on a 30-second loop. `bun run backup` takes a verified snapshot — it refuses to
 certify one whose schema does not match the build, which it demonstrated on its
 first real run against a stale local database. Sends are limited per *device*
 rather than per key, because a number reachable through several bindings shares
