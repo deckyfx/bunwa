@@ -12,7 +12,9 @@
  */
 import { and, count as drizzleCount, eq, gt, isNull, lt, sql } from "drizzle-orm";
 
-import { db, type Database } from "../db";
+import { stat } from "node:fs/promises";
+
+import { db, pathOf, type Database } from "../db";
 import { deliveries, devices, outboundMessages } from "../db/schema";
 
 /** A counter that survives restarts is not needed here — trends are. */
@@ -211,14 +213,41 @@ async function sampleFromDatabase(
 }
 
 /**
- * Page count times page size — cheaper than stat, and correct with WAL.
+ * Bytes this database occupies on disk, sidecars included.
  *
- * A PRAGMA names its result column after itself, not `n`. Aliasing it wrong
- * returned 0, which is a plausible-looking answer for an empty database and
- * would have read as "no growth" rather than "not measured" — the kind of
- * metric that is worse than none.
+ * `page_count * page_size` measures the main file only, and the comment here
+ * used to claim that was "correct with WAL". It is not. Measured: a reader
+ * holding a transaction open blocks checkpointing, and after 5000 inserts the
+ * PRAGMA reported 20.5 MB while the main file held 4 KB and the -wal sidecar
+ * held 62.7 MB. This signal exists to warn before the disk fills, and it was
+ * blindest in the one situation that fills a disk without any table growing.
+ *
+ * A PRAGMA also names its result column after itself, not `n`. Aliasing it
+ * wrong returned 0 — a plausible-looking answer for an empty database, reading
+ * as "no growth" rather than "not measured".
  */
 async function databaseSize(database: Database): Promise<number> {
+  const path = pathOf(database);
+
+  if (path !== undefined && path !== ":memory:") {
+    // The -shm file is counted too: small and bounded, but real disk, and the
+    // point of this number is what the filesystem sees.
+    const parts = await Promise.all(
+      [path, `${path}-wal`, `${path}-shm`].map(async (file) => {
+        try {
+          return (await stat(file)).size;
+        } catch {
+          // A sidecar is absent outside WAL mode, and between checkpoints.
+          return 0;
+        }
+      }),
+    );
+    const total = parts.reduce((a, b) => a + b, 0);
+    if (total > 0) return total;
+  }
+
+  // In-memory, or a handle whose path is unknown: the logical size is the only
+  // answer available, and the right one when there is no file at all.
   try {
     const [pages] = database.all<{ page_count: number }>(sql`PRAGMA page_count`);
     const [size] = database.all<{ page_size: number }>(sql`PRAGMA page_size`);

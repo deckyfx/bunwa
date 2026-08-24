@@ -117,5 +117,3 @@ export async function sweep(olderThanMs = 3_600_000, now: Date = new Date(), dat
 export async function reset(subject: string, database: Database = db()): Promise<void> {
   await database.delete(rateLimits).where(eq(rateLimits.subject, subject));
 }
-
-export { and };

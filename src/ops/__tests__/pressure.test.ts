@@ -15,6 +15,7 @@ import { createDatabase, resetDatabase, type Database } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
 import { deliveries, devices, outboundMessages, environments, projects, virtualDevices } from "../../db/schema";
 import { resetConfig } from "../../config/env";
+import { ProjectStore } from "../../stores/project-store";
 import { PRESSURE_GUIDANCE, recordBusyRetry, resetBusyWindow, samplePressure } from "../pressure";
 
 let dir: string;
@@ -66,6 +67,43 @@ describe("a quiet system", () => {
     // 0, which reads as "no growth" rather than "not measured" — a metric worse
     // than none, because it is quietly reassuring.
     expect((await samplePressure(database)).databaseBytes).toBeGreaterThan(0);
+  });
+
+  test("counts the WAL, where an unchecked disk actually fills", async () => {
+    // The blind spot this metric had: a reader holding a transaction open
+    // blocks checkpointing, so writes pile into the -wal sidecar while the
+    // main file barely moves. page_count measures only the main file, so the
+    // reading stayed low in the one situation that fills a disk without any
+    // table growing — measured at 20.5 MB reported against 62.7 MB on disk.
+    const path = join(dir, "wal-growth.sqlite");
+    const writer = createDatabase(path);
+    await MigrationManager.runMigrations(writer);
+
+    const before = (await samplePressure(writer)).databaseBytes;
+
+    // A second connection pinning the read snapshot, so nothing checkpoints.
+    const reader = createDatabase(path);
+    reader.$client.exec("BEGIN");
+    reader.$client.query("SELECT count(*) FROM projects").get();
+
+    try {
+      const blob = "x".repeat(4000);
+      for (let i = 0; i < 400; i++) {
+        await ProjectStore.create({ slug: `bulk-${i}`, displayName: blob }, writer);
+      }
+
+      const walBytes = Bun.file(`${path}-wal`).size;
+      expect(walBytes).toBeGreaterThan(0);
+
+      const after = (await samplePressure(writer)).databaseBytes;
+      // The growth must be visible, and it must account for the sidecar.
+      expect(after).toBeGreaterThan(before);
+      expect(after).toBeGreaterThanOrEqual(walBytes);
+    } finally {
+      reader.$client.exec("ROLLBACK");
+      reader.$client.close();
+      writer.$client.close();
+    }
   });
 });
 

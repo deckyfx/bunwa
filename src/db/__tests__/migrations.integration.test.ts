@@ -164,39 +164,69 @@ describe("a released migration is immutable", () => {
   // rejected any database carrying the previous baseline, so the service
   // refused to start for exactly the users who already had data.
   //
-  // Pinning the released files turns that into a failing test at the moment
-  // of the edit, rather than a startup failure in production. When a
-  // migration is legitimately added, add its digest here; when an existing
-  // digest changes, the change itself is the bug.
-  const RELEASED: Record<string, string> = {
-    "0000_full_schema": "1787499178671",
-    "0001_rate_limits": "1787540388134",
-  };
+  // The first version of this guard pinned only journal timestamps, which
+  // left the actual hole open: editing the SQL body without touching the
+  // journal still passed. inspect() compares the hash, so the hash is what
+  // has to be pinned.
+  //
+  // When a migration is legitimately added, add its row here. When an
+  // existing row needs changing, the change itself is the bug.
+  const RELEASED: { tag: string; hash: string; when: number }[] = [
+    {
+      tag: "0000_full_schema",
+      hash: "c4ef1122639dbcd6ad9220a6a60bafce25277bdb3b67472c4785ae0a7e22be01",
+      when: 1787499178671,
+    },
+    {
+      tag: "0001_rate_limits",
+      hash: "4730d2109199364d0791e02b47562542c56cdc924b5a6c71ab218530396bda3d",
+      when: 1787540388134,
+    },
+  ];
 
-  test("the journal timestamps of shipped migrations never change", async () => {
-    const journal = (await Bun.file("src/db/migrations/meta/_journal.json").json()) as {
-      entries: { tag: string; when: number }[];
-    };
+  test("shipped migrations keep the hash and timestamp inspect() compares", () => {
+    const built = MigrationManager.buildSequence();
 
-    for (const [tag, when] of Object.entries(RELEASED)) {
-      const entry = journal.entries.find((e) => e.tag === tag);
-      expect(entry, `migration ${tag} was removed or renamed`).toBeDefined();
-      // The timestamp is half of what inspect() compares, so a changed one
-      // rejects every database that recorded the old value.
-      expect(String(entry!.when), `migration ${tag} changed its timestamp`).toBe(when);
+    for (const released of RELEASED) {
+      const actual = built.find((m) => m.tag === released.tag);
+      expect(actual, `migration ${released.tag} was removed or renamed`).toBeDefined();
+      // Both halves of the comparison, because a database records both. Pinning
+      // the timestamp alone let the SQL body change freely.
+      expect(actual!.hash, `migration ${released.tag} changed its contents`).toBe(released.hash);
+      expect(actual!.when, `migration ${released.tag} changed its timestamp`).toBe(released.when);
     }
   });
 
-  test("an existing database upgrades rather than being rejected", async () => {
-    // The real regression: apply everything except the newest migration, as a
-    // database installed before it would have, then migrate again.
+  test("a database at the previous release upgrades instead of being rejected", async () => {
+    // The actual regression, reproduced rather than approximated: a database
+    // that recorded only the released 0000 row. Running the current sequence
+    // against a fresh database — as the first version of this test did — never
+    // reaches the comparison that failed in production.
     const { database } = scratch();
-    expect(MigrationManager.buildSequence().length).toBeGreaterThan(1);
+    const built = MigrationManager.buildSequence();
+    expect(built.length).toBeGreaterThan(1);
 
     await MigrationManager.runMigrations(database);
 
-    const state = await MigrationManager.inspect(database);
-    expect(state.problem).toBeNull();
-    expect(state.pending).toBe(0);
+    // Roll the database back to the prior release: drop what 0001 created and
+    // forget that it ran, leaving 0000's recorded hash exactly as shipped.
+    database.run(sql`DROP TABLE IF EXISTS rate_limits`);
+    database.run(sql.raw(`DELETE FROM __drizzle_migrations WHERE created_at > ${built[0]!.when}`));
+
+    const before = await MigrationManager.inspect(database);
+    expect(before.problem, "the historical state must be acceptable, not rejected").toBeNull();
+    expect(before.pending).toBe(built.length - 1);
+
+    // Now the upgrade that used to exit 75.
+    await MigrationManager.runMigrations(database);
+
+    const after = await MigrationManager.inspect(database);
+    expect(after.problem).toBeNull();
+    expect(after.pending).toBe(0);
+
+    const [table] = database.all<{ name: string }>(
+      sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rate_limits'`,
+    );
+    expect(table?.name).toBe("rate_limits");
   });
 });

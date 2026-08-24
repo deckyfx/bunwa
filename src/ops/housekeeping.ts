@@ -207,5 +207,3 @@ export function startHousekeeping(
     await inFlight;
   };
 }
-
-export { and, lt, outboundMessages };
