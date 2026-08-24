@@ -275,7 +275,7 @@ will touch.
 
 ## Part 5 — Delivery
 
-Per-virtual-device Redis stream, consumed by a delivery worker.
+A per-virtual-device queue in SQLite, drained by an in-process worker.
 
 | Property | Value |
 | --- | --- |

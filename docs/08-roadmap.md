@@ -95,7 +95,7 @@ topology in [03](03-architecture.md) and cannot be guessed.
 - Normalised event schema `bunwa.event/v1`
 - **Lifecycle event synthesis** — limitation #1 closed
 - Per-virtual-device fan-out with scope, allowlist, denylist and type filtering
-- Redis-backed per-virtual-device delivery queues, retry, backoff, DLQ
+- SQLite-backed per-virtual-device delivery queues, retry, backoff, DLQ
 - Timestamped HMAC signatures
 - SSE endpoint
 
@@ -148,12 +148,42 @@ polish, scale, or optionality.
 - Prometheus metrics per device, environment and virtual device
 - OpenTelemetry tracing across control plane → adapter → engine
 - Load test: 100 devices, 50 msg/s, sustained 24 h
-- Chaos: kill engines, kill Redis, blackhole webhook targets, fill disks
+- Chaos: kill engines, blackhole webhook targets, fill disks, corrupt the
+  SQLite WAL
+  <!-- No Redis. This line said "kill Redis" until stage 1 chose SQLite for the
+       delivery queue (ADR-0005), and a chaos plan naming a component that does
+       not exist is worse than one that is short: it reads as covered. The
+       equivalent failure here is the database file itself — a corrupt WAL, a
+       full disk, a handle held open by a crashed process. Revisit when the
+       move to Postgres happens, at which point the queue may move too. -->
 - Backup and restore drill, actually executed
 - Secret handling: encryption at rest for webhook secrets and engine credentials
 - Rate limiting at the edge
 - Runbooks: device stuck, pool wedged, DLQ growing, consent dispute
 - Security review: tenant isolation, regex DoS, SSRF on webhook URLs, key handling
+- **Run tenant regex matching in a terminable worker.** (see `todo.txt`) Static analysis of a
+  regex cannot be complete, and JavaScript cannot pre-empt a running match, so
+  stage 1's budget *detects* a slow pattern rather than preventing it — one
+  pathological regex can still occupy the event loop once. What is in place:
+  RE2-only syntax, refusal of nested quantifiers and quantified alternations, a
+  bounded subject, and a rule disabled after it exceeds its budget. What is
+  missing is the ability to kill a match in progress, which needs it to run
+  somewhere killable.
+
+- **Close the DNS rebinding window.** (see `todo.txt`) Stage 1 validates the resolved address
+  immediately before each request and refuses if any answer is blocked, but
+  Bun's fetch cannot bind a connection to a validated IP while preserving Host
+  and SNI, so a resolver that changes its answer between the check and the
+  connect is still followed. Closing it needs an HTTP client over `Bun.connect`
+  — a meaningful amount of security-critical code to own, and the right size of
+  decision for hardening rather than foundation.
+
+**The Postgres trigger.** Row-level security is unavailable on SQLite, so the
+second tenant-isolation layer described in [04](04-data-model.md) is deferred —
+repository scoping and the fan-out direction are currently the only guards. The
+move is triggered by a second process needing the data (delivery workers or
+engine supervisors outside the API process), not by a date; see
+[ADR-0005](adr/0005-postgres-over-sqlite.md).
 
 **SSRF deserves naming:** projects supply webhook URLs. Without validation,
 `http://169.254.169.254/` turns your webhook sender into a cloud-metadata
@@ -251,3 +281,23 @@ Ordered by value, not by novelty. Revisit after stage 3 with real usage data.
 Roughly **three months to the thing you actually need**, against roughly six
 before the original sequence reached the same point — and stage 4 becomes
 something you may rationally decide never to do.
+
+## Stage 1 completion note
+
+*Recorded 2026-08-23.*
+
+§1.1 through §1.6 are implemented, with one deliberate carve-out: **rule actions
+are planned but not executed.** The evaluator decides what a rule would do and
+the dry run reports it, but `reply` does not yet send.
+
+That is an ordering decision, not an omission. Executing a reply means sending
+a WhatsApp message on a rule match, which needs the per-binding rate limiting,
+the reply-rate cap and the rule-level circuit breaker described in
+[05](05-events-and-rules.md) — all of which belong with the hardening in stage
+2. Shipping the trigger without them would mean a single mis-written rule could
+message a customer in a loop bounded only by the depth cap.
+
+What exists and is tested: matching, RE2-only pattern safety with the three
+mitigations, loop protection by origin and by depth, per-binding rule storage
+scoped to the environment, and a dry run that cannot send because the evaluator
+it calls has no way to.

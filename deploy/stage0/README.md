@@ -89,3 +89,23 @@ material from `PASSKEY_*` broadcasts is dropped entirely rather than masked.
 - Basic auth is off (`APP_BASIC_AUTH=` empty) so `/ws` needs no credentials. With
   it set, gowa accepts `?authorization=base64(user:pass)` on the WebSocket.
 - gowa binds to `127.0.0.1:3000` only — it is not reachable off this machine.
+
+
+## Running the conformance suite against live gowa
+
+The `DeviceEngine` conformance suite runs against the gowa adapter with a stub
+by default. Point it at a real gowa to verify the adapter for real:
+
+```bash
+docker run -d --name bunwa-conformance -p 127.0.0.1:3100:3000 \
+  --env-file deploy/stage0/.env -e APP_UI_ENABLED=false \
+  ghcr.io/aldinokemal/go-whatsapp-web-multidevice:latest rest
+
+GOWA_URL=http://127.0.0.1:3100 bun test src/engine/gowa
+docker rm -f bunwa-conformance
+```
+
+The tests needing a paired device report as **skipped**, naming themselves, so a
+partial pass is visible rather than looking green. Note the port: 3100, not
+3000 — a dev server on 3000 answers `/health` with a 200 and the suite would
+happily test the wrong process.

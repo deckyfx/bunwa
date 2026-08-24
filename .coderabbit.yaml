@@ -19,7 +19,50 @@ reviews:
     - "!bun.lock"
     - "!deploy/stage0/data/**"
 
+  # Findings that have been verified against the code and deliberately not
+  # applied. Each is answered by an inline comment at the site and, where the
+  # assumption could change, by a test. Re-raising them costs a review slot.
   path_instructions:
+    - path: "**/*"
+      instructions: >-
+        This project uses SQLite, not Redis and not Postgres. ADR-0005 records
+        the decision and its trigger. Do not suggest Redis for queues, caching
+        or rate limiting, and do not treat the absence of Redis as an
+        oversight — the delivery queue is a SQLite table on purpose, because
+        one process owns the data and a durable queue that needs no server is
+        the smaller system. Postgres-specific advice (row-level security,
+        LISTEN/NOTIFY, jsonb operators) is equally out of scope until that
+        trigger is met: a second process needing concurrent access.
+    - path: "src/stores/device-store.ts"
+      instructions: >-
+        The consent state machine is enumerated exhaustively over (this
+        project's consent status x whether anyone else holds a standing claim),
+        with the table written out in a comment above the branch. Four
+        consecutive reviews found a bug here because each fix handled only the
+        combination that had been surfaced. If reporting a case, say which row
+        of that table is wrong rather than proposing another special case.
+
+    - path: "src/delivery/sender.ts"
+      instructions: >-
+        Do not report that the DNS rebinding window is open, or ask for the
+        connection to be pinned to the validated address. It is a known and
+        documented gap, explained in a comment at the site: Bun's fetch has no
+        option to bind a connection to a resolved IP while preserving the Host
+        header and TLS SNI (1.4 supports only tls, unix, proxy and verbose),
+        and Bun.dns exposes only lookup. What is achievable is done — resolve
+        immediately before the request, and refuse if any returned address is
+        blocked rather than only the first. Closing it needs a hand-rolled HTTP
+        client over Bun.connect, which is tracked in docs/08 under stage 2
+        hardening rather than attempted in the foundation.
+
+    - path: "src/db/migration-manager.ts"
+      instructions: >-
+        Do not report a missing mkdir in materialise(). Bun.write creates
+        missing parent directories, including the nested meta/ one; this was
+        verified against a path whose parents do not exist and is pinned by the
+        test "succeeds against a runtime directory that does not exist yet".
+        The absence of mkdir is deliberate and documented inline.
+
     - path: "src/**/*.ts"
       instructions: >-
         This is a Bun + TypeScript project. Prefer Bun native APIs (Bun.file,
@@ -36,20 +79,56 @@ reviews:
         internal one. Errors from gowa arrive as an opaque 500 with a prose
         message; unclassified failures must default to retryable, never fatal.
 
-    - path: "src/tenancy/**"
+    - path: "src/stores/**"
       instructions: >-
-        Multi-tenant boundary. Every query must be scoped by environment id — a
-        missing predicate is a cross-tenant data leak, so treat an unscoped
-        query as a blocking issue. Consent is granted per (device, project) and
-        inherited by that project's environments; flag anything that grants
-        access without an active consent row.
+        Multi-tenant boundary; treat findings here as blocking, not advisory.
+        (This rule previously targeted src/tenancy/**, which never existed, so
+        it matched nothing while appearing to cover the most sensitive code in
+        the project.)
+        Every query must be scoped by environment id — a missing predicate is a
+        cross-tenant data leak. Flag: any Drizzle query without a where clause
+        binding environmentId or projectId; any repository method that takes an
+        id without also taking the tenant scope; any use of the raw `db` handle
+        outside a store class. Consent is granted per (device, project) and
+        inherited by that project's environments — flag anything granting
+        access without an active consent row, and anything that reads a consent
+        row without checking its status and expiry.
+
+    - path: "src/**/*.ts"
+      instructions: >-
+        This project's recurring defect is accepting input without validating
+        it and then silently substituting a default, so the code runs and
+        produces the wrong result. Six review passes on the stage 0 harness
+        found that same mistake in five different forms. Flag every instance:
+        a parsed value that falls back on NaN or empty string; a config read
+        with `??` where the absent case is a mistake rather than an omission;
+        an optional parameter whose default silently changes behaviour; a
+        catch block that swallows and returns a zero value. Prefer failing
+        loudly at the boundary over defaulting.
+
+    - path: "src/auth/**"
+      instructions: >-
+        API keys are Argon2id-hashed at rest and the plaintext is shown once at
+        creation. Flag any code path that logs, stores, returns or compares a
+        plaintext key, any non-constant-time comparison, and any key lookup that
+        does not check revoked_at and expires_at. The tenant is derived from the
+        credential and never accepted from the request — flag any handler that
+        reads a project or environment id from the body, query or a header.
 
     - path: "src/delivery/**"
       instructions: >-
         Outbound webhooks must be queued per virtual device, signed with a
         timestamped HMAC, and retried with backoff. Flag fire-and-forget
         delivery, shared queues across tenants, and any signature scheme that
-        omits the timestamp (it permits replay).
+        omits the timestamp (it permits replay). Webhook URLs are supplied by
+        tenants, so flag any outbound request that does not validate the target
+        first — scheme allowlist, private and link-local range block,
+        resolve-then-pin. gowa's /send/link was measured fetching arbitrary
+        caller-supplied URLs server-side (docs/12); bunwa must not add a second
+        such hole. Also flag any send whose success is inferred from the engine
+        accepting it rather than from a delivery ack: engine acceptance was
+        measured to mean nothing for up to 203 seconds after a silent
+        disconnect.
 
     - path: "src/tools/**"
       instructions: >-

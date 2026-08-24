@@ -42,6 +42,31 @@ jobs:
       - name: Test
         run: bun test
 
+      - name: Verify the schema has a migration generated for it
+        # db:embed only reads the journal, so a schema.ts change with no
+        # generated migration passes it. Generating here catches that: the
+        # binary would otherwise ship a schema it cannot create.
+        run: |
+          bun run db:generate
+          if ! git diff --quiet -- src/db/migrations; then
+            echo "::error::src/db/schema.ts has changes with no migration — run 'bun run db:generate'"
+            git --no-pager diff --stat -- src/db/migrations
+            exit 1
+          fi
+          echo "schema and migrations agree"
+
+      - name: Verify the embedded migration manifest is current
+        # A stale manifest ships a binary that lies about the schema it can
+        # create, and the failure is silent — no tables at all.
+        run: |
+          bun run db:embed
+          if ! git diff --quiet -- src/db/migrations-embedded.ts; then
+            echo "::error::src/db/migrations-embedded.ts is stale — run 'bun run db:embed'"
+            git --no-pager diff -- src/db/migrations-embedded.ts
+            exit 1
+          fi
+          echo "embedded manifest is current"
+
       - name: Verify the harness has no runtime data committed
         # deploy/stage0/data holds WhatsApp session credentials and captured
         # message payloads. It is git-ignored; this fails the build if that ever

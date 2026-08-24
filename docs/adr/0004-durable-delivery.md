@@ -20,7 +20,7 @@ path, one unresponsive customer endpoint adds latency for every other customer.
 ## Decision
 
 Every accepted event is persisted before acknowledgement, then queued **per
-link** on a Redis stream and delivered by a worker with:
+virtual device** in a SQLite table and delivered by a worker with:
 
 - At-least-once semantics; consumers deduplicate on `event.id`
 - Exponential backoff: 1s, 2s, 5s, 15s, 60s, 5m, 30m, 2h — 8 attempts
@@ -45,7 +45,7 @@ of any captured payload.
 
 **Bad**
 
-- Redis becomes a hard dependency and a new failure domain
+- The queue shares the database's write lock, so a long delivery transaction can block unrelated writes. Acceptable while one process owns both; the trigger for splitting them is the same as the Postgres trigger in [ADR-0005](0005-postgres-over-sqlite.md)
 - Storage grows with event volume; retention policy required from day one
 - At-least-once pushes an idempotency requirement onto consumers, which must be
   documented prominently

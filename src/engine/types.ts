@@ -1,0 +1,170 @@
+/**
+ * The contract every WhatsApp engine implements.
+ *
+ * Deliberately constrained to what an HTTP client talking to gowa and an
+ * in-process Baileys socket can *both* express. That constraint is the point:
+ * it stops gowa-shaped assumptions leaking into the control plane, which is
+ * what makes the eventual native engine a swap rather than a rewrite
+ * (ADR-0002).
+ *
+ * Nothing here mentions projects, environments or consent. An engine holds
+ * sockets and knows nothing about tenancy; the control plane knows about
+ * tenancy and holds no sockets.
+ */
+
+export type EngineKind = "gowa" | "native" | "fake";
+
+/** How a device is being paired. */
+export type PairingMethod = "qr" | "code";
+
+/**
+ * Device state as the engine sees it.
+ *
+ * Two booleans rather than one string, because gowa's `/devices` list `state`
+ * was measured disagreeing with `/devices/{id}/status` — reporting "connected"
+ * for a slot that had never been paired (docs/12). The pair is unambiguous:
+ * (true,false) is pairing, (false,true) is a recoverable drop, (false,false)
+ * with a known JID is a logout.
+ */
+export interface DeviceStatus {
+  connected: boolean;
+  loggedIn: boolean;
+  jid: string | null;
+  pushName: string | null;
+}
+
+/** A pairing attempt in progress. */
+export interface PairingSession {
+  method: PairingMethod;
+  /** Present for `qr`: a data URI or URL the customer scans. */
+  qr?: string;
+  /** Present for `code`: the digits the customer types into WhatsApp. */
+  pairCode?: string;
+  expiresAt: Date;
+}
+
+/** The six v1 message types, as a discriminated union. */
+export type SendAction =
+  | { type: "text"; to: string; text: string }
+  | { type: "image"; to: string; media: MediaRef; caption?: string }
+  | { type: "document"; to: string; media: MediaRef; filename: string; caption?: string }
+  | { type: "link"; to: string; url: string; caption?: string }
+  | { type: "audio"; to: string; media: MediaRef; voiceNote?: boolean }
+  | { type: "video"; to: string; media: MediaRef; caption?: string };
+
+/** Where media comes from. A URL is preferred: it avoids buffering twice. */
+export type MediaRef = { url: string } | { base64: string; mimeType: string };
+
+export interface SendResult {
+  messageId: string;
+  /**
+   * Acceptance is not delivery.
+   *
+   * gowa reported `is_connected: true` for 203 seconds after a silent drop
+   * (docs/12), during which sends are accepted and go nowhere. Callers must
+   * confirm with a `message.ack` and treat its absence as failure.
+   */
+  acceptedAt: Date;
+}
+
+/** Normalised events. The engine adapter, not the control plane, produces these. */
+export type EngineEvent =
+  | { type: "device.qr"; deviceId: string; qr: string; expiresAt: Date }
+  | { type: "device.pair_code"; deviceId: string; code: string; expiresAt: Date }
+  | { type: "device.connected"; deviceId: string; jid: string; pushName: string | null }
+  | { type: "device.disconnected"; deviceId: string; reason: string; willRetry: boolean }
+  | { type: "device.logged_out"; deviceId: string; reason: "remote_logout" | "api" }
+  | { type: "device.degraded"; deviceId: string; attempts: number; lastError: string }
+  | { type: "device.recovered"; deviceId: string; downtimeMs: number }
+  | { type: "message.received"; deviceId: string; message: InboundMessage }
+  | { type: "message.ack"; deviceId: string; messageId: string; status: "delivered" | "read" }
+  | { type: "call.offer"; deviceId: string; from: string; callId: string };
+
+/**
+ * An inbound message, normalised.
+ *
+ * `senderDisplayName` is deliberately absent. gowa forwards it, and it is the
+ * *device owner's* private contact naming — how they saved that person in their
+ * own phone — not the sender's published name (docs/12). Forwarding it to a
+ * tenant leaks the phone holder's address book, so the engine contract has no
+ * field to carry it.
+ */
+export interface InboundMessage {
+  id: string;
+  /** Phone JID. May be absent as WhatsApp migrates toward LIDs. */
+  from: string | null;
+  /** The privacy-preserving identifier WhatsApp is moving to. Prefer this. */
+  fromLid: string | null;
+  chatId: string | null;
+  chatLid: string | null;
+  /** The sender's own published push name. Safe: they chose to publish it. */
+  pushName: string | null;
+  /** True for anything the phone holder sent from their own handset. */
+  isFromMe: boolean;
+  timestamp: Date;
+  body: string | null;
+  media: InboundMedia | null;
+}
+
+export interface InboundMedia {
+  kind: "image" | "document" | "audio" | "video";
+  /** A URL bunwa can fetch. Adapters re-serve engine-local paths behind one. */
+  url: string;
+  mimeType: string | null;
+  filename: string | null;
+  caption: string | null;
+  sizeBytes: number | null;
+}
+
+/** Raised by an engine for anything the control plane may need to distinguish. */
+export class EngineError extends Error {
+  override readonly name = "EngineError";
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
+
+/**
+ * One WhatsApp identity as the control plane sees it.
+ *
+ * Every method takes the engine's own device id, which is not bunwa's — the
+ * mapping lives in `devices.engine_device_id` so a device can move between
+ * engines without any project noticing.
+ */
+export interface DeviceEngine {
+  readonly kind: EngineKind;
+
+  /** Provision a slot. Idempotent on deviceId. */
+  provision(deviceId: string): Promise<void>;
+
+  /** Begin pairing. Progress also arrives on subscribe(). */
+  startPairing(deviceId: string, method: PairingMethod): Promise<PairingSession>;
+
+  /** Log out, keeping the slot and any engine-side history. */
+  logout(deviceId: string): Promise<void>;
+
+  /** Destroy the slot and its credentials. Irreversible. */
+  purge(deviceId: string): Promise<void>;
+
+  /** Current state. Cheap enough to poll on a health interval. */
+  status(deviceId: string): Promise<DeviceStatus>;
+
+  /** Perform an outbound action. One method, discriminated payload. */
+  send(deviceId: string, action: SendAction): Promise<SendResult>;
+
+  /**
+   * Hot stream of already-normalised events for every device this engine owns.
+   *
+   * Adapters synthesise what their implementation does not emit natively: gowa
+   * publishes no lifecycle events at all over its webhook, so its adapter
+   * derives them from polling and its internal socket.
+   */
+  subscribe(): AsyncIterable<EngineEvent>;
+
+  /** Release resources. Safe to call twice. */
+  close(): Promise<void>;
+}

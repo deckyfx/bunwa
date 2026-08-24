@@ -72,7 +72,7 @@ gowa already solved and you would be re-solving.
 
 Baileys ships `useMultiFileAuthState`, and its own documentation is explicit that
 it is a demo, not a production store. You need a real one — per device, in
-Postgres or Redis, correctly handling the Signal key store's read/write pattern.
+the project's own database, correctly handling the Signal key store's read/write pattern.
 
 This is not boilerplate. The key store sits on the hot path of every message
 decrypt; a naive implementation that round-trips to the database per key will

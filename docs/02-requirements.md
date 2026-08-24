@@ -124,7 +124,7 @@ messaging a real customer is a rule engine nobody will dare change.
 | F6.4 | Configuration from environment, validated and typed at boot — fail fast on a bad value |
 | F6.5 | Ship **two container tags from one build**: `api` (control plane + engine) and `full` (adds the dashboard) |
 | F6.6 | The dashboard is a **separate subproject** with its own build, absent from the `api` image |
-| F6.7 | A single `docker run` plus Postgres and Redis must be enough to start |
+| F6.7 | A single `docker run` must be enough to start — no database server, no queue server |
 
 ## Non-functional requirements
 
