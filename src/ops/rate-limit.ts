@@ -13,7 +13,7 @@
  * number from a runaway loop, stopping it within a window is what matters; the
  * boundary burst is not the failure mode.
  */
-import { and, eq, lt, sql } from "drizzle-orm";
+import { eq, lt, sql } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import { rateLimits } from "../db/schema";

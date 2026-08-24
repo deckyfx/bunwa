@@ -10,7 +10,7 @@
  * deliberately not a metrics stack: one JSON endpoint an operator can read, or
  * a scraper can poll, with no server to run.
  */
-import { and, count as drizzleCount, eq, gt, isNull, lt, sql } from "drizzle-orm";
+import { and, count as drizzleCount, eq, gt, lt, sql } from "drizzle-orm";
 
 import { db, pathOf, type Database } from "../db";
 import { deliveries, devices, outboundMessages } from "../db/schema";

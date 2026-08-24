@@ -58,3 +58,30 @@ Note this applies twice over: bunwa's own sender, and URLs bunwa hands to gowa,
 which then does its own resolution entirely outside our control. The second may
 only be closeable by fetching the media ourselves and passing gowa a local
 reference.
+
+---
+
+## A rule that blows its match budget is never switched off
+
+Found by sweeping for "written but never called" after that class produced
+four separate bugs on stage-2 (three housekeeping sweeps, LIMITS.request).
+
+src/engine/consumer.ts carried `TIMEOUT_BREACHES_BEFORE_DISABLE = 3` and a
+per-rule `timeoutCounts` map, both fully documented — including a considered
+note on why the count is deliberately not persisted — and referenced by
+nothing. Zero call sites.
+
+What actually happens today: evaluate() reports `timedOut` rule ids, the
+consumer logs a warning, and the rule runs again on the next event and blows
+its budget again, for ever. Patterns are RE2-compiled so there is no
+catastrophic backtracking, but a tenant can still leave a permanently slow
+rule in place and every inbound message pays for it.
+
+The dead declarations have been removed rather than left looking like a
+protection. Wiring the breaker is a behaviour change, not a review fix, so it
+is deferred deliberately rather than done mid-cycle.
+
+To close it: count consecutive breaches per rule id, disable the rule through
+RuleStore once it passes the threshold, reset the count on any clean
+evaluation, and emit an event so the tenant learns their rule was switched off
+rather than discovering it silently stopped matching.

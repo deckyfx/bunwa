@@ -11,11 +11,11 @@
  * A defined-but-uncalled sweep is worse than no sweep, because the code reads
  * as though the problem is handled.
  */
-import { and, eq, lt } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import { withTransaction } from "../db/transaction";
-import { environments, outboundMessages, projects, virtualDevices } from "../db/schema";
+import { environments, projects, virtualDevices } from "../db/schema";
 import { DeliveryStore } from "../stores/delivery-store";
 import { IdempotencyStore } from "../stores/idempotency-store";
 import { MessageStore, ACK_TIMEOUT_MS } from "../stores/message-store";

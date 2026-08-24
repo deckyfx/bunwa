@@ -7,7 +7,7 @@
  */
 import { describe, expect, test } from "bun:test";
 
-import { Config, ConfigError, redactUrl } from "../env";
+import { Config, redactUrl } from "../env";
 
 const base: Record<string, string> = {};
 

@@ -14,7 +14,7 @@
  */
 import type { Stats } from "node:fs";
 import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 
 import { sql } from "drizzle-orm";
 
