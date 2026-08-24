@@ -31,6 +31,18 @@ let app: ReturnType<typeof createApp>;
 let key: string;
 let engine: FakeEngine;
 
+/**
+ * The real implementation, captured once at module load.
+ *
+ * One test replaces this static to force a failure after the engine has
+ * accepted a message. A static lives on a shared module, so a replacement that
+ * outlives its test leaks into every later one — which it did, making two
+ * unrelated rate-limit tests fail intermittently with "bookkeeping failed".
+ * Restoring in afterEach as well as in the test's own finally means a leak
+ * cannot survive even if the test throws somewhere unexpected.
+ */
+const realRecordAccepted = MessageStore.recordAccepted;
+
 const NUMBER = "+628123456789";
 
 beforeEach(async () => {
@@ -82,6 +94,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  (MessageStore as unknown as { recordAccepted: unknown }).recordAccepted = realRecordAccepted;
   rmSync(dir, { recursive: true, force: true });
   resetConfig();
   resetDatabase();
@@ -307,7 +320,13 @@ describe("a runaway caller cannot exhaust a customer's number", () => {
     // restricting a customer's phone number, done to someone who never made
     // the mistake and cannot undo it.
     let refused: Response | null = null;
-    for (let i = 0; i < LIMITS.send.max + 5; i++) {
+    // Bounded at two windows plus a margin: the count can restart at most once
+    // if the loop crosses a boundary, so anything beyond that is a real bug
+    // rather than headroom worth paying for. Every iteration is a round trip,
+    // and an over-generous bound is what pushed this past the default 5s
+    // timeout — which tore the database down mid-flight and surfaced as
+    // "Cannot use a closed database" rather than as the timeout it was.
+    for (let i = 0; i < LIMITS.send.max * 2 + 2; i++) {
       const res = await send(otp);
       if (res.status === 429) {
         refused = res;
@@ -317,7 +336,7 @@ describe("a runaway caller cannot exhaust a customer's number", () => {
     expect(refused).not.toBeNull();
     expect(refused!.headers.get("retry-after")).toMatch(/^\d+$/);
     expect((await refused!.json() as { type: string }).type).toContain("rate-limited");
-  });
+  }, 30_000);
 
   test("the limit belongs to the device, not the key", async () => {
     // A number reachable through several bindings must share one budget: the
@@ -332,8 +351,19 @@ describe("a runaway caller cannot exhaust a customer's number", () => {
       )
     ).plaintext;
 
-    for (let i = 0; i < LIMITS.send.max; i++) await send(otp);
-    // A different key, the same device: still refused.
+    // Sends until the first key is actually refused, rather than assuming
+    // exactly `max` attempts. The window is aligned to the wall clock, so a
+    // loop that straddles a minute boundary gets a fresh allowance part-way
+    // through — which made this pass alone and fail in the full suite, where
+    // the machine is busier and the loop slower.
+    let refused = false;
+    for (let i = 0; i < LIMITS.send.max * 2 + 2 && !refused; i++) {
+      refused = (await send(otp)).status === 429;
+    }
+    expect(refused).toBe(true);
+
+    // A different key, the same device: still refused, because the budget
+    // belongs to the number rather than to the caller.
     expect((await send(otp, crypto.randomUUID(), second)).status).toBe(429);
-  });
+  }, 30_000);
 });
