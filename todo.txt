@@ -12,15 +12,22 @@ Raised by: CodeRabbit, repeatedly, across four review passes
 
 Static analysis of a regex cannot be complete, and JavaScript cannot pre-empt a
 running match. Today's budget therefore *detects* a slow pattern rather than
-preventing it: one pathological regex can still occupy the event loop once
-before the rule is disabled.
+preventing it: one pathological regex can occupy the event loop on every event
+that reaches it, not once. The "disabled after three breaches" mitigation this
+paragraph used to assume was never wired — see the section at the end.
 
 In place now:
   - RE2-only syntax (no backreferences, no lookaround)
   - nested quantifiers refused, at any depth
   - quantified alternations refused when branches can overlap
   - subject truncated to 4KB before matching
-  - a rule disabled after three budget breaches
+  - a per-match time budget, breaches logged
+
+Listed here until now, and untrue: "a rule disabled after three budget
+breaches". The breaker was written and never called, so this risk note has
+been crediting a defence that did not exist. Corrected rather than quietly
+dropped, because the judgement that the remaining gap was acceptable was made
+partly on the strength of it.
 
 Missing: the ability to kill a match in progress, which needs it running
 somewhere killable — a Worker, with the match sent across and a hard timeout on
