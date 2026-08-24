@@ -254,5 +254,3 @@ export async function listBackups(directory: string): Promise<BackupInfo[]> {
     }),
   );
 }
-
-export { basename };

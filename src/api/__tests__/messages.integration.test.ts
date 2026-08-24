@@ -407,11 +407,26 @@ describe("the per-key request backstop is actually enforced", () => {
 
     expect((await list()).status).toBe(200);
 
-    for (let i = 0; i < LIMITS.request.max; i++) {
-      consume(`key:${resolved!.apiKey.id}`, LIMITS.request);
+    // Spent, then checked — twice if necessary. The window is aligned to the
+    // wall clock, so a minute boundary falling between the two makes consume()
+    // inside requireApiKey compute a fresh windowStart and answer 200. The
+    // other two rate-limit tests in this file already absorb that; this one
+    // did not, which would have failed as "the backstop never refused" and
+    // pointed at the middleware instead of at the clock.
+    const spend = () => {
+      for (let i = 0; i < LIMITS.request.max; i++) {
+        consume(`key:${resolved!.apiKey.id}`, LIMITS.request);
+      }
+    };
+
+    spend();
+    let refused = await list();
+    if (refused.status !== 429) {
+      // The boundary can only be crossed once in this span, so one refill settles it.
+      spend();
+      refused = await list();
     }
 
-    const refused = await list();
     expect(refused.status, "the request backstop never refused").toBe(429);
     expect(refused.headers.get("retry-after")).toMatch(/^\d+$/);
   });

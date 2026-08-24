@@ -84,7 +84,6 @@ export function resetDatabase(): void {
   instance = undefined;
 }
 
-export { schema };
 
 /**
  * Open an existing database file without the power to change it.

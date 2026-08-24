@@ -294,5 +294,3 @@ export function resetBusyWindow(now: Date = new Date()): void {
 export function busyRetryTotal(): number {
   return busyRetriesTotal;
 }
-
-export { isNull };
