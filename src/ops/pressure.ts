@@ -12,8 +12,6 @@
  */
 import { and, count as drizzleCount, eq, gt, isNull, lt, sql } from "drizzle-orm";
 
-import { stat } from "node:fs/promises";
-
 import { db, pathOf, type Database } from "../db";
 import { deliveries, devices, outboundMessages } from "../db/schema";
 
@@ -241,17 +239,15 @@ async function databaseSize(database: Database): Promise<number> {
   if (path !== undefined && path !== ":memory:") {
     // The -shm file is counted too: small and bounded, but real disk, and the
     // point of this number is what the filesystem sees.
-    const parts = await Promise.all(
-      [path, `${path}-wal`, `${path}-shm`].map(async (file) => {
-        try {
-          return (await stat(file)).size;
-        } catch {
-          // A sidecar is absent outside WAL mode, and between checkpoints.
-          return 0;
-        }
-      }),
+    //
+    // Bun.file().size rather than node:fs stat, per the project's preference
+    // for Bun natives. Verified equivalent for what this needs: 0 for a
+    // missing sidecar and for a path under a regular file, and byte-exact
+    // against stat on a live 37MB WAL held open by a reader.
+    const total = [path, `${path}-wal`, `${path}-shm`].reduce(
+      (sum, file) => sum + Bun.file(file).size,
+      0,
     );
-    const total = parts.reduce((a, b) => a + b, 0);
     if (total > 0) return total;
   }
 
