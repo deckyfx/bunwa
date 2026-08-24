@@ -109,3 +109,34 @@ describe("problem()", () => {
     expect("detail" in p).toBe(false);
   });
 });
+
+describe("GET /metrics", () => {
+  test("reports the four pressure signals with their thresholds", async () => {
+    // ADR-0005 defers Postgres until "a second process needs the data", which
+    // only works if something says when that day arrives.
+    const res = await get("/metrics");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      pressure: Record<string, unknown>;
+      guidance: Record<string, { warn: number; act: number; meaning: string }>;
+    };
+    expect(Object.keys(body.pressure)).toEqual(
+      expect.arrayContaining(["databaseReachable", "busyRetriesPerMinute", "queue", "send", "pools", "databaseBytes"]),
+    );
+    // This fixture points at an unreachable database on purpose, and the
+    // endpoint still answers — saying so, rather than reporting zeros or
+    // failing. An operator reaching for metrics during a database incident is
+    // exactly who needs this to work.
+    expect(body.pressure["databaseReachable"]).toBe(false);
+    // Thresholds travel with the numbers: a metric with no threshold is a
+    // number nobody reads.
+    for (const g of Object.values(body.guidance)) expect(g.meaning).toBeString();
+  });
+
+  test("needs no credential, and exposes counts rather than content", async () => {
+    // An operator reaching for this mid-incident should not need a key, so it
+    // must never carry tenant names, phone numbers or message bodies.
+    const text = await (await get("/metrics")).text();
+    expect(text).not.toMatch(/@s\.whatsapp\.net|\+62|grande/i);
+  });
+});

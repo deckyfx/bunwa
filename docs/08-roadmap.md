@@ -202,6 +202,15 @@ Recorded so the omissions read as decisions rather than oversights:
 **Exit criteria:** a restore from backup proven by running against it, a send
 quota that cannot be exhausted by one caller, and the four numbers visible.
 
+**Status:** done. `bun run backup` takes a verified snapshot — it refuses to
+certify one whose schema does not match the build, which it demonstrated on its
+first real run against a stale local database. Sends are limited per *device*
+rather than per key, because a number reachable through several bindings shares
+one budget and the number is what WhatsApp restricts. `GET /metrics` reports the
+four signals with their thresholds, degrading to `databaseReachable: false`
+rather than failing — an operator reaching for metrics during a database
+incident is precisely who needs it to answer.
+
 ---
 
 ## Stage 3 — Dashboard

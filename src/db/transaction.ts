@@ -11,7 +11,17 @@
  */
 import { sql } from "drizzle-orm";
 
+import { recordBusyRetry } from "../ops/pressure";
 import { createDatabase, pathOf, type Database } from "./index";
+
+/**
+ * How long acquiring the write lock may take before it counts as contention.
+ *
+ * An uncontended BEGIN IMMEDIATE on a local file is well under a millisecond,
+ * so this is generous enough not to fire on ordinary scheduling noise and
+ * small enough to notice a real wait.
+ */
+const LOCK_WAIT_THRESHOLD_MS = 5;
 
 /**
  * Run `fn` inside a transaction, rolling back if it throws.
@@ -46,7 +56,13 @@ export async function withTransaction<T>(database: Database, fn: (tx: Database) 
 
 /** BEGIN/COMMIT/ROLLBACK around an awaited callback. */
 async function runIn<T>(database: Database, fn: () => Promise<T>): Promise<T> {
+  // Timed, because `PRAGMA busy_timeout` retries inside SQLite and offers no
+  // callback to count. What is observable from out here is how long acquiring
+  // the write lock took: instant means no contention, a measurable wait means
+  // another writer held it — which is the signal ADR-0005's trigger depends on.
+  const lockWaitBegan = performance.now();
   database.run(sql`BEGIN IMMEDIATE`);
+  if (performance.now() - lockWaitBegan > LOCK_WAIT_THRESHOLD_MS) recordBusyRetry();
   {
     try {
       const result = await fn();

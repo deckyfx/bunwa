@@ -10,6 +10,7 @@ import { sql } from "drizzle-orm";
 
 import { config } from "../config/env";
 import { db } from "../db";
+import { PRESSURE_GUIDANCE, resetBusyWindow, samplePressure } from "../ops/pressure";
 import { adminRoutes } from "./routes/admin";
 import { deviceRoutes } from "./routes/devices";
 import { messageRoutes } from "./routes/messages";
@@ -150,6 +151,21 @@ export function createApp(registry?: EngineRegistry) {
       status: "ok" as const,
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     }))
+
+    /**
+     * The four numbers that say when this architecture stops coping.
+     *
+     * Unauthenticated like the probes, and for the same reason: an operator
+     * reaching for it during an incident should not need a credential, and it
+     * exposes counts rather than content — no tenant names, no numbers, no
+     * message bodies. Not on the project API, because it is about the
+     * deployment rather than about any tenant.
+     */
+    .get("/metrics", async () => {
+      const pressure = await samplePressure();
+      resetBusyWindow();
+      return { pressure, guidance: PRESSURE_GUIDANCE };
+    })
 
     /** Readiness. Answers "can this process serve traffic?", dependencies included. */
     .get("/readyz", async ({ set }) => {
