@@ -277,6 +277,12 @@ describe("retention survives what it finds in the directory", () => {
     // The directory is not a backup, so it is neither listed nor deleted.
     const listed = (await listBackups(backups)).map((b) => b.path.split("/").pop());
     expect(listed).toEqual(["bunwa-20260102-000000.sqlite", "bunwa-20260103-000000.sqlite"]);
-    expect(await Bun.file(join(backups, "bunwa-20260104-000000.sqlite")).exists()).toBe(false);
+    // stat().isDirectory(), not Bun.file().exists(): exists() returns false for
+    // a live directory and for a missing path alike, so the assertion this
+    // replaced held whether prune preserved the directory or deleted it —
+    // directly above a comment claiming it proved the first. stat() throws
+    // ENOENT if the directory is gone, which is the failure this must catch.
+    const stray = await Bun.file(join(backups, "bunwa-20260104-000000.sqlite")).stat();
+    expect(stray.isDirectory()).toBe(true);
   });
 });
