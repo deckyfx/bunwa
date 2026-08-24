@@ -74,8 +74,6 @@ export const requireApiKey = new Elysia({ name: "requireApiKey" })
       throw new AuthError(401, "invalid-credential", "Unauthorized", "the API key is not valid", path);
     }
 
-    ApiKeyStore.touch(resolved.apiKey.id, resolved.environmentId);
-
     // The backstop LIMITS.request describes itself as covering "everything
     // else, per key" — and had no call site at all, so every route outside
     // send and claim was unlimited. A limit that exists only as a constant
@@ -84,6 +82,12 @@ export const requireApiKey = new Elysia({ name: "requireApiKey" })
     // Applied after resolution, not before: an unauthenticated caller must not
     // be able to spend a real key's budget by guessing at its id.
     requireWithinLimit(`key:${resolved.apiKey.id}`, LIMITS.request, path);
+
+    // Ordered after the limit, not before. touch() issues an UPDATE, so a
+    // caller being refused was still writing on every attempt — the same fault
+    // just fixed inside consume(), reintroduced one line above it by the commit
+    // that added this backstop. A refused request should cost no writes at all.
+    ApiKeyStore.touch(resolved.apiKey.id, resolved.environmentId);
 
     const auth: AuthContext = {
       projectId: resolved.projectId,

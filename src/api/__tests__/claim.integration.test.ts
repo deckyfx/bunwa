@@ -93,6 +93,24 @@ describe("POST /v1/devices/claim", () => {
     expect(body.pairing?.qr).toBeString();
   });
 
+  test("a database fault is not reported as a capacity problem", async () => {
+    // countByPool() used to sit inside the same try as choosePool, so a
+    // database failure was caught by the handler meaning "no pool has room"
+    // and answered with 503 plus Retry-After — telling the caller to retry a
+    // fault that retrying cannot fix, and hiding the real error entirely.
+    const real = DeviceStore.countByPool;
+    (DeviceStore as { countByPool: typeof DeviceStore.countByPool }).countByPool = () => {
+      throw new Error("database is on fire");
+    };
+    try {
+      const res = await claim(grandeProdKey, "otp-sender");
+      expect(res.status, "a database fault was reported as 503 capacity").not.toBe(503);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      (DeviceStore as { countByPool: typeof DeviceStore.countByPool }).countByPool = real;
+    }
+  });
+
   test("the same project's second environment is active immediately", async () => {
     // The product, over HTTP: no QR, no message to the customer, 200 not 201.
     await claim(grandeProdKey, "otp-sender");

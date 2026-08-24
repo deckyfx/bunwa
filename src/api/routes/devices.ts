@@ -12,6 +12,7 @@ import { LIMITS } from "../../ops/rate-limit";
 import { DeviceStore } from "../../stores/device-store";
 import { problem } from "../server";
 import type { EngineRegistry } from "../../engine/registry";
+import { EngineError } from "../../engine/types";
 import { currentCorrelationId, log } from "../../observability/logger";
 import { UnavailableError } from "../../stores/errors";
 
@@ -78,13 +79,24 @@ export function deviceRoutes(registry: EngineRegistry) {
           // Capacity-aware rather than "the first one": pools are bounded so
           // that one failing takes a known number of devices with it, and
           // always filling pool zero would defeat that.
+          // Counted once, outside the attempts. It was inside both, so a
+          // database failure here was caught by the same handler as "no pool
+          // has capacity" and reported to the caller as a capacity problem —
+          // a 503 telling them to retry, for a fault retrying cannot fix.
+          const assigned = await DeviceStore.countByPool();
+
+          // Only EngineError means "no pool with room". Anything else is a
+          // fault in choosing, not an absence of capacity, and must not be
+          // answered by quietly trying a different engine kind.
           let pool;
           try {
-            pool = registry.choosePool("gowa", await DeviceStore.countByPool());
-          } catch {
+            pool = registry.choosePool("gowa", assigned);
+          } catch (err) {
+            if (!(err instanceof EngineError)) throw err;
             try {
-              pool = registry.choosePool("fake", await DeviceStore.countByPool());
-            } catch {
+              pool = registry.choosePool("fake", assigned);
+            } catch (fallbackErr) {
+              if (!(fallbackErr instanceof EngineError)) throw fallbackErr;
               log.error("no engine pool has capacity; cannot start pairing");
               // 503 with Retry-After, not 404: the device exists and the
               // request is valid — the capacity to pair it does not, and a

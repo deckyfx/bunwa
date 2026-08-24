@@ -241,9 +241,27 @@ describe("a released migration is immutable", () => {
     expect(after.problem).toBeNull();
     expect(after.pending).toBe(0);
 
+    // The table alone proves nothing about the newest migration: 0001 creates
+    // rate_limits, so this assertion passed while 0002 was recorded as applied
+    // and had done nothing. What 0002 actually adds is the column and its
+    // index, so that is what the upgrade has to show.
     const [table] = database.all<{ name: string }>(
       sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rate_limits'`,
     );
     expect(table?.name).toBe("rate_limits");
+
+    const columns = database.all<{ name: string; notnull: number }>(sql`PRAGMA table_info(rate_limits)`);
+    const expiresAt = columns.find((c) => c.name === "expires_at");
+    expect(expiresAt, "0002 was recorded as applied without adding expires_at").toBeDefined();
+    expect(expiresAt!.notnull).toBe(1);
+
+    const indexes = database.all<{ name: string }>(sql`PRAGMA index_list(rate_limits)`);
+    expect(indexes.map((i) => i.name)).toContain("rate_limits_expiry_idx");
+
+    // And the backfill ran, rather than leaving rows that read as expired.
+    const [row] = database.all<{ n: number }>(
+      sql`SELECT COUNT(*) AS n FROM rate_limits WHERE expires_at = 0`,
+    );
+    expect(Number(row?.n ?? 0)).toBe(0);
   });
 });

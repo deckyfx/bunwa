@@ -92,3 +92,31 @@ To close it: count consecutive breaches per rule id, disable the rule through
 RuleStore once it passes the threshold, reset the count on any clean
 evaluation, and emit an event so the tenant learns their rule was switched off
 rather than discovering it silently stopped matching.
+
+---
+
+## The delivery queue is per environment; the design says per virtual device
+
+docs/05-events-and-rules.md:162 specifies "actions → delivery queue (per
+virtual device)", and docs/03-architecture.md repeats the per-device scope.
+The implementation does not do this and never has.
+
+`deliveries` has no virtual-device column. DeliveryStore.enqueue takes an
+environmentId, and the worker caps in-flight work per environment
+(delivery/worker.ts, seenPerEnvironment). Two virtual devices in one
+environment therefore share a queue.
+
+What that costs: a webhook endpoint that is slow or failing for one device
+delays events for every other device in the same environment. Per-device
+queueing exists precisely to stop that head-of-line blocking, and the design
+called for it deliberately.
+
+Not a regression — no version of this queued per device. Found by checking
+whether a review finding about sweepUnacked's enqueue was really about my
+code, and discovering the contract it named was unmet everywhere.
+
+To close it: add virtual_device_id to deliveries (nullable, since some events
+are environment-scoped rather than device-scoped), migrate, key the worker's
+cap on it, and fall back to the environment for rows without one. The
+CodeRabbit path instruction for src/delivery/** already states the
+requirement, so it will keep being reported until the schema matches it.
