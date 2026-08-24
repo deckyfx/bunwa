@@ -1,0 +1,60 @@
+# bunwa — deferred work
+
+Things known to be incomplete, with enough context to act on later without
+re-deriving why. Roadmap items live in docs/08; this file is for what was
+noticed in passing and deliberately not done at the time.
+
+
+## 1. Run tenant regex matching in a terminable worker
+
+Status: deferred to stage 2 (also listed in docs/08)
+Raised by: CodeRabbit, repeatedly, across four review passes
+
+Static analysis of a regex cannot be complete, and JavaScript cannot pre-empt a
+running match. Today's budget therefore *detects* a slow pattern rather than
+preventing it: one pathological regex can still occupy the event loop once
+before the rule is disabled.
+
+In place now:
+  - RE2-only syntax (no backreferences, no lookaround)
+  - nested quantifiers refused, at any depth
+  - quantified alternations refused when branches can overlap
+  - subject truncated to 4KB before matching
+  - a rule disabled after three budget breaches
+
+Missing: the ability to kill a match in progress, which needs it running
+somewhere killable — a Worker, with the match sent across and a hard timeout on
+the host side.
+
+Why it matters more than the count suggests: four consecutive review passes
+found a gap in the static analysis, each narrower than the last (`?` vs group
+prefixes, blanket alternation refusal, top-level-only scanning, escaped
+brackets in classes). That is convergence, but it is also evidence that this
+approach is hard to get exhaustively right. The worker makes all of the above
+defence-in-depth instead of the primary guard, which is the real fix.
+
+
+## 2. Close the DNS rebinding window
+
+Status: deferred to stage 2 (also listed in docs/08)
+Raised by: CodeRabbit, twice — once for the delivery sender, once for the gowa
+adapter forwarding tenant-supplied URLs
+
+Webhook and media URLs are supplied by tenants, so every outbound request goes
+to an address a customer controls. Stage 1 validates the *resolved* address
+immediately before each request and refuses if any answer is blocked (private,
+loopback, link-local, cloud metadata).
+
+The gap: Bun's fetch cannot bind a connection to an already-validated IP while
+preserving the Host header and TLS SNI. A resolver that returns a public
+address to our check and a private one to the connect is still followed.
+
+Closing it needs an HTTP client over `Bun.connect` — connect to the pinned
+address, set Host and SNI from the original URL. That is a meaningful amount of
+security-critical code to own, which is why it is hardening work rather than
+something to improvise inside stage 1.
+
+Note this applies twice over: bunwa's own sender, and URLs bunwa hands to gowa,
+which then does its own resolution entirely outside our control. The second may
+only be closeable by fetching the media ourselves and passing gowa a local
+reference.
