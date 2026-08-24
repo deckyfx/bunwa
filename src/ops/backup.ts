@@ -173,8 +173,9 @@ export async function pruneBackups(directory: string, keep: number): Promise<str
   let entries: string[];
   try {
     entries = await backupFilesIn(directory);
-  } catch {
-    return [];
+  } catch (err) {
+    if (isMissingDirectory(err)) return [];
+    throw err;
   }
   const doomed = entries.slice(0, Math.max(0, entries.length - keep));
   await Promise.all(doomed.map((f) => rm(join(directory, f), { force: true })));
@@ -185,6 +186,19 @@ export async function pruneBackups(directory: string, keep: number): Promise<str
 export function backupFilename(at: Date = new Date()): string {
   const iso = at.toISOString();
   return `bunwa-${iso.slice(0, 10).replace(/-/g, "")}-${iso.slice(11, 19).replace(/:/g, "")}.sqlite`;
+}
+
+/**
+ * True only for "the directory is not there", which is a legitimate empty result.
+ *
+ * Both callers used to catch everything and return empty. EACCES, ENOTDIR and
+ * ordinary I/O errors were therefore reported as "no backups" — indistinguishable
+ * from a healthy directory that has none. An operator checking a
+ * permission-broken path was told backups had never been taken, and retention
+ * reported success while pruning nothing, which is the disk filling quietly.
+ */
+function isMissingDirectory(err: unknown): boolean {
+  return (err as NodeJS.ErrnoException | null)?.code === "ENOENT";
 }
 
 /**
@@ -204,13 +218,22 @@ async function backupFilesIn(directory: string): Promise<string[]> {
     .sort();
 }
 
-/** List what is in a backup directory, newest last. */
+/**
+ * List what is in a backup directory, newest last.
+ *
+ * Exported so an operator can see which snapshots retention has kept, and how
+ * old the newest one is, without opening a database file or trusting that the
+ * scheduled job ran. `backup list` is the command someone reaches for at the
+ * start of a restore, when the answer needs to come from the filesystem rather
+ * than from a log.
+ */
 export async function listBackups(directory: string): Promise<BackupInfo[]> {
   let entries: string[];
   try {
     entries = await backupFilesIn(directory);
-  } catch {
-    return [];
+  } catch (err) {
+    if (isMissingDirectory(err)) return [];
+    throw err;
   }
   return Promise.all(
     entries.map(async (f) => {

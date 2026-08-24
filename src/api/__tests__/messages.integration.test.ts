@@ -359,6 +359,11 @@ describe("a runaway caller cannot exhaust a customer's number", () => {
       )
     ).plaintext;
 
+    // Closed as soon as the key exists. This handle is a second connection to
+    // the same file, separate from the one afterEach closes, so leaving it open
+    // holds a SQLite file handle and its WAL for the rest of the run.
+    database.$client.close();
+
     // Sends until the first key is actually refused, rather than assuming
     // exactly `max` attempts. The window is aligned to the wall clock, so a
     // loop that straddles a minute boundary gets a fresh allowance part-way

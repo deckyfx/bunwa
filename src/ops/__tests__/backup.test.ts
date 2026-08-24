@@ -287,3 +287,33 @@ describe("retention survives what it finds in the directory", () => {
     expect(stray.isDirectory()).toBe(true);
   });
 });
+
+
+describe("an unreadable backup directory is not an empty one", () => {
+  // Both functions caught everything and returned empty, so EACCES, ENOTDIR
+  // and ordinary I/O errors read as "no backups". An operator checking a
+  // misconfigured path was told backups had never been taken, and retention
+  // reported success while pruning nothing — the disk filling quietly, which
+  // is the outage retention exists to prevent.
+  test("listBackups surfaces ENOTDIR rather than reporting no backups", async () => {
+    const notADirectory = join(dir, "a-regular-file");
+    writeFileSync(notADirectory, "not a directory");
+
+    await expect(listBackups(notADirectory)).rejects.toThrow(/ENOTDIR/);
+  });
+
+  test("pruneBackups surfaces ENOTDIR rather than reporting success", async () => {
+    const notADirectory = join(dir, "another-regular-file");
+    writeFileSync(notADirectory, "not a directory");
+
+    await expect(pruneBackups(notADirectory, 2)).rejects.toThrow(/ENOTDIR/);
+  });
+
+  test("a directory that is genuinely absent is still an empty result", async () => {
+    // The distinction that matters: nothing there yet is not a failure, and a
+    // first run must not throw before the first backup exists.
+    const absent = join(dir, "never-created");
+    expect(await listBackups(absent)).toEqual([]);
+    expect(await pruneBackups(absent, 2)).toEqual([]);
+  });
+});
