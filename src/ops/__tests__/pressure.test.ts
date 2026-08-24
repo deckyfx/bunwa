@@ -218,7 +218,7 @@ describe("busy retries", () => {
   test("are reported as a rate, not a total", async () => {
     // A total grows for ever and stops meaning anything. A rate is comparable
     // between scrapes, which is what makes a trend visible.
-    resetBusyWindow(new Date(Date.now() - 60_000));
+    resetBusyWindow();
     for (let i = 0; i < 30; i++) recordBusyRetry();
     const p = await samplePressure(database);
     expect(p.busyRetriesPerMinute).toBeGreaterThan(25);
@@ -232,7 +232,7 @@ describe("busy retries", () => {
     // denominator, a single retry 200ms in reported 60.00/min: six times the
     // act threshold, from one event, on the number ADR-0005's trigger rests on.
     const now = new Date();
-    resetBusyWindow(new Date(now.getTime() - 200));
+    resetBusyWindow();
     recordBusyRetry();
 
     const p = await samplePressure(database, now);
@@ -245,11 +245,40 @@ describe("busy retries", () => {
     // The floor must not hide a genuine burst: not extrapolating is not the
     // same as under-reporting.
     const now = new Date();
-    resetBusyWindow(new Date(now.getTime() - 10_000));
+    resetBusyWindow();
     for (let i = 0; i < 100; i++) recordBusyRetry();
 
     const p = await samplePressure(database, now);
     expect(p.busyRetriesPerMinute).toBeGreaterThan(PRESSURE_GUIDANCE.busyRetriesPerMinute.act);
+  });
+
+  test("reading the rate does not change it", async () => {
+    // Two scrapers, a health check, anything at all: sampling must not consume
+    // what it reports. The first version reset inside GET /metrics, which any
+    // unauthenticated caller could drive; the second moved the reset into
+    // samplePressure, which only narrowed the window in which a second reader
+    // saw 0 for a period it had every right to observe — while the comment
+    // claimed the sampling was non-destructive.
+    resetBusyWindow();
+    for (let i = 0; i < 20; i++) recordBusyRetry();
+
+    const first = (await samplePressure(database)).busyRetriesPerMinute;
+    const second = (await samplePressure(database)).busyRetriesPerMinute;
+    const third = (await samplePressure(database)).busyRetriesPerMinute;
+
+    expect(first).toBeGreaterThan(0);
+    expect(second, "a second scrape saw a different number").toBe(first);
+    expect(third).toBe(first);
+  });
+
+  test("retries older than the window fall out of the rate", async () => {
+    // Bounded history, not a total: the ring holds one slot per second and a
+    // slot whose second has aged out reads as empty without anyone clearing it.
+    resetBusyWindow();
+    const longAgo = new Date(Date.now() - 10 * 60_000);
+    for (let i = 0; i < 50; i++) recordBusyRetry(longAgo);
+
+    expect((await samplePressure(database)).busyRetriesPerMinute).toBe(0);
   });
 
   test("reset clears the window", async () => {

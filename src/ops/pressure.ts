@@ -15,21 +15,45 @@ import { and, count as drizzleCount, eq, gt, lt, sql } from "drizzle-orm";
 import { db, pathOf, type Database } from "../db";
 import { deliveries, devices, outboundMessages } from "../db/schema";
 
-/** A counter that survives restarts is not needed here — trends are. */
-let busyRetries = 0;
-let busyRetriesSince = new Date();
+/**
+ * How much history the retry rate is computed over.
+ *
+ * Also the span the buckets below cover, one per second.
+ */
+const BUSY_WINDOW_MS = 60_000;
+const BUSY_BUCKET_MS = 1_000;
+const BUSY_BUCKETS = BUSY_WINDOW_MS / BUSY_BUCKET_MS;
+
+/**
+ * Retries per second, in a ring, so reading never changes what is read.
+ *
+ * Two earlier shapes both mutated on read. Resetting inside GET /metrics let
+ * any unauthenticated caller clear the count between scrapes; moving the reset
+ * into samplePressure only narrowed it, because a second scraper arriving just
+ * after a rotation still saw 0 for a period it had every right to observe —
+ * while the comment there claimed sampling was non-destructive. The number
+ * ADR-0005's Postgres trigger depends on must not depend on who read it last.
+ *
+ * Each slot holds a count and the second it belongs to, so a slot whose epoch
+ * has aged out reads as empty without anyone having to clear it. Memory is
+ * fixed at 60 slots regardless of load.
+ */
+const busyCounts = new Array<number>(BUSY_BUCKETS).fill(0);
+const busyEpochs = new Array<number>(BUSY_BUCKETS).fill(-1);
+
 /** Never reset. What a scraper should difference to get a rate it can trust. */
 let busyRetriesTotal = 0;
 
-/**
- * How long a contention window runs before it rolls.
- *
- * The window advances on elapsed time, never on being read. It used to reset
- * on every GET /metrics, which is unauthenticated: a second scraper, a health
- * check, or anyone at all could clear the count between samples and hold the
- * reported rate near zero while contention was real.
- */
-const BUSY_WINDOW_MS = 60_000;
+/** Sum the slots still inside the window. Pure: nothing is written. */
+function busyRetriesInWindow(now: Date): number {
+  const currentEpoch = Math.floor(now.getTime() / BUSY_BUCKET_MS);
+  const oldest = currentEpoch - BUSY_BUCKETS + 1;
+  let total = 0;
+  for (let i = 0; i < BUSY_BUCKETS; i++) {
+    if (busyEpochs[i]! >= oldest && busyEpochs[i]! <= currentEpoch) total += busyCounts[i]!;
+  }
+  return total;
+}
 
 /**
  * Record that acquiring the write lock took measurably long.
@@ -44,8 +68,16 @@ const BUSY_WINDOW_MS = 60_000;
  * crossing that threshold is counted too. ADR-0005's trigger depends on this
  * number, so it must not be read as an exact busy count.
  */
-export function recordBusyRetry(): void {
-  busyRetries += 1;
+export function recordBusyRetry(now: Date = new Date()): void {
+  const epoch = Math.floor(now.getTime() / BUSY_BUCKET_MS);
+  const slot = ((epoch % BUSY_BUCKETS) + BUSY_BUCKETS) % BUSY_BUCKETS;
+  // A slot carrying an older second is stale, not additive: overwrite rather
+  // than accumulate, which is what keeps the ring bounded and self-expiring.
+  if (busyEpochs[slot] !== epoch) {
+    busyEpochs[slot] = epoch;
+    busyCounts[slot] = 0;
+  }
+  busyCounts[slot]! += 1;
   busyRetriesTotal += 1;
 }
 
@@ -114,24 +146,14 @@ export interface Pressure {
  * not itself become the write contention it is measuring.
  */
 export async function samplePressure(database?: Database, now: Date = new Date()): Promise<Pressure> {
-  // Rolls on time rather than on read, so sampling is non-destructive and two
-  // readers within one window agree.
-  const elapsedMs = now.getTime() - busyRetriesSince.getTime();
-  // Never extrapolate from a partial window. The floor used to be one second,
-  // so a single retry sampled 200ms after a rotation reported 60.00/min —
-  // six times PRESSURE_GUIDANCE.busyRetriesPerMinute.act, from one event. Two
-  // scrapers polling a few hundred milliseconds apart were enough, and this
-  // number is what ADR-0005's Postgres trigger rests on.
-  //
-  // Dividing by a whole window rather than by a tenth of one, which would
-  // still report exactly the act threshold for that single retry. It hides
-  // nothing real: 100 retries in ten seconds still reports 100/min.
-  const elapsedMinutes = Math.max(BUSY_WINDOW_MS, elapsedMs) / 60_000;
-  const busyRetriesPerMinute = Number((busyRetries / elapsedMinutes).toFixed(2));
-  if (elapsedMs >= BUSY_WINDOW_MS) {
-    busyRetries = 0;
-    busyRetriesSince = now;
-  }
+  // Read-only, and always over a whole window. Two earlier versions divided a
+  // rotating counter by elapsed time: a single retry sampled 200ms into a fresh
+  // window reported 60.00/min, six times the act threshold from one event. A
+  // full-window denominator hides nothing real — 100 retries in ten seconds
+  // still reports 100/min — and the ring makes repeated reads agree.
+  const busyRetriesPerMinute = Number(
+    (busyRetriesInWindow(now) / (BUSY_WINDOW_MS / 60_000)).toFixed(2),
+  );
 
   try {
     // Resolved inside the try, not in a default parameter: opening the handle
@@ -285,9 +307,9 @@ export const PRESSURE_GUIDANCE = {
  * instead. This remains only so a test can pin the window's start, which is
  * otherwise process-global state shared between test files.
  */
-export function resetBusyWindow(now: Date = new Date()): void {
-  busyRetries = 0;
-  busyRetriesSince = now;
+export function resetBusyWindow(): void {
+  busyCounts.fill(0);
+  busyEpochs.fill(-1);
 }
 
 /** The monotonic total, for a scraper that would rather difference it itself. */
