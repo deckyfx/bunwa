@@ -24,7 +24,8 @@
     "db:migrate": "bun run src/db/migrate.ts",
     "db:studio": "drizzle-kit studio",
     "db:embed": "bun run scripts/embed-migrations.ts",
-    "build": "bun run db:embed && bun run typecheck && bun build --compile --outfile dist/bunwa src/index.ts"
+    "build": "bun run db:embed && bun run typecheck && bun build --compile --outfile dist/bunwa src/index.ts",
+    "backup": "bun run src/ops/backup-cli.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",

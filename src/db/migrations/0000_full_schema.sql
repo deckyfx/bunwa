@@ -167,6 +167,15 @@ CREATE TABLE `projects` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `projects_slug_key` ON `projects` (`slug`);--> statement-breakpoint
+CREATE TABLE `rate_limits` (
+	`subject` text NOT NULL,
+	`bucket` text NOT NULL,
+	`window_start` integer NOT NULL,
+	`count` integer DEFAULT 0 NOT NULL,
+	PRIMARY KEY(`subject`, `bucket`, `window_start`)
+);
+--> statement-breakpoint
+CREATE INDEX `rate_limits_window_idx` ON `rate_limits` (`window_start`);--> statement-breakpoint
 CREATE TABLE `rules` (
 	`id` text PRIMARY KEY NOT NULL,
 	`virtual_device_id` text NOT NULL,

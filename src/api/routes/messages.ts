@@ -9,7 +9,7 @@
 import { Elysia, t } from "elysia";
 import { and, eq, or } from "drizzle-orm";
 
-import { requireApiKey, requireScope, type AuthContext } from "../../auth/middleware";
+import { requireApiKey, requireScope, requireWithinLimit, type AuthContext } from "../../auth/middleware";
 import { db } from "../../db";
 import { devices, virtualDevices, type VirtualDevice } from "../../db/schema";
 import type { EngineRegistry } from "../../engine/registry";
@@ -17,6 +17,7 @@ import { EngineError, type SendAction } from "../../engine/types";
 import { DeviceStore } from "../../stores/device-store";
 import { IdempotencyStore } from "../../stores/idempotency-store";
 import { MessageStore } from "../../stores/message-store";
+import { LIMITS } from "../../ops/rate-limit";
 import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../../stores/errors";
 import { log } from "../../observability/logger";
 
@@ -133,6 +134,11 @@ export function messageRoutes(registry: EngineRegistry) {
         let engineAccepted = false;
         try {
           const { binding, deviceId } = await resolveSendableDevice(auth, params.ref);
+
+          // Limited per *device*, not per key. A number can be reached by
+          // several bindings, and WhatsApp restricts the number — so the
+          // budget belongs to the thing that suffers, not to the caller.
+          requireWithinLimit(`device:${deviceId}`, LIMITS.send, path);
 
           // The pool the device was actually provisioned on. Picking the
           // first registered pool would send through an engine that has never

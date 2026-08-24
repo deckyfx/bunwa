@@ -7,7 +7,8 @@
  */
 import { Elysia, t } from "elysia";
 
-import { requireApiKey, requireScope } from "../../auth/middleware";
+import { requireApiKey, requireScope, requireWithinLimit } from "../../auth/middleware";
+import { LIMITS } from "../../ops/rate-limit";
 import { DeviceStore } from "../../stores/device-store";
 import { problem } from "../server";
 import type { EngineRegistry } from "../../engine/registry";
@@ -36,6 +37,11 @@ export function deviceRoutes(registry: EngineRegistry) {
       "/devices/claim",
       async ({ auth, body, set, path }) => {
         requireScope(auth, "manage:devices", path);
+
+        // Limited per environment. Each claim of an already-paired number
+        // sends a WhatsApp message to a real person; an unbounded loop here
+        // is not a service problem, it is harassment.
+        requireWithinLimit(`env:${auth.environmentId}`, LIMITS.claim, path);
 
         const result = await DeviceStore.claim({
           environmentId: auth.environmentId,

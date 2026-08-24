@@ -9,6 +9,7 @@
  */
 import { Elysia } from "elysia";
 
+import { consume, type Limit } from "../ops/rate-limit";
 import { ApiKeyStore, type ResolvedKey } from "../stores/api-key-store";
 import { log } from "../observability/logger";
 
@@ -93,9 +94,38 @@ export class AuthError extends Error {
     readonly title: string,
     readonly detail: string,
     readonly instance?: string,
+    /** Extra response headers, e.g. Retry-After on a 429. */
+    readonly headers?: Record<string, string>,
   ) {
     super(detail);
   }
+}
+
+/**
+ * Assert a limit has room, and consume one unit if it does.
+ *
+ * Sits beside requireScope because it is the same kind of gate: a precondition
+ * checked per operation, throwing the same error type so the HTTP layer needs
+ * no special case.
+ *
+ * The subject is passed explicitly rather than derived from `auth`, because the
+ * thing being protected differs by operation — a send is limited per *device*,
+ * since the damage lands on that phone number, while a claim is limited per
+ * environment.
+ */
+export function requireWithinLimit(subject: string, limit: Limit, instance?: string): void {
+  const decision = consume(subject, limit);
+  if (decision.allowed) return;
+
+  const retryAfter = Math.max(1, Math.ceil((decision.resetAt.getTime() - Date.now()) / 1000));
+  throw new AuthError(
+    429,
+    "rate-limited",
+    "Too many requests",
+    `limit of ${limit.max} per ${Math.round(limit.windowMs / 1000)}s exceeded; retry in ${retryAfter}s`,
+    instance,
+    { "retry-after": String(retryAfter) },
+  );
 }
 
 /**

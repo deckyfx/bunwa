@@ -110,6 +110,9 @@ export function createApp(registry?: EngineRegistry) {
       // than by message text, which drifts the moment a message is reworded.
       if (error instanceof AuthError) {
         set.status = error.status;
+        // Retry-After on a 429 tells a caller when to come back. Without it a
+        // client that is looping simply loops faster against the refusal.
+        for (const [name, value] of Object.entries(error.headers ?? {})) set.headers[name] = value;
         return problem(error.status, error.type, error.title, error.detail, path, id);
       }
       if (error instanceof ValidationError) {

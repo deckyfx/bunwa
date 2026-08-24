@@ -23,6 +23,7 @@ import { EnvironmentStore } from "../../stores/environment-store";
 import { MessageStore } from "../../stores/message-store";
 import { ProjectStore } from "../../stores/project-store";
 import { handleEngineEvent } from "../../engine/consumer";
+import { LIMITS } from "../../ops/rate-limit";
 import { resetConfig } from "../../config/env";
 
 let dir: string;
@@ -297,5 +298,42 @@ describe("the reservation must outlive a partial failure", () => {
     // A retry replays the failure instead of sending again.
     const retry = await send(otp, idem);
     expect(retry.headers.get("idempotent-replay")).toBe("true");
+  });
+});
+
+describe("a runaway caller cannot exhaust a customer's number", () => {
+  test("sends are refused past the limit, with Retry-After", async () => {
+    // The damage from a tight retry loop is not an error page — it is WhatsApp
+    // restricting a customer's phone number, done to someone who never made
+    // the mistake and cannot undo it.
+    let refused: Response | null = null;
+    for (let i = 0; i < LIMITS.send.max + 5; i++) {
+      const res = await send(otp);
+      if (res.status === 429) {
+        refused = res;
+        break;
+      }
+    }
+    expect(refused).not.toBeNull();
+    expect(refused!.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect((await refused!.json() as { type: string }).type).toContain("rate-limited");
+  });
+
+  test("the limit belongs to the device, not the key", async () => {
+    // A number reachable through several bindings must share one budget: the
+    // number is what gets restricted, so the budget belongs to it.
+    const database = createDatabase(join(dir, "t.sqlite"));
+    const project = await ProjectStore.findBySlug("grande", database);
+    const [environment] = await EnvironmentStore.listForProject(project!.id, database);
+    const second = (
+      await ApiKeyStore.create(
+        { projectId: project!.id, environmentId: environment!.id, label: "second", scopes: ["send:text"] },
+        database,
+      )
+    ).plaintext;
+
+    for (let i = 0; i < LIMITS.send.max; i++) await send(otp);
+    // A different key, the same device: still refused.
+    expect((await send(otp, crypto.randomUUID(), second)).status).toBe(429);
   });
 });
