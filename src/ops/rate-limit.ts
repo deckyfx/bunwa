@@ -117,10 +117,24 @@ export function consume(
       -- expiry; the sweep then collected a live 2h window and the next
       -- consume() started from zero.
       DO UPDATE SET count = count + 1, expires_at = MAX(rate_limits.expires_at, excluded.expires_at)
+      -- Stops counting once the budget is gone. Without this predicate every
+      -- rejected request still took the write lock, so a tight retry loop kept
+      -- the SQLite write path busy precisely while being refused — the limiter
+      -- generating the contention it exists to prevent, and delaying unrelated
+      -- writers that had done nothing wrong.
+      WHERE rate_limits.count < ${limit.max}
     RETURNING count
   `);
 
-  const count = Number(row?.count ?? 1);
+  // No row means the predicate declined the update, which happens only when
+  // the stored count already reached the limit. The previous `?? 1` fallback
+  // would read that as a first request and allow it — turning the refusal into
+  // the opposite of a refusal.
+  if (row === undefined) {
+    return { allowed: false, remaining: 0, resetAt };
+  }
+
+  const count = Number(row.count);
   return { allowed: count <= limit.max, remaining: Math.max(0, limit.max - count), resetAt };
 }
 

@@ -105,8 +105,38 @@ describe("consume", () => {
     const decisions = Array.from({ length: 10 }, () => consume("key-1", tiny, now, database));
     expect(decisions.filter((d) => d.allowed)).toHaveLength(3);
 
+    // The counter stops at the limit rather than recording all ten attempts.
+    // It used to climb to 10, which meant every refused request took the write
+    // lock — the limiter adding to the contention it exists to prevent. What
+    // matters here is that exactly three were allowed, which is the race this
+    // test is named for; the stored total is not part of the guarantee.
     const [row] = database.all<{ count: number }>(sql`SELECT count FROM rate_limits WHERE subject = 'key-1'`);
-    expect(Number(row!.count)).toBe(10);
+    expect(Number(row!.count)).toBe(tiny.max);
+  });
+
+  test("a refused request does not write", () => {
+    // The write path is the scarce resource under a retry storm, and a caller
+    // being refused is exactly the caller most likely to hammer it.
+    const now = new Date(10_000);
+    for (let i = 0; i < tiny.max; i++) expect(consume("key-2", tiny, now, database).allowed).toBe(true);
+
+    const stored = () =>
+      Number(
+        database.all<{ count: number }>(
+          sql`SELECT count FROM rate_limits WHERE subject = 'key-2'`,
+        )[0]!.count,
+      );
+    const before = stored();
+
+    for (let i = 0; i < 50; i++) {
+      const d = consume("key-2", tiny, now, database);
+      expect(d.allowed).toBe(false);
+      // A refusal must still report the truth: nothing left, and when it resets.
+      expect(d.remaining).toBe(0);
+      expect(d.resetAt.getTime()).toBe(11_000);
+    }
+
+    expect(stored(), "the counter kept climbing while refusing").toBe(before);
   });
 
   test("survives a restart, because the count is not in memory", async () => {
