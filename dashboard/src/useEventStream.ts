@@ -101,10 +101,21 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
   return state;
 }
 
-/** The envelope types the console reacts to today. */
+/**
+ * The envelope types the console reacts to today.
+ *
+ * device.qr and device.pair_code are deliberately absent, and must stay absent.
+ * The engine consumer returns before fan-out for both: a QR is a credential
+ * anyone who sees it can scan to take over the account, so publishing it to
+ * every active binding would hand it to every other project sharing that
+ * phone. They go synchronously to the caller that started pairing, and to
+ * nobody else.
+ *
+ * Listening for them was harmless but dishonest — it implied the console could
+ * pick up a refreshed QR from the stream, which it cannot. A QR that expires is
+ * re-requested by claiming again, not waited for.
+ */
 const LISTENED = [
-  "device.qr",
-  "device.pair_code",
   "device.connected",
   "device.disconnected",
   "device.logged_out",

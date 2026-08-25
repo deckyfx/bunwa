@@ -5,6 +5,9 @@
   "module": "src/index.ts",
   "type": "module",
   "private": true,
+  "workspaces": [
+    "dashboard"
+  ],
   "scripts": {
     "dev": "bun --watch run src/index.ts",
     "start": "bun run src/index.ts",
