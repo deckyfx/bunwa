@@ -50,7 +50,15 @@ export function App() {
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async (withKey: string) => {
-    if (withKey === "") return;
+    if (withKey === "") {
+      // Cleared, not just skipped. Returning early left the previous project
+      // and its devices on screen with no credential behind them, which reads
+      // as still-connected and is the opposite of what clearing a key means.
+      setWho(null);
+      setDevices(null);
+      setError(null);
+      return;
+    }
     setBusy(true);
     setError(null);
     try {

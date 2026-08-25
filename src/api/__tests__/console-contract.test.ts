@@ -26,6 +26,8 @@ import { MigrationManager } from "../../db/migration-manager";
 import { ProjectStore } from "../../stores/project-store";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
+import { DeviceStore } from "../../stores/device-store";
+import { handleEngineEvent } from "../../engine/consumer";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 
@@ -59,8 +61,30 @@ beforeEach(async () => {
   // With a registry, because createApp mounts the device routes only when one
   // is present — an API with no engine configured serves no /v1/devices at all.
   const registry = new EngineRegistry();
-  registry.register({ id: "fake-1", kind: "fake", capacity: 25, engine: new FakeEngine() });
+  const engine = new FakeEngine();
+  registry.register({ id: "fake-1", kind: "fake", capacity: 25, engine });
   app = createApp(registry);
+
+  // A real device, because the first version of this file asserted the field
+  // names only `if (row !== undefined)` and the fixture had no devices — so the
+  // test written to catch field drift ran no assertions at all and would have
+  // passed while every field was renamed.
+  const claimed = await DeviceStore.claim(
+    { environmentId: environment.id, msisdn: "+628123456789", alias: "otp-sender" },
+    database,
+  );
+  await engine.provision(claimed.device.id);
+  engine.completePairing(claimed.device.id, "628123456789@s.whatsapp.net");
+  await handleEngineEvent(
+    {
+      type: "device.connected",
+      deviceId: claimed.device.id,
+      jid: "628123456789@s.whatsapp.net",
+      pushName: null,
+    },
+    database,
+    "fake",
+  );
 });
 
 afterEach(() => {
@@ -95,14 +119,19 @@ describe("the fields dashboard/src/api.ts transcribes", () => {
     const body = (await (await get("/v1/devices")).json()) as Record<string, unknown>[];
     expect(Array.isArray(body)).toBe(true);
 
-    // An empty environment still proves the route answers; the field names are
-    // asserted against the store's projection, which is what produces them.
+    // A row must exist, or the assertions below are skipped and this test
+    // becomes decoration — which is exactly what it was.
+    expect(body.length, "fixture produced no device, so nothing is asserted").toBeGreaterThan(0);
+
     const projection = ["virtualDeviceId", "alias", "status", "scopes", "msisdn", "deviceState"];
-    const row = body[0];
-    if (row !== undefined) {
-      for (const field of projection) {
-        expect(Object.keys(row), `devices lost ${field}`).toContain(field);
-      }
+    const row = body[0]!;
+    for (const field of projection) {
+      expect(Object.keys(row), `devices lost ${field}`).toContain(field);
     }
+
+    // The names the console originally invented, pinned as wrong so the
+    // specific mistake cannot come back unnoticed.
+    expect(row["id"], "devices went back to a bare id").toBeUndefined();
+    expect(row["phoneNumber"], "devices went back to phoneNumber").toBeUndefined();
   });
 });

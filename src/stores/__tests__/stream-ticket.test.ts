@@ -10,17 +10,22 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { eq } from "drizzle-orm";
 
 import { createDatabase, resetDatabase, type Database } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
-import { streamTickets } from "../../db/schema";
 import { ProjectStore } from "../project-store";
 import { EnvironmentStore } from "../environment-store";
 import { ApiKeyStore } from "../api-key-store";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
-import { mintTicket, spendTicket, sweepTickets, ticketCount, TICKET_TTL_MS } from "../stream-ticket-store";
+import {
+  mintTicket,
+  spendTicket,
+  storedHashes,
+  sweepTickets,
+  ticketCount,
+  TICKET_TTL_MS,
+} from "../stream-ticket-store";
 
 const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
 
@@ -220,13 +225,10 @@ describe("the ticket itself is never stored", () => {
     // no reason to leave a spendable credential in one.
     const { ticket } = await mintTicket(environmentId, apiKeyId, new Date(0), database);
 
-    const rows = await database
-      .select({ tokenHash: streamTickets.tokenHash })
-      .from(streamTickets)
-      .where(eq(streamTickets.environmentId, environmentId));
-    expect(rows).toHaveLength(1);
-    expect(rows[0]!.tokenHash).not.toBe(ticket);
-    expect(rows[0]!.tokenHash).toMatch(/^[0-9a-f]{64}$/);
+    const hashes = await storedHashes(environmentId, database);
+    expect(hashes).toHaveLength(1);
+    expect(hashes[0]!).not.toBe(ticket);
+    expect(hashes[0]!).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 

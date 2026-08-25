@@ -176,6 +176,22 @@ export async function sweepTickets(now: Date = new Date(), database: Database = 
 }
 
 /**
+ * The stored hashes for one environment.
+ *
+ * A seam, so a test can prove the plaintext ticket is never written down
+ * without reaching past the store to do it. The alternative — a raw query in
+ * the test — is the shape the path instruction forbids, and forbids for a
+ * reason: a query outside a store is one nobody thinks to scope.
+ */
+export async function storedHashes(environmentId: string, database: Database = db()): Promise<string[]> {
+  const rows = await database
+    .select({ tokenHash: streamTickets.tokenHash })
+    .from(streamTickets)
+    .where(eq(streamTickets.environmentId, environmentId));
+  return rows.map((r) => r.tokenHash);
+}
+
+/**
  * Unspent tickets for one environment.
  *
  * Scoped, and through Drizzle rather than the raw handle. It was neither: a

@@ -99,17 +99,24 @@ async function readUntil(response: Response, want: string): Promise<string> {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
   let seen = "";
-  const deadline = Date.now() + 3_000;
-  while (Date.now() < deadline) {
-    const next = await Promise.race([
-      reader.read(),
-      Bun.sleep(500).then(() => ({ done: false, value: undefined }) as const),
-    ]);
-    if (next.done === true) break;
-    if (next.value !== undefined) seen += decoder.decode(next.value, { stream: true });
-    if (seen.includes(want)) break;
+  // One read outstanding at a time. Racing read() against a sleep left the
+  // losing read queued, so a later frame resolved a promise nobody was
+  // reading and never reached `seen` — an intermittent failure built into the
+  // helper meant to make these tests deterministic.
+  const timeout = setTimeout(() => void reader.cancel().catch(() => undefined), 3_000);
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done === true) break;
+      seen += decoder.decode(next.value, { stream: true });
+      if (seen.includes(want)) break;
+    }
+  } catch {
+    // The timeout cancelled the reader mid-read; `seen` holds what arrived.
+  } finally {
+    clearTimeout(timeout);
+    await reader.cancel().catch(() => undefined);
   }
-  await reader.cancel().catch(() => undefined);
   return seen;
 }
 
