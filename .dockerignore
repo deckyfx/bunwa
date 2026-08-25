@@ -1,0 +1,10 @@
+node_modules
+dashboard/node_modules
+dashboard/dist
+.git
+reference
+deploy/stage0/data
+data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm

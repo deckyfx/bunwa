@@ -16,6 +16,7 @@ import { deviceRoutes } from "./routes/devices";
 import { messageRoutes } from "./routes/messages";
 import { ruleRoutes } from "./routes/rules";
 import { eventRoutes } from "./routes/events";
+import { createStaticHandler } from "./static";
 import { projectRoutes } from "./routes/project";
 import type { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
@@ -208,6 +209,9 @@ export function createApp(registry?: EngineRegistry) {
 export function createServer(registry?: EngineRegistry) {
   const app = createApp(registry);
   const cfg = config();
+  // Null in the api image, where the console was never copied in. Resolved
+  // once: whether the files exist cannot change while the process runs.
+  const serveConsole = createStaticHandler();
 
   return Bun.serve({
     port: cfg.port,
@@ -224,6 +228,16 @@ export function createServer(registry?: EngineRegistry) {
       const headers = new Headers(request.headers);
       headers.set("x-correlation-id", correlationId);
       const identified = new Request(request, { headers });
+
+      // Static assets before the app, and outside it: they are not API routes,
+      // they carry no tenancy, and running them through the auth middleware
+      // would mean the console could not load the page that asks for a key.
+      if (serveConsole !== null && url.pathname.startsWith("/app")) {
+        return withContext({ correlationId }, async () => {
+          const asset = await serveConsole(identified);
+          return asset ?? new Response("Not found", { status: 404 });
+        });
+      }
 
       return withContext({ correlationId }, async () => {
         const response = await app.handle(identified);
