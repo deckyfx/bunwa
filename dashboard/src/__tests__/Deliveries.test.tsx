@@ -7,7 +7,7 @@
  * neither can a test that only asserts the happy path.
  */
 import { describe, expect, test, afterEach, mock } from "bun:test";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, fireEvent } from "@testing-library/react";
 
 import { Deliveries } from "../Deliveries";
 import { api, type Delivery } from "../api";
@@ -86,6 +86,48 @@ describe("an older response never replaces a newer one", () => {
       ).toBeNull();
     } finally {
       (api as { deliveries: typeof api.deliveries }).deliveries = original;
+    }
+  });
+});
+
+describe("a delivery cannot be replayed twice at once", () => {
+  test("starting a second row does not re-enable the first", async () => {
+    // `replaying` tracked only the most recent id, so clicking replay on a
+    // second row re-enabled the first while its request was still in flight.
+    // A replay is a webhook the consumer receives again, so a double send is
+    // not a cosmetic problem.
+    const inFlight = new Map<string, () => void>();
+    const originalReplay = api.replay;
+    const originalList = api.deliveries;
+
+    (api as { deliveries: typeof api.deliveries }).deliveries = async () => [
+      { ...delivery("a", "first.event"), state: "dead" as const },
+      { ...delivery("b", "second.event"), state: "dead" as const },
+    ];
+    (api as { replay: typeof api.replay }).replay = (_key: string, id: string) =>
+      new Promise<unknown>((resolve) => {
+        inFlight.set(id, () => resolve(undefined));
+      });
+
+    try {
+      render(<Deliveries apiKey="k" revision={0} />);
+      await waitFor(() => expect(screen.getByText("first.event")).toBeDefined());
+
+      const buttons = screen.getAllByRole("button", { name: "replay" });
+      expect(buttons).toHaveLength(2);
+
+      fireEvent.click(buttons[0]!);
+      await waitFor(() => expect(inFlight.has("a")).toBe(true));
+
+      fireEvent.click(screen.getAllByRole("button", { name: "replay" })[0]!);
+      await waitFor(() => expect(inFlight.has("b")).toBe(true));
+
+      // The first row must still be busy: its request has not resolved.
+      const stillBusy = screen.getAllByRole("button", { name: "replaying…" });
+      expect(stillBusy.length, "a row was re-enabled while its replay was in flight").toBe(2);
+    } finally {
+      (api as { replay: typeof api.replay }).replay = originalReplay;
+      (api as { deliveries: typeof api.deliveries }).deliveries = originalList;
     }
   });
 });

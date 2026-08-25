@@ -72,6 +72,13 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
    * Outside the `requireApiKey` group deliberately: there is no key here, and
    * mounting it inside would reject every EventSource before the ticket was
    * ever read.
+   *
+   * A review has claimed that `requireApiKey`'s `as: "scoped"` leaks to this
+   * route through the parent instance and rejects keyless requests anyway. It
+   * does not. Proven twice: the integration test opens this route with a
+   * ticket and no x-api-key and receives 200 with `event: stream.open`, and the
+   * same thing was confirmed with curl against a running server. If that ever
+   * stops being true the test fails, which is the right place to find out.
    */
   .get(
     "/events/stream",

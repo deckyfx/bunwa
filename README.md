@@ -13,7 +13,7 @@ A Bun/TypeScript rewrite of [gowa](https://github.com/aldinokemal/go-whatsapp-we
 | 0 — Understand gowa | ✅ | Measured against a live instance; findings in [docs/12](docs/12-stage0-findings.md) |
 | 1 — Control plane | ✅ | Tenancy, consent, messaging, rules, durable webhook delivery |
 | 2 — Hardening | ✅ | Verified backups, rate limits, pressure signals, housekeeping |
-| 3 — Dashboard | 🚧 | Project console: claim, QR, deliveries, live over SSE. No operator console, routing, styling or image build yet |
+| 3 — Dashboard | 🚧 | Project console: claim, QR, deliveries, live over SSE. Both image tags build and are checked in CI. No operator console, routing or styling yet |
 | 4 — Pivot to Baileys | ⏳ | Replace gowa as the engine ([roadmap](docs/08-roadmap.md)) |
 | 5 — Features | ⏳ | Ordered by real usage, not novelty |
 

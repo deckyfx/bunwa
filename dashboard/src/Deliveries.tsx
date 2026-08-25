@@ -23,7 +23,11 @@ interface Props {
 export function Deliveries({ apiKey, revision }: Props) {
   const [rows, setRows] = useState<Delivery[] | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [replaying, setReplaying] = useState<string | null>(null);
+  // A set, not the most recent id. Tracking one meant clicking replay on a
+  // second row re-enabled the first while its request was still in flight, so
+  // the same delivery could be replayed twice — and a replay is a webhook the
+  // consumer receives again.
+  const [replaying, setReplaying] = useState<ReadonlySet<string>>(new Set());
 
   // Only the newest request may commit, for the same reason as the console
   // above: revision is bumped by every event, events arrive in bursts, and
@@ -49,14 +53,21 @@ export function Deliveries({ apiKey, revision }: Props) {
   }, [load, revision]);
 
   async function replay(id: string) {
-    setReplaying(id);
+    // Refused rather than queued. A second click on a row already in flight is
+    // a double send, not a retry.
+    if (replaying.has(id)) return;
+    setReplaying((current) => new Set(current).add(id));
     try {
       await api.replay(apiKey, id);
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "could not replay");
     } finally {
-      setReplaying(null);
+      setReplaying((current) => {
+        const next = new Set(current);
+        next.delete(id);
+        return next;
+      });
     }
   }
 
@@ -99,8 +110,8 @@ export function Deliveries({ apiKey, revision }: Props) {
                       event sends it twice, and replaying one still backing off
                       does nothing the worker was not already going to do. */}
                   {(d.state === "failed" || d.state === "dead") && (
-                    <button type="button" onClick={() => void replay(d.id)} disabled={replaying === d.id}>
-                      {replaying === d.id ? "replaying…" : "replay"}
+                    <button type="button" onClick={() => void replay(d.id)} disabled={replaying.has(d.id)}>
+                      {replaying.has(d.id) ? "replaying…" : "replay"}
                     </button>
                   )}
                 </td>

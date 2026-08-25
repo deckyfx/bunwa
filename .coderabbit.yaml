@@ -149,6 +149,17 @@ reviews:
         MigrationManager.buildSequence(): pinning the values against the thing
         they exist to pin would make the test vacuous.
 
+    - path: "src/api/routes/events.ts"
+      instructions: >-
+        Do not report that requireApiKey's `as: "scoped"` leaks onto
+        GET /v1/events/stream and rejects requests without x-api-key. It does
+        not: the route is registered outside that group, and
+        src/api/__tests__/events.integration.test.ts opens it with a ticket and
+        no key, receiving 200 and an `event: stream.open` frame. Verified
+        against a running server as well. The stream must remain reachable
+        without a key — EventSource cannot send headers, which is the entire
+        reason ADR-0008 exists.
+
     - path: "src/stores/stream-ticket-store.ts"
       instructions: >-
         Do not ask for spendTicket to take or bind an environmentId. At
