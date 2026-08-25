@@ -54,6 +54,31 @@ describe("a claim that outlives its key does not report itself", () => {
     expect(screen.queryByText("New number")).toBeNull();
   });
 
+  test("onClaimed is not called when the screen unmounted mid-flight", async () => {
+    // What the console actually does. App renders ClaimScreen only while `who`
+    // is set, and submitting a new key clears `who` — so the component is
+    // removed rather than rerendered with a different prop. The test above
+    // rerenders, which keeps it mounted, so it never exercised this path: the
+    // ref froze at the old key and a resolving claim satisfied every check.
+    let release: ((r: ClaimResult) => void) | undefined;
+    (api as { claim: typeof api.claim }).claim = () =>
+      new Promise<ClaimResult>((resolve) => {
+        release = resolve;
+      });
+
+    let claimedCalls = 0;
+    const view = render(<ClaimScreen apiKey="key-a" onClaimed={() => (claimedCalls += 1)} />);
+    fillAndSubmit();
+    await waitFor(() => expect(screen.getByRole("button", { name: "claiming…" })).toBeDefined());
+
+    view.unmount();
+
+    release?.(pendingResult);
+    await Bun.sleep(50);
+
+    expect(claimedCalls, "a claim reported itself after the screen was gone").toBe(0);
+  });
+
   test("a claim under an unchanged key reports normally", async () => {
     // The guard must not break the ordinary path.
     (api as { claim: typeof api.claim }).claim = async () => pendingResult;

@@ -8,7 +8,7 @@
  * rate-limits claims per environment and why this screen says plainly that the
  * wait is human.
  */
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type ClaimResult } from "./api";
 import { Qr } from "./Qr";
@@ -25,11 +25,28 @@ export function ClaimScreen({ apiKey, onClaimed }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // Two guards, because they catch different things: the counter drops a
-  // superseded submission, and the ref catches the key changing underneath one.
+  // Three guards, because they catch three different things.
+  //
+  // The counter drops a superseded submission. The ref catches the key
+  // changing underneath one that is still mounted. The unmount cleanup covers
+  // the case the first two miss entirely: App renders this only while `who` is
+  // set, and submitting a new key clears `who` — so the component is gone, the
+  // ref stops updating at the old key, and a resolving claim satisfies both
+  // remaining checks. It then calls onClaimed(), which reloads with the key its
+  // closure captured.
+  //
+  // The earlier test missed this because rerendering with a new key keeps the
+  // component mounted, which is not what the console actually does.
   const generation = useRef(0);
   const apiKeyRef = useRef(apiKey);
   apiKeyRef.current = apiKey;
+
+  useEffect(
+    () => () => {
+      generation.current += 1;
+    },
+    [],
+  );
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
