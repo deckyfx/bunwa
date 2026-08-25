@@ -149,6 +149,13 @@ export function subscribe(environmentId: string): Subscription {
     reason: () => waiter.closed,
     close() {
       if (waiter.closed === null) waiter.closed = "closed";
+      // Dropped, not drained. The iterator empties `pending` before it checks
+      // `closed`, so leaving the buffer meant a closed subscription still
+      // yielded up to MAX_PENDING envelopes — and close() is called when the
+      // transport has gone, so every one of those is written to a socket
+      // nobody is holding. It also made the TSDoc above false: this is the
+      // release, so it has to actually release.
+      waiter.pending.length = 0;
       waiter.resolve?.();
       waiter.resolve = null;
       detach();
@@ -166,6 +173,10 @@ export function resetBus(): void {
   for (const set of waiters.values()) {
     for (const waiter of set) {
       waiter.closed ??= "closed";
+      // Same reason as close(): a shutdown that still hands out twenty
+      // envelopes per subscriber is not a shutdown, and between tests it
+      // leaks one case's events into the next.
+      waiter.pending.length = 0;
       waiter.resolve?.();
       waiter.resolve = null;
     }

@@ -156,3 +156,31 @@ describe("subscriptions do not leak", () => {
     expect(subscriberCount("env-1")).toBe(0);
   });
 });
+
+describe("closing releases what the bus was holding", () => {
+  test("a buffered envelope is not yielded after close", async () => {
+    // The iterator drains `pending` before it checks `closed`, so a closed
+    // subscription used to keep yielding — up to MAX_PENDING of them. close()
+    // runs when the transport has already gone, so each one is written to a
+    // socket nobody holds.
+    const sub = subscribe("env-1");
+    publish("env-1", envelope("buffered"));
+    sub.close();
+
+    const seen: string[] = [];
+    for await (const e of sub.events) seen.push(e.id);
+
+    expect(seen, "a closed subscription yielded its backlog").toEqual([]);
+    expect(sub.reason()).toBe("closed");
+  });
+
+  test("resetBus does not leak one test's envelopes into the next", async () => {
+    const sub = subscribe("env-1");
+    publish("env-1", envelope("stale"));
+    resetBus();
+
+    const seen: string[] = [];
+    for await (const e of sub.events) seen.push(e.id);
+    expect(seen).toEqual([]);
+  });
+});
