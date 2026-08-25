@@ -23,6 +23,10 @@ import { resetConfig } from "../../config/env";
 import { consume, peek } from "../rate-limit";
 import { runHousekeeping, startHousekeeping, sweepUnacked } from "../housekeeping";
 import { IdempotencyStore } from "../../stores/idempotency-store";
+import { ProjectStore } from "../../stores/project-store";
+import { EnvironmentStore } from "../../stores/environment-store";
+import { ApiKeyStore } from "../../stores/api-key-store";
+import { mintTicket, ticketCount, TICKET_TTL_MS } from "../../stores/stream-ticket-store";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 
 // Captured once, at module load: the process is shared across test
@@ -189,6 +193,24 @@ describe("runHousekeeping", () => {
     expect(result.rateLimitRowsRemoved).toBe(1);
     // The live window survives, or a throttled caller gets a free reset.
     expect(peek("subject-1", { bucket: "b", max: 5, windowMs: 1000 }, now, database).remaining).toBe(4);
+  });
+
+  test("expired stream tickets are swept", async () => {
+    // The store shipped with a sweep and no caller, which is the shape stage 2
+    // spent three commits removing. Wired here, and asserted so it stays wired.
+    const project = await ProjectStore.create({ slug: "tickets", displayName: "T" }, database);
+    const environment = await EnvironmentStore.create({ projectId: project.id, slug: "prod" }, database);
+    const key = await ApiKeyStore.create(
+      { projectId: project.id, environmentId: environment.id, label: "console", scopes: ["send:text"] },
+      database,
+    );
+
+    await mintTicket(environment.id, key.apiKey.id, new Date(0), database);
+    expect(await ticketCount(environment.id, database)).toBe(1);
+
+    const result = await runHousekeeping(database, new Date(TICKET_TTL_MS + 1));
+    expect(result.streamTicketsRemoved).toBe(1);
+    expect(await ticketCount(environment.id, database)).toBe(0);
   });
 
   test("one failing job does not prevent the others", async () => {

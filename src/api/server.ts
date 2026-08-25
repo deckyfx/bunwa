@@ -15,6 +15,7 @@ import { adminRoutes } from "./routes/admin";
 import { deviceRoutes } from "./routes/devices";
 import { messageRoutes } from "./routes/messages";
 import { ruleRoutes } from "./routes/rules";
+import { eventRoutes } from "./routes/events";
 import { projectRoutes } from "./routes/project";
 import type { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
@@ -190,6 +191,7 @@ export function createApp(registry?: EngineRegistry) {
     // Route plugins mount after the probes. An orchestrator's liveness and
     // readiness checks must never be able to end up behind a plugin's auth.
     .use(projectRoutes)
+    .use(eventRoutes)
     .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
     .use(registry === undefined ? new Elysia() : messageRoutes(registry))
     .use(ruleRoutes)

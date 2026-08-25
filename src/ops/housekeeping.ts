@@ -21,6 +21,7 @@ import { IdempotencyStore } from "../stores/idempotency-store";
 import { MessageStore, ACK_TIMEOUT_MS } from "../stores/message-store";
 import { EVENT_SCHEMA_VERSION } from "../events/schema";
 import { sweep as sweepRateLimits } from "./rate-limit";
+import { sweepTickets } from "../stores/stream-ticket-store";
 import { log } from "../observability/logger";
 
 /** The tenant identity an event envelope must carry, resolved from one join. */
@@ -34,6 +35,7 @@ export interface HousekeepingResult {
   idempotencyKeysRemoved: number;
   rateLimitRowsRemoved: number;
   messagesMarkedUndelivered: number;
+  streamTicketsRemoved: number;
 }
 
 /**
@@ -150,22 +152,27 @@ export async function runHousekeeping(
   // allSettled, not all: these jobs are independent, and Promise.all would
   // discard a successful undelivered sweep because an unrelated idempotency
   // sweep threw. The one that matters is the one whose result would be lost.
-  const jobs = ["idempotency", "rateLimits", "unacked"] as const;
+  const jobs = ["idempotency", "rateLimits", "unacked", "streamTickets"] as const;
   const settled = await Promise.allSettled([
     IdempotencyStore.sweep(database, now),
     sweepRateLimits(3_600_000, now, database),
     sweepUnacked(database, now),
+    // Unspent tickets are the common case — a console the user closed leaves
+    // one nobody will ever spend. Swept here rather than left to grow by a row
+    // per page load, and wired the moment the store existed: a sweep with no
+    // caller is the thing stage 2 spent three commits removing.
+    sweepTickets(now, database),
   ]);
 
-  const [idempotencyKeysRemoved, rateLimitRowsRemoved, messagesMarkedUndelivered] = settled.map(
+  const [idempotencyKeysRemoved, rateLimitRowsRemoved, messagesMarkedUndelivered, streamTicketsRemoved] = settled.map(
     (outcome, i) => {
       if (outcome.status === "fulfilled") return outcome.value;
       log.error("housekeeping job failed", outcome.reason, { job: jobs[i] });
       return 0;
     },
-  ) as [number, number, number];
+  ) as [number, number, number, number];
 
-  return { idempotencyKeysRemoved, rateLimitRowsRemoved, messagesMarkedUndelivered };
+  return { idempotencyKeysRemoved, rateLimitRowsRemoved, messagesMarkedUndelivered, streamTicketsRemoved };
 }
 
 /**
