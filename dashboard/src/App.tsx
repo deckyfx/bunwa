@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError, type VirtualDevice, type Whoami } from "./api";
 import { ClaimScreen } from "./ClaimScreen";
+import { useEventStream } from "./useEventStream";
 
 /** Where the key lives between reloads. */
 const KEY_STORAGE = "bunwa.console.key";
@@ -84,6 +85,17 @@ export function App() {
     void load(key);
   }, [key, load]);
 
+  // Live rather than polled. Any device event means the list on screen is out
+  // of date, so it is refetched — the event says *that* something changed, and
+  // the API remains the authority on what it changed to. docs/07: optimistic
+  // UI for actions, SSE for truth.
+  const streamState = useEventStream({
+    apiKey: who === null ? "" : key,
+    onEvent: (type) => {
+      if (type.startsWith("device.")) void load(key);
+    },
+  });
+
   return (
     <main>
       <h1>bunwa console</h1>
@@ -117,6 +129,20 @@ export function App() {
             {who.projectId} / {who.environmentId}
           </h2>
           <p>{who.scopes.length} scope(s)</p>
+          {/* Shown, not assumed. A dead EventSource that leaves stale data on
+              screen looking live is worse than an error banner. */}
+          <p>
+            live updates:{" "}
+            <strong>
+              {streamState === "live"
+                ? "connected"
+                : streamState === "connecting"
+                  ? "connecting…"
+                  : streamState === "stale"
+                    ? "disconnected — this page may be out of date"
+                    : "off"}
+            </strong>
+          </p>
         </section>
       )}
 

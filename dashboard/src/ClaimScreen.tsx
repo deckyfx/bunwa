@@ -11,6 +11,7 @@
 import { useState } from "react";
 
 import { api, ApiError, type ClaimResult } from "./api";
+import { Qr } from "./Qr";
 
 interface Props {
   apiKey: string;
@@ -118,10 +119,11 @@ function Outcome({ result }: { result: ClaimResult }) {
         <>
           {pairing.qr !== undefined && (
             <figure>
-              {/* The engine hands back the QR payload, not an image. Rendering
-                  it is the console's job; until there is a renderer, showing
-                  the payload verbatim is honest and still pairs by hand. */}
-              <pre aria-label="QR payload">{pairing.qr}</pre>
+              {/* Drawn in the browser from the payload. Rendering it server-side
+                  would mean the payload travelling as an image URL, and it is a
+                  pairing credential — it would land in access logs, proxy caches
+                  and history. It arrives once in this JSON response instead. */}
+              <Qr payload={pairing.qr} />
               <figcaption>Scan this in WhatsApp → Linked devices.</figcaption>
             </figure>
           )}
