@@ -38,8 +38,20 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
 
+    // Every state write goes through here.
+    //
+    // A superseded attempt must not describe the connection that replaced it.
+    // The reported case was the catch below marking a live replacement stream
+    // "stale" when an abandoned ticket request finally rejected; the same is
+    // true of every other write in this effect, so the guard lives in one
+    // place rather than being remembered at six call sites.
+    const publishState = (next: StreamState) => {
+      if (cancelled) return;
+      setState(next);
+    };
+
     async function connect(): Promise<void> {
-      setState("connecting");
+      publishState("connecting");
       try {
         // A ticket per connection, because each is single-use. This is the
         // handshake ADR-0008 describes: EventSource cannot send the key, so
@@ -54,13 +66,13 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
 
         source = new EventSource(`/v1/events/stream?ticket=${encodeURIComponent(ticket)}`);
 
-        source.addEventListener("stream.open", () => setState("live"));
+        source.addEventListener("stream.open", () => publishState("live"));
 
         // Overflow means this console fell behind and missed events. Marked
         // stale rather than left looking current, because the screen is now
         // wrong in a way it cannot detect from the events it did receive.
         source.addEventListener("stream.overflow", () => {
-          setState("stale");
+          publishState("stale");
           source?.close();
         });
 
@@ -78,12 +90,12 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
         source.onerror = () => {
           // EventSource reconnects on its own, but its ticket is spent, so the
           // retry would be refused forever. Close it and mint a fresh one.
-          setState("connecting");
+          publishState("connecting");
           source?.close();
           if (!cancelled) retry = setTimeout(() => void connect(), 2_000);
         };
       } catch {
-        setState("stale");
+        publishState("stale");
         if (!cancelled) retry = setTimeout(() => void connect(), 5_000);
       }
     }
