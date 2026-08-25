@@ -11,15 +11,25 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 
 import { useEventStream } from "../useEventStream";
 
+/**
+ * Everything this file replaces on globalThis, captured once.
+ *
+ * Restoring one and forgetting another is how a leak reaches a later file:
+ * bun test shares a process, so a SilentEventSource left installed here is the
+ * EventSource every subsequent test sees. The same shape as the patched static
+ * that produced two unrelated failures in the control-plane suite — restored as
+ * a set rather than individually, so adding a stub means adding it here.
+ */
+const REAL_GLOBALS = {
+  fetch: globalThis.fetch,
+  EventSource: (globalThis as { EventSource?: unknown }).EventSource,
+};
+
 afterEach(() => {
   cleanup();
-  restoreFetch();
+  globalThis.fetch = REAL_GLOBALS.fetch;
+  (globalThis as { EventSource?: unknown }).EventSource = REAL_GLOBALS.EventSource;
 });
-
-const realFetch = globalThis.fetch;
-function restoreFetch() {
-  globalThis.fetch = realFetch;
-}
 
 /** A minimal EventSource that never connects, so nothing races the assertions. */
 class SilentEventSource {
