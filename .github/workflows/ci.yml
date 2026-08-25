@@ -36,11 +36,25 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install dashboard dependencies
+        # A separate subproject with its own package.json and lockfile, by
+        # design (docs/07) — so the root install does not reach it, and the
+        # dashboard typecheck failed on a missing `react` the first time CI saw
+        # this branch.
+        working-directory: dashboard
+        run: bun install --frozen-lockfile
+
       - name: Typecheck
+        # Runs both projects; see the root package.json script.
         run: bun run typecheck
 
       - name: Test
-        run: bun test
+        # `bun run test`, not `bun test`. The root bunfig pins the test root to
+        # ./src so the control-plane runner does not try to execute component
+        # tests without a DOM — which means a bare `bun test` here would skip
+        # the dashboard suite entirely and report success for a project it
+        # never ran.
+        run: bun run test
 
       - name: Verify the schema has a migration generated for it
         # db:embed only reads the journal, so a schema.ts change with no
