@@ -27,9 +27,9 @@ design.
 ## How it fits together
 
 bunwa is a multi-tenant control plane. It does not talk to WhatsApp itself: an
-**engine** does, behind a seven-method `DeviceEngine` interface. gowa is engine
-#1, running on the container loopback; Baileys is planned as #2, at which point
-gowa becomes the fallback rather than the dependency.
+**engine** does, behind a seven-method `DeviceEngine` interface. gowa is
+engine 1, running on the container loopback; Baileys is planned as engine 2, at
+which point gowa becomes the fallback rather than the dependency.
 
 Devices are system-owned and global. A project claims a phone number, and the
 hierarchy above it is **Project → Environment → Virtual Device**, with the API

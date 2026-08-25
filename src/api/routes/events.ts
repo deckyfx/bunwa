@@ -11,6 +11,7 @@ import { Elysia, t } from "elysia";
 
 import { requireApiKey } from "../../auth/middleware";
 import { subscribe } from "../../events/bus";
+import type { EventEnvelope } from "../../events/schema";
 import { mintTicket, spendTicket } from "../../stores/stream-ticket-store";
 import { log } from "../../observability/logger";
 import { problem } from "../server";
@@ -24,8 +25,20 @@ import { problem } from "../server";
  */
 const HEARTBEAT_MS = 15_000;
 
+/**
+ * Everything this route can put on the wire.
+ *
+ * Named rather than `unknown`, so a future frame carrying something it should
+ * not — a raw row, an error with a stack — is a compile error instead of a
+ * payload a tenant receives.
+ */
+type StreamPayload =
+  | EventEnvelope
+  | { environmentId: string }
+  | { reason: string };
+
 /** One SSE frame. `\n\n` terminates it; anything less and the client waits. */
-function frame(event: string, data: unknown, id?: string): string {
+function frame(event: string, data: StreamPayload, id?: string): string {
   const lines = [
     id === undefined ? null : `id: ${id}`,
     `event: ${event}`,

@@ -72,8 +72,19 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
         // stale rather than left looking current, because the screen is now
         // wrong in a way it cannot detect from the events it did receive.
         source.addEventListener("stream.overflow", () => {
+          // Stale *and* reconnecting. close() stops onerror from ever firing,
+          // so without scheduling a retry here the console sat stale until the
+          // page was reloaded — and overflow is easy to reach: the bus drops a
+          // subscriber after twenty pending envelopes, which a backgrounded tab
+          // manages on its own. The server frame says "refetch and reconnect";
+          // only the refetch was implemented.
+          //
+          // Longer than the onerror delay on purpose: overflow means this
+          // client could not keep up, and reconnecting instantly invites the
+          // same outcome.
           publishState("stale");
           source?.close();
+          if (!cancelled) retry = setTimeout(() => void connect(), 5_000);
         });
 
         source.onmessage = (e) => handler.current("message", safeParse(e.data));

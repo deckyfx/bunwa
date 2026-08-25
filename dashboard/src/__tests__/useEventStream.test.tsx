@@ -89,6 +89,41 @@ describe("a superseded attempt does not describe the live one", () => {
     ).toBeNull();
   });
 
+  test("overflow schedules a reconnect rather than staying stale for ever", async () => {
+    // close() stops onerror firing, so overflow was terminal: the console sat
+    // stale until the page was reloaded. A backgrounded tab reaches overflow on
+    // its own — the bus drops a subscriber after twenty pending envelopes.
+    let ticketRequests = 0;
+    globalThis.fetch = (async () => {
+      ticketRequests += 1;
+      return new Response(JSON.stringify({ ticket: `t${String(ticketRequests)}` }), {
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+
+    // Captures the overflow listener so the test can fire it.
+    const listeners = new Map<string, () => void>();
+    class OverflowingEventSource {
+      onerror: (() => void) | null = null;
+      onmessage: (() => void) | null = null;
+      addEventListener(type: string, fn: () => void): void {
+        listeners.set(type, fn);
+      }
+      close(): void {}
+    }
+    (globalThis as { EventSource?: unknown }).EventSource = OverflowingEventSource;
+
+    render(<Probe apiKey="key-a" />);
+    await waitFor(() => expect(ticketRequests).toBe(1));
+
+    listeners.get("stream.overflow")?.();
+    await waitFor(() => expect(screen.getByText("stale")).toBeDefined());
+
+    // The reconnect is delayed on purpose; overflow means this client could not
+    // keep up, so retrying instantly invites the same outcome.
+    await waitFor(() => expect(ticketRequests).toBeGreaterThan(1), { timeout: 8_000 });
+  }, 15_000);
+
   test("no key means idle, not connecting", async () => {
     globalThis.fetch = (async () => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
     render(<Probe apiKey="" />);

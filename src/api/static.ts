@@ -22,17 +22,25 @@ export const DEFAULT_ASSET_ROOT = resolve(import.meta.dir, "..", "..", "dashboar
  * something already known is the kind of cost that only shows up under load.
  */
 export function createStaticHandler(root: string = DEFAULT_ASSET_ROOT): ((request: Request) => Promise<Response | null>) | null {
-  const indexPath = join(root, "index.html");
+  // Canonicalised once. A relative root left indexPath resolving correctly
+  // while `candidate` came back absolute, so the boundary check below compared
+  // an absolute path against a relative one and refused every request. The
+  // tests never saw it because they all pass mkdtemp paths, which are absolute.
+  const assetRoot = resolve(root);
+  const indexPath = join(assetRoot, "index.html");
   if (!Bun.file(indexPath).size) {
-    log.info("no console assets found; /app is not served", { root });
+    log.info("no console assets found; /app is not served", { root: assetRoot });
     return null;
   }
 
-  log.info("serving the console", { root });
+  log.info("serving the console", { root: assetRoot });
 
   return async (request: Request): Promise<Response | null> => {
     const url = new URL(request.url);
-    if (!url.pathname.startsWith("/app")) return null;
+    // The boundary matters: startsWith("/app") also claims /application and
+    // /app-old, and those would be answered with the console's index.html
+    // instead of reaching the API or a real 404.
+    if (url.pathname !== "/app" && !url.pathname.startsWith("/app/")) return null;
 
     // Decoded first, then normalised, then checked.
     //
@@ -52,7 +60,7 @@ export function createStaticHandler(root: string = DEFAULT_ASSET_ROOT): ((reques
     }
 
     const relative = normalize(decoded);
-    const candidate = resolve(root, `.${relative.startsWith("/") ? relative : `/${relative}`}`);
+    const candidate = resolve(assetRoot, `.${relative.startsWith("/") ? relative : `/${relative}`}`);
 
     // Unreachable today, and kept anyway.
     //
@@ -65,7 +73,7 @@ export function createStaticHandler(root: string = DEFAULT_ASSET_ROOT): ((reques
     // MAX(expires_at) in the rate limiter during stage 2, it was wrong, and
     // removing the guard cost a real bug. The cost here is three lines; the
     // cost of being wrong is serving whatever is above the asset root.
-    if (candidate !== root && !candidate.startsWith(root + "/")) {
+    if (candidate !== assetRoot && !candidate.startsWith(assetRoot + "/")) {
       log.warn("refused a path outside the asset root", { path: url.pathname });
       return new Response("Not found", { status: 404 });
     }

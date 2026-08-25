@@ -232,7 +232,7 @@ export function createServer(registry?: EngineRegistry) {
       // Static assets before the app, and outside it: they are not API routes,
       // they carry no tenancy, and running them through the auth middleware
       // would mean the console could not load the page that asks for a key.
-      if (serveConsole !== null && url.pathname.startsWith("/app")) {
+      if (serveConsole !== null && (url.pathname === "/app" || url.pathname.startsWith("/app/"))) {
         return withContext({ correlationId }, async () => {
           const asset = await serveConsole(identified);
           return asset ?? new Response("Not found", { status: 404 });

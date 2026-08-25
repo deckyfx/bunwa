@@ -9,7 +9,7 @@
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative as relativePath } from "node:path";
 
 import { createStaticHandler } from "../static";
 import { resetConfig } from "../../config/env";
@@ -85,6 +85,42 @@ describe("the full image serves it", () => {
   test("a request outside /app is not ours", async () => {
     const handler = createStaticHandler(installConsole())!;
     expect(await handler(get("/v1/devices"))).toBeNull();
+  });
+});
+
+describe("the /app boundary is a path segment, not a prefix", () => {
+  test("paths that merely start with the letters are not ours", async () => {
+    // startsWith("/app") also claims these, and answering them with the
+    // console's index.html hides whatever the API would have said — including
+    // a legitimate 404.
+    const handler = createStaticHandler(installConsole())!;
+    for (const path of ["/application", "/app-old", "/apps", "/appfoo/bar"]) {
+      expect(await handler(get(path)), `${path} was claimed by the console`).toBeNull();
+    }
+  });
+
+  test("the app root and anything beneath it are ours", async () => {
+    const handler = createStaticHandler(installConsole())!;
+    expect(await handler(get("/app"))).not.toBeNull();
+    expect(await handler(get("/app/"))).not.toBeNull();
+    expect(await handler(get("/app/devices"))).not.toBeNull();
+  });
+});
+
+describe("the asset root is canonicalised", () => {
+  test("a relative root still serves", async () => {
+    // With a relative root the resolved candidate came back absolute while the
+    // root stayed relative, so the boundary check compared the two and refused
+    // everything. Every existing test passes an absolute mkdtemp path, so none
+    // of them could see it.
+    const absolute = installConsole();
+    const relative = relativePath(process.cwd(), absolute);
+
+    const handler = createStaticHandler(relative);
+    expect(handler, "a relative root produced no handler at all").not.toBeNull();
+    const res = await handler!(get("/app"));
+    expect(res?.status).toBe(200);
+    expect(await res!.text()).toContain("console");
   });
 });
 
