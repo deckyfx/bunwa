@@ -149,6 +149,18 @@ reviews:
         MigrationManager.buildSequence(): pinning the values against the thing
         they exist to pin would make the test vacuous.
 
+    - path: "src/stores/stream-ticket-store.ts"
+      instructions: >-
+        Do not ask for spendTicket to take or bind an environmentId. At
+        GET /v1/events/stream there is no authenticated caller — the ticket is
+        the credential and the environment is what it resolves to, so a
+        caller-supplied environmentId would let the caller assert the tenancy
+        the ticket exists to prove. The binding is enforced in mintTicket,
+        which runs behind x-api-key and verifies the key belongs to the
+        environment. sweepTickets is cross-tenant for the same reason the
+        rate-limit sweep is: housekeeping run by the process, with no request
+        and no environment to scope to.
+
     - path: "src/tools/**"
       instructions: >-
         Diagnostic tooling, not production code. Hold it to a lower bar for

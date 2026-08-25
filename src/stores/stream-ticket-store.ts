@@ -98,6 +98,13 @@ export async function mintTicket(
  * Expiry is part of the same predicate for the same reason — checking it
  * separately leaves a window where a ticket expires between the check and the
  * delete.
+ *
+ * Takes no environmentId, deliberately, and a review has asked for one. At
+ * GET /v1/events/stream there is no authenticated caller: the ticket *is* the
+ * credential, and the environment is what it resolves to. A caller-supplied
+ * environmentId there would let the caller assert the tenancy this function
+ * exists to establish, which is weaker than having no parameter at all. The
+ * binding is made where it can be trusted — mintTicket, behind x-api-key.
  */
 export async function spendTicket(
   ticket: string,
