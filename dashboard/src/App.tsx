@@ -9,6 +9,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { api, ApiError, type VirtualDevice, type Whoami } from "./api";
+import { ClaimScreen } from "./ClaimScreen";
 
 /** Where the key lives between reloads. */
 const KEY_STORAGE = "bunwa.console.key";
@@ -105,17 +106,19 @@ export function App() {
       {who !== null && (
         <section aria-labelledby="ctx">
           <h2 id="ctx">
-            {who.project.slug} / {who.environment.slug}
+            {who.projectId} / {who.environmentId}
           </h2>
           <p>{who.scopes.length} scope(s)</p>
         </section>
       )}
 
+      {who !== null && <ClaimScreen apiKey={key} onClaimed={() => void load(key)} />}
+
       {devices !== null && (
         <section aria-labelledby="devices">
           <h2 id="devices">Virtual devices</h2>
           {devices.length === 0 ? (
-            <p>None yet. Claiming a number is the next screen.</p>
+            <p>None yet. Claim one above.</p>
           ) : (
             <table>
               <thead>
@@ -127,10 +130,10 @@ export function App() {
               </thead>
               <tbody>
                 {devices.map((d) => (
-                  <tr key={d.id}>
+                  <tr key={d.virtualDeviceId}>
                     <td>{d.alias}</td>
                     <td>{d.status}</td>
-                    <td>{d.phoneNumber ?? "—"}</td>
+                    <td>{d.msisdn ?? "—"}</td>
                   </tr>
                 ))}
               </tbody>

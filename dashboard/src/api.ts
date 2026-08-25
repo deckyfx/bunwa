@@ -8,19 +8,55 @@
  * discipline the Baileys port module is under.
  */
 
-/** What the console is allowed to do, from the key it was given. */
+/**
+ * What the console is allowed to do, from the key it was given.
+ *
+ * Both of these were first written from imagination and both were wrong:
+ * Whoami had nested project/environment objects with slugs, and VirtualDevice
+ * had `id`, `phoneNumber` and a `lastSeenAt` that does not exist. The console
+ * rendered "undefined / undefined" against a live API.
+ *
+ * That is precisely the drift Eden Treaty exists to make impossible, and
+ * deferring it produced the bug inside one commit. Until the api-types build
+ * artefact docs/07 describes exists, these are transcribed from the routes and
+ * pinned by a contract test in the API suite, so drift fails there rather than
+ * in a browser.
+ */
 export interface Whoami {
-  project: { id: string; slug: string };
-  environment: { id: string; slug: string };
+  projectId: string;
+  environmentId: string;
   scopes: string[];
 }
 
 export interface VirtualDevice {
-  id: string;
+  virtualDeviceId: string;
   alias: string;
   status: string;
-  phoneNumber: string | null;
-  lastSeenAt: string | null;
+  scopes: string[];
+  msisdn: string | null;
+  deviceState: string;
+}
+
+/**
+ * What claiming a number can produce.
+ *
+ * Three outcomes, and docs/07 is explicit that they must feel like one flow.
+ * The third is the one that matters: the delay is a person deciding, not a
+ * system being slow, and a UI that renders it as a spinner teaches the wrong
+ * thing.
+ */
+export type ClaimOutcome = "pending_pairing" | "active" | "awaiting_confirmation";
+
+export interface ClaimResult {
+  outcome: ClaimOutcome;
+  virtualDevice: { id: string; alias: string };
+  pairing?: {
+    method: string;
+    qr?: string;
+    pairCode?: string;
+    expiresAt: string;
+  };
+  message?: string;
 }
 
 export class ApiError extends Error {
@@ -67,4 +103,10 @@ async function call<T>(path: string, key: string, init: RequestInit = {}): Promi
 export const api = {
   whoami: (key: string) => call<Whoami>("/v1/whoami", key),
   devices: (key: string) => call<VirtualDevice[]>("/v1/devices", key),
+  claim: (key: string, msisdn: string, alias: string) =>
+    call<ClaimResult>("/v1/devices/claim", key, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ msisdn, alias }),
+    }),
 };
