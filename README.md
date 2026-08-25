@@ -2,8 +2,9 @@
 
 A Bun/TypeScript rewrite of [gowa](https://github.com/aldinokemal/go-whatsapp-web-multidevice) — a WhatsApp Web multi-device HTTP API — plus features the original does not have.
 
-> Side project. The control plane works and is tested; no dashboard yet, and it
-> has not run against a real device outside stage-0 measurement.
+> Side project. The control plane works and is tested, and a first console
+> screen claims a number, shows a scannable QR and watches webhook deliveries.
+> It has still never run against a real device outside stage-0 measurement.
 
 ## Status
 
@@ -12,11 +13,13 @@ A Bun/TypeScript rewrite of [gowa](https://github.com/aldinokemal/go-whatsapp-we
 | 0 — Understand gowa | ✅ | Measured against a live instance; findings in [docs/12](docs/12-stage0-findings.md) |
 | 1 — Control plane | ✅ | Tenancy, consent, messaging, rules, durable webhook delivery |
 | 2 — Hardening | ✅ | Verified backups, rate limits, pressure signals, housekeeping |
-| 3 — Dashboard | 🚧 | In progress — separate subproject, shippable as `api` or `api+dashboard` |
+| 3 — Dashboard | 🚧 | Project console: claim, QR, deliveries, live over SSE. No operator console, routing, styling or image build yet |
 | 4 — Pivot to Baileys | ⏳ | Replace gowa as the engine ([roadmap](docs/08-roadmap.md)) |
 | 5 — Features | ⏳ | Ordered by real usage, not novelty |
 
-418 tests, `tsc --noEmit` clean. Known gaps are recorded in
+458 tests across two suites — 454 control plane, 4 dashboard — and
+`tsc --noEmit` clean on both. `bun install` covers both projects; the dashboard
+is a workspace. Known gaps are recorded in
 [`todo.txt`](todo.txt) rather than left implicit — including two deferred
 security items and two places where the implementation does not yet match the
 design.
