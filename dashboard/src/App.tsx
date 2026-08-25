@@ -53,6 +53,11 @@ export function App() {
   // Bumped by any event, so children refetch without each opening its own
   // stream — docs/07 wants one connection per console, not one per widget.
   const [revision, setRevision] = useState(0);
+  // Bumped by every submit, so resubmitting the *same* key still reloads.
+  // Clearing state before setKey broke retry: setKey(draft) with an unchanged
+  // draft is a no-op, so the effect never re-ran and the console sat blank
+  // with no way back except a page refresh.
+  const [attempt, setAttempt] = useState(0);
 
   // Only the newest load may commit.
   //
@@ -104,7 +109,7 @@ export function App() {
 
   useEffect(() => {
     void load(key);
-  }, [key, load]);
+  }, [key, load, attempt]);
 
   // Live rather than polled. Any device event means the list on screen is out
   // of date, so it is refetched — the event says *that* something changed, and
@@ -136,6 +141,7 @@ export function App() {
           setError(null);
           storeKey(draft);
           setKey(draft);
+          setAttempt((a) => a + 1);
         }}
       >
         <label htmlFor="apikey">API key</label>

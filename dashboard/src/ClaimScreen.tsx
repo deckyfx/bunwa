@@ -8,7 +8,7 @@
  * rate-limits claims per environment and why this screen says plainly that the
  * wait is human.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { api, ApiError, type ClaimResult } from "./api";
 import { Qr } from "./Qr";
@@ -25,23 +25,40 @@ export function ClaimScreen({ apiKey, onClaimed }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Two guards, because they catch different things: the counter drops a
+  // superseded submission, and the ref catches the key changing underneath one.
+  const generation = useRef(0);
+  const apiKeyRef = useRef(apiKey);
+  apiKeyRef.current = apiKey;
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    // Captured before awaiting, and checked after. A claim started under one
+    // key can resolve after the console has connected with another: the
+    // continuation would then call onClaimed(), which reloads using the key
+    // this closure captured — showing one project's data under another
+    // project's credential.
+    const startedWith = apiKey;
+    const mine = ++generation.current;
+    const current = () => generation.current === mine && startedWith === apiKeyRef.current;
+
     setBusy(true);
     setError(null);
     setResult(null);
     try {
-      const claimed = await api.claim(apiKey, msisdn, alias);
+      const claimed = await api.claim(startedWith, msisdn, alias);
+      if (!current()) return;
       setResult(claimed);
       onClaimed();
     } catch (err) {
+      if (!current()) return;
       setError(
         err instanceof ApiError
           ? `${err.message}${err.detail === null ? "" : ` — ${err.detail}`}`
           : "could not reach the API",
       );
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }
 
