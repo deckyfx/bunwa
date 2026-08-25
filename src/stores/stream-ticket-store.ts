@@ -5,10 +5,11 @@
  * send headers, so the stream cannot use `x-api-key` like everything else. A
  * ticket is minted with the key, spent once, and expires in seconds.
  */
-import { and, eq, gt, lt, sql } from "drizzle-orm";
+import { and, eq, gt, isNull, lte } from "drizzle-orm";
 
 import { db, type Database } from "../db";
-import { streamTickets } from "../db/schema";
+import { apiKeys, streamTickets } from "../db/schema";
+import { ValidationError } from "./errors";
 
 /**
  * How long a ticket is good for.
@@ -48,6 +49,30 @@ export async function mintTicket(
   now: Date = new Date(),
   database: Database = db(),
 ): Promise<MintedTicket> {
+  // The pair is verified, not trusted. Two independent foreign keys let a row
+  // pair any key with any environment, and a store that accepts the pair is one
+  // route bug away from minting a stream credential for someone else's tenant.
+  // The test file demonstrated exactly that and read as though it were fine.
+  //
+  // Scoped by environment, which is also what the path instruction for stores
+  // requires, and it confirms the key is live at the same time: a revoked or
+  // expired key must not be able to open a stream that outlives it.
+  const [key] = await database
+    .select({ id: apiKeys.id })
+    .from(apiKeys)
+    .where(
+      and(
+        eq(apiKeys.id, apiKeyId),
+        eq(apiKeys.environmentId, environmentId),
+        isNull(apiKeys.revokedAt),
+      ),
+    )
+    .limit(1);
+
+  if (key === undefined) {
+    throw new ValidationError("api key does not belong to that environment", "apiKeyId");
+  }
+
   const ticket = crypto.randomUUID().replaceAll("-", "") + crypto.randomUUID().replaceAll("-", "");
   const expiresAt = new Date(now.getTime() + TICKET_TTL_MS);
 
@@ -98,15 +123,32 @@ export async function spendTicket(
  * table grows by one row per page load for ever.
  */
 export async function sweepTickets(now: Date = new Date(), database: Database = db()): Promise<number> {
+  // Deliberately every tenant, like the rate-limit sweep: this is housekeeping
+  // run by the process, not a request, and there is no environment to scope it
+  // to. Scoping it would mean iterating tenants to do one indexed delete.
+  //
+  // `lte`, not `lt`. spendTicket requires expiresAt > now, so a ticket at
+  // exactly its expiry is already unusable — leaving it behind means the table
+  // retains rows nobody can spend, which is the thing this exists to prevent.
   const removed = await database
     .delete(streamTickets)
-    .where(lt(streamTickets.expiresAt, now))
+    .where(lte(streamTickets.expiresAt, now))
     .returning({ tokenHash: streamTickets.tokenHash });
   return removed.length;
 }
 
-/** How many unspent tickets exist. For tests, and for /metrics if it earns a line. */
-export async function ticketCount(database: Database = db()): Promise<number> {
-  const [row] = await database.all<{ n: number }>(sql`SELECT COUNT(*) AS n FROM stream_tickets`);
-  return Number(row?.n ?? 0);
+/**
+ * Unspent tickets for one environment.
+ *
+ * Scoped, and through Drizzle rather than the raw handle. It was neither: a
+ * cross-tenant `SELECT COUNT(*)` in a store is the shape that becomes a leak
+ * the moment someone returns it from a route, and "it is only used by tests"
+ * is not a property the next caller inherits.
+ */
+export async function ticketCount(environmentId: string, database: Database = db()): Promise<number> {
+  const rows = await database
+    .select({ tokenHash: streamTickets.tokenHash })
+    .from(streamTickets)
+    .where(eq(streamTickets.environmentId, environmentId));
+  return rows.length;
 }

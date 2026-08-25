@@ -10,10 +10,11 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 import { createDatabase, resetDatabase, type Database } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
+import { streamTickets } from "../../db/schema";
 import { ProjectStore } from "../project-store";
 import { EnvironmentStore } from "../environment-store";
 import { ApiKeyStore } from "../api-key-store";
@@ -27,7 +28,9 @@ let dir: string;
 let database: Database;
 let environmentId: string;
 let otherEnvironmentId: string;
+let projectId: string;
 let apiKeyId: string;
+let otherApiKeyId: string;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "bunwa-ticket-"));
@@ -41,6 +44,7 @@ beforeEach(async () => {
   await MigrationManager.runMigrations(database);
 
   const project = await ProjectStore.create({ slug: "grande", displayName: "Grande" }, database);
+  projectId = project.id;
   const environment = await EnvironmentStore.create({ projectId: project.id, slug: "production" }, database);
   environmentId = environment.id;
   const other = await EnvironmentStore.create({ projectId: project.id, slug: "staging" }, database);
@@ -51,6 +55,12 @@ beforeEach(async () => {
     database,
   );
   apiKeyId = key.apiKey.id;
+
+  const otherKey = await ApiKeyStore.create(
+    { projectId: project.id, environmentId: otherEnvironmentId, label: "staging console", scopes: ["send:text"] },
+    database,
+  );
+  otherApiKeyId = otherKey.apiKey.id;
 });
 
 afterEach(() => {
@@ -92,9 +102,9 @@ describe("a ticket is spendable exactly once", () => {
 
   test("spending removes the row rather than marking it", async () => {
     const { ticket } = await mintTicket(environmentId, apiKeyId, new Date(0), database);
-    expect(await ticketCount(database)).toBe(1);
+    expect(await ticketCount(environmentId, database)).toBe(1);
     await spendTicket(ticket, new Date(1_000), database);
-    expect(await ticketCount(database)).toBe(0);
+    expect(await ticketCount(environmentId, database)).toBe(0);
   });
 });
 
@@ -122,10 +132,30 @@ describe("a ticket stops working when it should", () => {
 describe("a ticket authorises one environment", () => {
   test("it resolves to the environment it was minted for, not another", async () => {
     const mine = await mintTicket(environmentId, apiKeyId, new Date(0), database);
-    const theirs = await mintTicket(otherEnvironmentId, apiKeyId, new Date(0), database);
+    const theirs = await mintTicket(otherEnvironmentId, otherApiKeyId, new Date(0), database);
 
     expect((await spendTicket(mine.ticket, new Date(1), database))?.environmentId).toBe(environmentId);
     expect((await spendTicket(theirs.ticket, new Date(1), database))?.environmentId).toBe(otherEnvironmentId);
+  });
+
+  test("a key cannot mint a ticket for an environment it does not belong to", async () => {
+    // The earlier version of the test above did exactly this and passed,
+    // demonstrating the hole while reading as coverage: two independent foreign
+    // keys let a row pair any key with any environment, so the store would
+    // happily issue a stream credential for another tenant.
+    await expect(mintTicket(otherEnvironmentId, apiKeyId, new Date(0), database)).rejects.toThrow(
+      /does not belong/,
+    );
+    expect(await ticketCount(otherEnvironmentId, database)).toBe(0);
+  });
+
+  test("a revoked key cannot mint a ticket", async () => {
+    // A stream opened by a revoked key would outlive the revocation by as long
+    // as the connection stays up, which is unbounded.
+    await ApiKeyStore.revoke(projectId, environmentId, apiKeyId, database);
+    await expect(mintTicket(environmentId, apiKeyId, new Date(0), database)).rejects.toThrow(
+      /does not belong/,
+    );
   });
 });
 
@@ -135,10 +165,13 @@ describe("the ticket itself is never stored", () => {
     // no reason to leave a spendable credential in one.
     const { ticket } = await mintTicket(environmentId, apiKeyId, new Date(0), database);
 
-    const rows = database.all<{ token_hash: string }>(sql`SELECT token_hash FROM stream_tickets`);
+    const rows = await database
+      .select({ tokenHash: streamTickets.tokenHash })
+      .from(streamTickets)
+      .where(eq(streamTickets.environmentId, environmentId));
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.token_hash).not.toBe(ticket);
-    expect(rows[0]!.token_hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(rows[0]!.tokenHash).not.toBe(ticket);
+    expect(rows[0]!.tokenHash).toMatch(/^[0-9a-f]{64}$/);
   });
 });
 
@@ -149,10 +182,10 @@ describe("unspent tickets do not accumulate", () => {
     await mintTicket(environmentId, apiKeyId, new Date(0), database);
     await mintTicket(environmentId, apiKeyId, new Date(0), database);
     await mintTicket(environmentId, apiKeyId, new Date(TICKET_TTL_MS), database);
-    expect(await ticketCount(database)).toBe(3);
+    expect(await ticketCount(environmentId, database)).toBe(3);
 
     const removed = await sweepTickets(new Date(TICKET_TTL_MS + 1), database);
     expect(removed).toBe(2);
-    expect(await ticketCount(database)).toBe(1);
+    expect(await ticketCount(environmentId, database)).toBe(1);
   });
 });
