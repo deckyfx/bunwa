@@ -23,7 +23,11 @@ const server = Bun.serve({
     // Only /v1 is proxied. A catch-all would forward the SPA's own asset
     // requests to the API and turn a missing file into a confusing 404 from
     // the wrong server.
-    if (url.pathname.startsWith("/v1")) {
+    //
+    // Matched as a path segment: startsWith("/v1") also claims /v10 and
+    // /v1-debug, which is the same mistake /app carried until a review found
+    // it. Fixing that one without grepping for the pattern left this one.
+    if (url.pathname === "/v1" || url.pathname.startsWith("/v1/")) {
       const target = new URL(url.pathname + url.search, API);
       return fetch(new Request(target, request));
     }
