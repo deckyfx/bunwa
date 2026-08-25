@@ -1,7 +1,15 @@
 # ADR-0007 — gowa is the v1 engine; Baileys is engine #2
 
-**Status:** Accepted · 2026-08-22 · Supersedes the provisional position in
-[ADR-0002](0002-engine-adapter.md) on *when* the native engine arrives
+**Status:** Accepted · 2026-08-22 · Amended 2026-08-25 · Supersedes the
+provisional position in [ADR-0002](0002-engine-adapter.md) on *when* the native
+engine arrives
+
+> **Amendment, 2026-08-25.** The conditional framing below — Baileys "if and
+> only if" gowa becomes a bottleneck — is withdrawn. Baileys is now a committed
+> stage 4, and the reasoning is in the amendment at the end of this document.
+> Everything above that section is preserved as the v1 decision it was, because
+> the v1 decision was correct and the reasons it was correct still explain the
+> shape of the system.
 
 ## Context
 
@@ -70,3 +78,59 @@ control plane is live, against the triggers listed in
 **Deferred, not abandoned:** the Unix socket transport and the three gowa
 patches from [ADR-0006](0006-unix-socket-transport.md) remain worthwhile, and
 should be pursued as upstream pull requests rather than as a maintained fork.
+
+---
+
+## Amendment · 2026-08-25 · Baileys becomes a committed stage 4
+
+The original decision was "gowa for v1, Baileys if it earns its way in". v1 is
+built, so the condition it was waiting on has been answered a different way: the
+job gowa was chosen to avoid — writing a WhatsApp client while also writing a
+control plane — is no longer the thing at risk. The control plane exists, is
+tested, and is engine-agnostic.
+
+### What the merged tree actually shows
+
+Not an estimate. Measured on stage-2 at merge:
+
+- `DeviceEngine` is seven methods.
+- Coupling to gowa outside `src/engine/gowa/` is **14 lines across six files**.
+  Five of those are the composition root, where coupling belongs. The only real
+  leak is a hardcoded `choosePool("gowa", …)` in the pairing route.
+- The conformance suite runs against any engine through a harness, so a new
+  adapter inherits eight behavioural guarantees on day one.
+
+The abstraction ADR-0002 argued for held under two stages of pressure. That is
+the evidence that made this reopenable without it being a rewrite.
+
+### What has not changed, and must not be waved through
+
+The original decision rested on OTP being unforgiving traffic and on
+protocol-maintenance response time being a product concern. Both still hold, and
+Baileys being unofficial does not make them go away. Three obligations transfer
+to bunwa with the pivot:
+
+1. **Session state.** gowa owns multi-device credentials today. Under Baileys,
+   bunwa owns them: encrypted at rest, per device, surviving restart and
+   restore-from-backup. Losing them means every customer re-pairs. This is the
+   highest-consequence data in the system and it does not exist yet.
+2. **In-process sockets.** `enginePoolId` bounds blast radius because a gowa
+   container is a separate process ([ADR-0003](0003-process-isolation.md)).
+   In-process, a pool no longer means what it meant.
+3. **The 203-second blind window** ([12](../12-stage0-findings.md)) is a *gowa*
+   measurement, and the ack timeout exists because of it. Baileys may be far
+   better. Stage 0 gets re-run rather than assumed.
+
+### The constraint that makes this survivable
+
+Baileys moves quickly and breaks. One module —
+`src/engine/baileys/socket.ts` — may import from the library; the adapter
+depends on that port and never on library types, and no Baileys type appears in
+a `DeviceEngine` signature. A path instruction and a test enforce it, so an
+import added elsewhere fails rather than being discovered during an upgrade.
+
+### Consequence
+
+The gowa adapter stays. Two working engines is the failover ADR-0002 described,
+it costs one directory, and it is the cheapest insurance available against a
+Baileys regression on OTP traffic.

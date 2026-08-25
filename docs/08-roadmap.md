@@ -238,39 +238,77 @@ the console. Both image tags build and run from one CI pipeline.
 
 ---
 
-## Stage 4 — Native Bun engine *(optional)*
+## Stage 4 — Pivot to Baileys
 
-**Goal:** remove the gowa dependency — if, and only if, it is worth it.
-**Estimate:** 8–12 weeks. Detail in [ADR-0002](adr/0002-engine-adapter.md).
+**Goal:** make Baileys the primary engine and drop the gowa dependency.
+**Estimate:** 8–12 weeks. Detail in [ADR-0002](adr/0002-engine-adapter.md),
+[ADR-0007](adr/0007-gowa-engine-for-v1.md), [09](09-baileys-option.md),
+[11](11-engine-decision.md).
 
-Enter this stage only when at least one is true
-([11](11-engine-decision.md)):
+This was previously written as *optional*, entered only if gowa became a
+bottleneck. It is now a decision: gowa was chosen for v1 to get a working
+control plane without also writing a WhatsApp client, and that job is done.
 
-- gowa's release cadence has become a bottleneck on a bug you have reported
-- Operating a second language runtime is a measurable operational cost
-- A required capability is unreachable through gowa's API
-- Per-device resource cost via gowa is demonstrably limiting density
-- You want the two-engine failover: a WhatsApp change that breaks one library is
-  survivable by migrating devices to the other
+### What the engine abstraction already buys
 
-If none holds, **do not start it.** "It would be nicer if it were all
-TypeScript" is a preference, not a business case, and this document exists partly
-to make that distinction hard to blur later.
+Measured on the merged stage-2 tree, not estimated:
 
-When it does start:
+- `DeviceEngine` is **seven methods** — `provision`, `startPairing`, `logout`,
+  `purge`, `status`, `send`, `subscribe`.
+- Code coupling to gowa outside `src/engine/gowa/` is **14 lines** across six
+  files: the composition root in `index.ts` (5), `GOWA_BASE_URL` in
+  `config/env.ts` (4), a hardcoded `choosePool("gowa", …)` in
+  `api/routes/devices.ts` (2), and one line each in `engine/types.ts`,
+  `db/schema.ts` and `stores/device-store.ts`. Everything else mentioning gowa
+  is a comment citing the stage-0 measurements.
+- The **conformance suite runs against any engine** through a harness, so a new
+  adapter inherits eight behavioural guarantees the day it compiles.
 
-1. Baileys adapter implementing `DeviceEngine` — ~2,000–2,500 lines under the
-   v1 scope ([11](11-engine-decision.md))
-2. **Run the stage-1 conformance suite** — the pass rate is the readiness metric
-3. Shadow mode: native engine receives events, output diffed against gowa, no
-   traffic served
-4. Migrate one internal device via `POST /admin/v1/devices/{id}/migrate`
-5. Migrate by cohort, with rollback at every step
-6. Keep the gowa adapter permanently as a fallback — it is cheap insurance
-   against a Baileys regression
+The `choosePool("gowa", …)` line is the only genuine leak, and it should be
+config-driven before the pivot rather than during it.
 
-**Exit criteria:** conformance parity, 30 days of a production cohort on native
-with no regression in delivery rate or reconnect latency.
+### Keeping a Baileys change to a few files
+
+Baileys is unofficial and moves quickly, so the requirement is that a breaking
+change upstream lands in one place:
+
+1. **A single port module** — `src/engine/baileys/socket.ts` — is the only file
+   permitted to import from `@whiskeysockets/baileys`. It exposes the narrow
+   surface bunwa needs and nothing else.
+2. The adapter (`src/engine/baileys/adapter.ts`) depends on that port, never on
+   library types. No Baileys type appears in a `DeviceEngine` signature — that
+   is what makes the engine replaceable at all.
+3. A CodeRabbit path instruction and a test assert rule 1, so an import added
+   elsewhere fails rather than being noticed later.
+4. Pin the version. Upgrade deliberately, with the conformance suite as the gate.
+
+### Sequence
+
+1. Config-drive the engine kind, removing the hardcoded `"gowa"` from the
+   pairing route; add `baileys` to `EngineKind` and the `engine_kind` enum
+   (migration).
+2. The port module, then the adapter — ~2,000–2,500 lines under v1 scope
+   ([11](11-engine-decision.md)). Far larger than `GowaAdapter`'s 459, because
+   that one delegates to gowa over HTTP while this one *is* the client.
+3. **Session persistence.** gowa owns multi-device credentials today; bunwa
+   would own them — encrypted at rest, per device, surviving restarts. Losing
+   them means every customer re-pairs, so this is the highest-consequence data
+   in the system and needs its own design before any traffic depends on it.
+4. **Re-run stage 0 against Baileys.** The 203-second blind window in
+   [12](12-stage0-findings.md) is a gowa measurement. Baileys exposes connection
+   state directly and may be much better — "may" is not a basis for removing
+   the ack timeout that measurement justified.
+5. Rethink pools. `enginePoolId` bounds blast radius because a gowa container is
+   a separate process; in-process sockets share a process with request handling,
+   so what a pool *means* changes.
+6. Shadow mode, then migrate one internal device, then by cohort, rollback at
+   every step.
+7. **Keep the gowa adapter.** Two working engines is the failover ADR-0002 was
+   written for, and it costs one directory.
+
+**Exit criteria:** conformance parity, session state provably surviving restart
+and restore-from-backup, stage 0 re-measured, and 30 days of a production cohort
+on Baileys with no regression in delivery rate or reconnect latency.
 
 ---
 

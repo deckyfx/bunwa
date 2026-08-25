@@ -2,17 +2,36 @@
 
 A Bun/TypeScript rewrite of [gowa](https://github.com/aldinokemal/go-whatsapp-web-multidevice) — a WhatsApp Web multi-device HTTP API — plus features the original does not have.
 
-> Side project. Early stage, nothing works yet.
+> Side project. The control plane works and is tested; no dashboard yet, and it
+> has not run against a real device outside stage-0 measurement.
 
 ## Status
 
-| Stage | State |
-| --- | --- |
-| Project scaffold | ✅ |
-| WhatsApp connection | ⏳ |
-| REST API | ⏳ |
-| Webhooks | ⏳ |
-| Web UI | ⏳ |
+| Stage | State | What it means |
+| --- | --- | --- |
+| 0 — Understand gowa | ✅ | Measured against a live instance; findings in [docs/12](docs/12-stage0-findings.md) |
+| 1 — Control plane | ✅ | Tenancy, consent, messaging, rules, durable webhook delivery |
+| 2 — Hardening | ✅ | Verified backups, rate limits, pressure signals, housekeeping |
+| 3 — Dashboard | 🚧 | In progress — separate subproject, shippable as `api` or `api+dashboard` |
+| 4 — Pivot to Baileys | ⏳ | Replace gowa as the engine ([roadmap](docs/08-roadmap.md)) |
+| 5 — Features | ⏳ | Ordered by real usage, not novelty |
+
+418 tests, `tsc --noEmit` clean. Known gaps are recorded in
+[`todo.txt`](todo.txt) rather than left implicit — including two deferred
+security items and two places where the implementation does not yet match the
+design.
+
+## How it fits together
+
+bunwa is a multi-tenant control plane. It does not talk to WhatsApp itself: an
+**engine** does, behind a seven-method `DeviceEngine` interface. gowa is engine
+#1, running on the container loopback; Baileys is planned as #2, at which point
+gowa becomes the fallback rather than the dependency.
+
+Devices are system-owned and global. A project claims a phone number, and the
+hierarchy above it is **Project → Environment → Virtual Device**, with the API
+key scoped to an environment. If a number is already paired to another project,
+the holder is asked to confirm over WhatsApp before the claim completes.
 
 ## Requirements
 

@@ -4,6 +4,13 @@
 provisional answer in [09](09-baileys-option.md), which assumed full gowa
 feature parity.*
 
+> **2026-08-25.** The condition below — "start once the control plane is live"
+> — is met. Stages 0 through 2 are merged, so Baileys is now a committed stage
+> 4 rather than a planned one. See the amendment to
+> [ADR-0007](adr/0007-gowa-engine-for-v1.md) for what the merged tree measured
+> and which obligations transfer with the pivot. The analysis below is unchanged
+> and still explains why gowa was right for v1.
+
 ## Decision
 
 **gowa for v1 — unmodified, on container loopback. Baileys as engine #2,
