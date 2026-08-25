@@ -8,8 +8,8 @@
   "scripts": {
     "dev": "bun --watch run src/index.ts",
     "start": "bun run src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "bun test",
+    "typecheck": "tsc --noEmit && cd dashboard && tsc --noEmit",
+    "test": "bun test && cd dashboard && bun test",
     "reference:update": "./scripts/update-reference.sh",
     "stage0:up": "docker compose -f deploy/stage0/docker-compose.yml up -d",
     "stage0:down": "docker compose -f deploy/stage0/docker-compose.yml down",
@@ -25,7 +25,8 @@
     "db:studio": "drizzle-kit studio",
     "db:embed": "bun run scripts/embed-migrations.ts",
     "build": "bun run db:embed && bun run typecheck && bun build --compile --outfile dist/bunwa src/index.ts",
-    "backup": "bun run src/ops/backup-cli.ts"
+    "backup": "bun run src/ops/backup-cli.ts",
+    "dashboard:dev": "cd dashboard && bun run dev"
   },
   "devDependencies": {
     "@types/bun": "^1.4.0",

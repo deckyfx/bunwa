@@ -10,7 +10,7 @@
  * attempts is a very different situation from `pending` with none: the first is
  * a failing endpoint backing off, the second is work that has not started.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type Delivery } from "./api";
 
@@ -25,11 +25,21 @@ export function Deliveries({ apiKey, revision }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [replaying, setReplaying] = useState<string | null>(null);
 
+  // Only the newest request may commit, for the same reason as the console
+  // above: revision is bumped by every event, events arrive in bursts, and
+  // whichever response resolves last would otherwise win — replacing a current
+  // list with an older snapshot, or an error from a request already superseded.
+  const generation = useRef(0);
+
   const load = useCallback(async () => {
+    const mine = ++generation.current;
     try {
-      setRows(await api.deliveries(apiKey));
+      const listed = await api.deliveries(apiKey);
+      if (generation.current !== mine) return;
+      setRows(listed);
       setError(null);
     } catch (err) {
+      if (generation.current !== mine) return;
       setError(err instanceof ApiError ? err.message : "could not load deliveries");
     }
   }, [apiKey]);

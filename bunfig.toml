@@ -1,0 +1,6 @@
+[test]
+# The control plane only. The dashboard is a separate subproject with its own
+# runner and its own happy-dom preload; scanned from here its component tests
+# run without a document and fail. `bun test src` does not help — the argument
+# is a filter, and it matches dashboard/src too.
+root = "./src"

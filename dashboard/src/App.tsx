@@ -6,7 +6,7 @@
  * the first one: prove the key, then show what it can see. Routing arrives when
  * there is a second screen to route to.
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type VirtualDevice, type Whoami } from "./api";
 import { ClaimScreen } from "./ClaimScreen";
@@ -54,7 +54,19 @@ export function App() {
   // stream — docs/07 wants one connection per console, not one per widget.
   const [revision, setRevision] = useState(0);
 
+  // Only the newest load may commit.
+  //
+  // Events arrive in bursts, so several loads can be in flight at once, and
+  // whichever resolves last wins regardless of which was asked for last. An
+  // older response then overwrites a newer one — including restoring a project
+  // after the key was cleared, which puts authenticated data back on screen
+  // with no credential behind it.
+  const generation = useRef(0);
+
   const load = useCallback(async (withKey: string) => {
+    const mine = ++generation.current;
+    const current = () => generation.current === mine;
+
     if (withKey === "") {
       // Cleared, not just skipped. Returning early left the previous project
       // and its devices on screen with no credential behind them, which reads
@@ -70,9 +82,14 @@ export function App() {
       // whoami first: it is the cheapest way to tell a bad key from a working
       // key with nothing behind it, and those need different messages.
       const identity = await api.whoami(withKey);
+      if (!current()) return;
       setWho(identity);
-      setDevices(await api.devices(withKey));
+
+      const listed = await api.devices(withKey);
+      if (!current()) return;
+      setDevices(listed);
     } catch (err) {
+      if (!current()) return;
       setWho(null);
       setDevices(null);
       setError(
@@ -81,7 +98,7 @@ export function App() {
           : "could not reach the API",
       );
     } finally {
-      setBusy(false);
+      if (current()) setBusy(false);
     }
   }, []);
 
@@ -110,6 +127,13 @@ export function App() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          // Cleared before the new key is applied. Without this the previous
+          // project stays on screen while the new key is being checked, and a
+          // stalled request leaves it there indefinitely — showing one
+          // project's data under another project's credential.
+          setWho(null);
+          setDevices(null);
+          setError(null);
           storeKey(draft);
           setKey(draft);
         }}
