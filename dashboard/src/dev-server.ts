@@ -15,6 +15,11 @@ const server = Bun.serve({
   port: PORT,
   routes: {
     "/": index,
+    // Both, because "/app/*" does not match a bare "/app" — measured: it falls
+    // through to fetch and 404s. Production serves /app correctly, so without
+    // this the dev server disagrees with the thing it stands in for, on the
+    // first URL anyone types.
+    "/app": index,
     "/app/*": index,
   },
   async fetch(request) {

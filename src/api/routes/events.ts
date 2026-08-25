@@ -135,7 +135,12 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
           send(frame("stream.open", { environmentId: claims.environmentId }));
 
           const heartbeat = setInterval(() => {
-            if (!send(": keepalive\n\n")) {
+            // Checked here too. Bounding the event loop and leaving this
+            // unbounded just moves the growth to the idle case: a client that
+            // stops reading and receives nothing else still accumulates a
+            // keepalive every fifteen seconds, for ever. Same fault as the one
+            // this check was added for, one callback over.
+            if (!send(": keepalive\n\n") || backedUp()) {
               clearInterval(heartbeat);
               subscription.close();
             }

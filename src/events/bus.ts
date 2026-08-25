@@ -30,7 +30,18 @@ export interface Subscription {
   events: AsyncIterable<EventEnvelope>;
   /** Why it ended. Null while still open. */
   reason(): BusCloseReason | null;
-  /** Stop receiving. Safe to call twice. */
+  /**
+   * Detach this subscriber and release what the bus holds for it.
+   *
+   * The bus keeps a per-subscriber buffer, so a transport that goes away
+   * without saying so leaves the bus filling a queue nobody will ever read —
+   * until the cap trips and it is dropped as overflow, which is indistinguishable
+   * from a consumer that was merely slow. Callers close on disconnect so the
+   * release is immediate and the reason is honest.
+   *
+   * Safe to call twice: the SSE route calls it from the abort listener, the
+   * loop's finally, and the stream's cancel, and any of the three can win.
+   */
   close(): void;
 }
 
