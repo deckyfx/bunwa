@@ -26,6 +26,14 @@ import { problem } from "../server";
 const HEARTBEAT_MS = 15_000;
 
 /**
+ * How many frames may sit unread before the connection is abandoned.
+ *
+ * The counterpart to the bus's own cap. Without one the backlog simply moves
+ * from the bus into the stream's queue, where nothing bounds it.
+ */
+const MAX_QUEUED_FRAMES = 32;
+
+/**
  * Everything this route can put on the wire.
  *
  * Named rather than `unknown`, so a future frame carrying something it should
@@ -106,6 +114,22 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
             }
           };
 
+          /**
+           * Whether the client is keeping up.
+           *
+           * enqueue() never blocks, so a stalled reader let this loop drain the
+           * subscription and pile it into the stream's own queue instead —
+           * which has no limit. The bus caps a subscriber at twenty pending
+           * envelopes precisely so one slow consumer cannot grow without
+           * bound, and moving the backlog one layer downstream bypassed that
+           * entirely. Measured: 5000 chunks enqueued with no reader attached.
+           *
+           * desiredSize going negative means the queue is over its mark, which
+           * is the signal to give up on this connection rather than buffer for
+           * it.
+           */
+          const backedUp = () => (controller.desiredSize ?? 0) < -MAX_QUEUED_FRAMES;
+
           // Told immediately, so a console can show "live" from something the
           // server said rather than from the absence of an error.
           send(frame("stream.open", { environmentId: claims.environmentId }));
@@ -127,6 +151,18 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
           try {
             for await (const envelope of subscription.events) {
               if (!send(frame(envelope.type, envelope, envelope.id))) break;
+
+              // Cut loose rather than buffered, matching what the bus does to a
+              // subscriber that falls behind. A console that is this far back
+              // has missed events and needs to refetch, which is exactly what
+              // the overflow frame below tells it to do.
+              if (backedUp()) {
+                log.warn("stream consumer fell behind; closing", {
+                  environmentId: claims.environmentId,
+                });
+                send(frame("stream.overflow", { reason: "too far behind; refetch and reconnect" }));
+                break;
+              }
             }
 
             // Says why it ended. A console that overflowed has missed events

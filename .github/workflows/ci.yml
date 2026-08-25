@@ -135,7 +135,7 @@ jobs:
           docker run -d --name ci-api  -p 127.0.0.1:31901:3000 -v ci-api:/data  bunwa:api
           docker run -d --name ci-full -p 127.0.0.1:31902:3000 -v ci-full:/data bunwa:full
 
-          for i in $(seq 1 30); do
+          for _ in $(seq 1 30); do
             if curl -fsS http://127.0.0.1:31901/health >/dev/null 2>&1 \
                && curl -fsS http://127.0.0.1:31902/health >/dev/null 2>&1; then
               break

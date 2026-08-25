@@ -158,6 +158,34 @@ describe("the ticket is the only way in", () => {
   });
 });
 
+describe("a client that never reads is cut loose", () => {
+  test("the backlog does not grow without bound in the stream's own queue", async () => {
+    // The bus caps a subscriber at twenty pending envelopes so one slow
+    // consumer cannot grow without limit. controller.enqueue() never blocks,
+    // so without a check here the loop simply drained the bus into the
+    // stream's queue instead — measured at 5000 chunks with no reader
+    // attached, which moves the backlog one layer down rather than bounding it.
+    const response = await openStream(await mint());
+    expect(response.status).toBe(200);
+
+    // Published one at a time with a yield between, so the stream loop drains
+    // each from the bus immediately and the bus never reaches its own cap of
+    // twenty. Publishing them in a tight loop instead overflows the bus first,
+    // which emits the same frame for a different reason — and a test that
+    // cannot tell the two apart proves nothing about this check.
+    for (let i = 0; i < 200; i++) {
+      publish(environmentId, envelope(`e${String(i)}`, environmentId));
+      await Bun.sleep(0);
+    }
+
+    // Now drain, and expect the server to have given up rather than buffered.
+    const seen = await readUntil(response, "stream.overflow");
+    expect(seen, "the stream buffered a whole backlog for a client that never read").toContain(
+      "stream.overflow",
+    );
+  }, 20_000);
+});
+
 describe("a stream carries its own environment and no other", () => {
   test("it announces itself, then delivers matching events", async () => {
     const response = await openStream(await mint());

@@ -132,6 +132,16 @@ export function App() {
       <form
         onSubmit={(e) => {
           e.preventDefault();
+          // Invalidated first, then cleared.
+          //
+          // Defensive: load() already bumps generation on entry, and React
+          // flushes the effect before the submit handler returns, so no test
+          // could reach the window this closes — two attempts passed with and
+          // without it. Kept because it costs one line and because "no path
+          // reaches this" has twice been wrong on this project, once
+          // expensively.
+          generation.current += 1;
+
           // Cleared before the new key is applied. Without this the previous
           // project stays on screen while the new key is being checked, and a
           // stalled request leaves it there indefinitely — showing one
