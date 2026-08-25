@@ -48,6 +48,21 @@ export function ClaimScreen({ apiKey, onClaimed }: Props) {
     [],
   );
 
+  // A key change abandons whatever was in flight, so the screen has to be
+  // returned to a usable state as well.
+  //
+  // The guard above stops a superseded claim writing state — including the
+  // `setBusy(false)` in its finally. Correct, and it left the form disabled for
+  // ever under the new credential: measured, the button stayed on "claiming…"
+  // after the abandoned request settled. Preventing stale writes and clearing
+  // stale state are two jobs, and the first one alone made the screen unusable.
+  useEffect(() => {
+    generation.current += 1;
+    setBusy(false);
+    setResult(null);
+    setError(null);
+  }, [apiKey]);
+
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     // Captured before awaiting, and checked after. A claim started under one

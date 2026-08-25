@@ -54,6 +54,32 @@ describe("a claim that outlives its key does not report itself", () => {
     expect(screen.queryByText("New number")).toBeNull();
   });
 
+  test("the form is usable again after a key change mid-flight", async () => {
+    // The guard that stops a superseded claim writing state also stopped its
+    // finally clearing `busy`, so the form stayed disabled for ever under the
+    // new credential. Measured before the fix: the button sat on "claiming…"
+    // after the abandoned request settled.
+    let release: ((r: ClaimResult) => void) | undefined;
+    (api as { claim: typeof api.claim }).claim = () =>
+      new Promise<ClaimResult>((resolve) => {
+        release = resolve;
+      });
+
+    const view = render(<ClaimScreen apiKey="key-a" onClaimed={() => undefined} />);
+    fillAndSubmit();
+    await waitFor(() => expect(screen.getByRole("button", { name: "claiming…" })).toBeDefined());
+
+    view.rerender(<ClaimScreen apiKey="key-b" onClaimed={() => undefined} />);
+    release?.(pendingResult);
+    await Bun.sleep(50);
+
+    expect(
+      screen.queryByRole("button", { name: "claiming…" }),
+      "the form stayed disabled under the new key",
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "claim" })).toBeDefined();
+  });
+
   test("onClaimed is not called when the screen unmounted mid-flight", async () => {
     // What the console actually does. App renders ClaimScreen only while `who`
     // is set, and submitting a new key clears `who` — so the component is
