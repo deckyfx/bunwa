@@ -239,3 +239,17 @@ export function createServer(registry?: EngineRegistry) {
     },
   });
 }
+
+/**
+ * The server's shape, for the dashboard to import.
+ *
+ * Eden Treaty turns this into a fully-typed client with no code generation and
+ * no schema to keep in sync — a route that changes signature becomes a compile
+ * error in the dashboard rather than a 400 discovered by a user. That property
+ * is the reason [03](../../docs/03-architecture.md) chose Elysia at all, and it
+ * only holds if the type is actually exported, which until now it was not.
+ *
+ * Derived from createApp rather than declared, so it cannot drift from what the
+ * server really serves.
+ */
+export type App = ReturnType<typeof createApp>;
