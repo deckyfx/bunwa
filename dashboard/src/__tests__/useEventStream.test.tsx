@@ -75,12 +75,15 @@ describe("a superseded attempt does not describe the live one", () => {
     const view = render(<Probe apiKey="key-a" />);
     await waitFor(() => expect(screen.getByText("connecting")).toBeDefined());
 
-    // Supersede it.
+    // Supersede it, and wait for the replacement to have actually started —
+    // a fixed sleep proves nothing about ordering, so the test could pass with
+    // the regression present simply because the timings fell the right way.
     view.rerender(<Probe apiKey="key-b" />);
-    await Bun.sleep(20);
+    await waitFor(() => expect(calls).toBe(2));
 
     // Now the abandoned request fails.
-    pending.reject?.(new Error("abandoned"));
+    if (pending.reject === undefined) throw new Error("the first request never started");
+    pending.reject(new Error("abandoned"));
     await Bun.sleep(50);
 
     expect(
@@ -114,9 +117,15 @@ describe("a superseded attempt does not describe the live one", () => {
     (globalThis as { EventSource?: unknown }).EventSource = OverflowingEventSource;
 
     render(<Probe apiKey="key-a" />);
-    await waitFor(() => expect(ticketRequests).toBe(1));
+    // The listener, not the ticket count. A ticket having been requested says
+    // nothing about registration having finished, and `?.()` on a missing
+    // listener is a silent no-op — the test would then pass having fired
+    // nothing at all.
+    await waitFor(() => expect(listeners.has("stream.overflow")).toBe(true));
 
-    listeners.get("stream.overflow")?.();
+    const overflow = listeners.get("stream.overflow");
+    if (overflow === undefined) throw new Error("no overflow listener was registered");
+    overflow();
     await waitFor(() => expect(screen.getByText("stale")).toBeDefined());
 
     // The reconnect is delayed on purpose; overflow means this client could not
