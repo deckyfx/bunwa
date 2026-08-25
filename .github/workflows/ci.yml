@@ -34,13 +34,23 @@ jobs:
           bun-version: "1.4.0"
 
       - name: Install dependencies
+        # Covers the dashboard too: it is a workspace, so one install resolves
+        # both. It was not, and CI failed on a missing `react` — the root
+        # install had no reason to descend into a subproject it did not know
+        # about.
         run: bun install --frozen-lockfile
 
       - name: Typecheck
+        # Runs both projects; see the root package.json script.
         run: bun run typecheck
 
       - name: Test
-        run: bun test
+        # `bun run test`, not `bun test`. The root bunfig pins the test root to
+        # ./src so the control-plane runner does not try to execute component
+        # tests without a DOM — which means a bare `bun test` here would skip
+        # the dashboard suite entirely and report success for a project it
+        # never ran.
+        run: bun run test
 
       - name: Verify the schema has a migration generated for it
         # db:embed only reads the journal, so a schema.ts change with no
@@ -77,3 +87,78 @@ jobs:
             exit 1
           fi
           echo "no runtime data tracked"
+
+  images:
+    # Separate job: the checks above are fast and this is not, so a typecheck
+    # failure reports in a minute rather than waiting on two image builds.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: Build both targets
+        # Both, because they are not the same image with a flag: `full` has a
+        # build stage `api` never runs. Building only one would leave the other
+        # broken until someone deployed it.
+        run: |
+          docker build --target api  -t bunwa:api  .
+          docker build --target full -t bunwa:full .
+
+      - name: The api image carries no console
+        # The whole mechanism behind two tags from one binary. If assets ever
+        # leak into this image, /app starts answering in a deployment that asked
+        # for the API alone.
+        run: |
+          if docker run --rm bunwa:api test -e /app/dashboard/dist; then
+            echo "::error::bunwa:api contains dashboard assets"
+            exit 1
+          fi
+          echo "no console in bunwa:api"
+
+      - name: Both images serve, and only one serves the console
+        # Built images have been wrong in ways the Dockerfile looked right for:
+        # a root-owned volume the non-root user could not write, and a CMD
+        # comment claiming migrations ran automatically. Running them is the
+        # only thing that caught either.
+        run: |
+          set -euo pipefail
+          docker volume create ci-api >/dev/null
+          docker volume create ci-full >/dev/null
+
+          # Migrations are deliberate, not a startup side effect, so they run
+          # as their own step exactly as an operator would.
+          docker run --rm -v ci-api:/data  bunwa:api  bun run src/db/migrate.ts
+          docker run --rm -v ci-full:/data bunwa:full bun run src/db/migrate.ts
+
+          docker run -d --name ci-api  -p 127.0.0.1:31901:3000 -v ci-api:/data  bunwa:api
+          docker run -d --name ci-full -p 127.0.0.1:31902:3000 -v ci-full:/data bunwa:full
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:31901/health >/dev/null 2>&1 \
+               && curl -fsS http://127.0.0.1:31902/health >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          api_health=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:31901/health)
+          api_app=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:31901/app)
+          full_health=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:31902/health)
+          full_app=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:31902/app)
+          echo "api  health=$api_health app=$api_app"
+          echo "full health=$full_health app=$full_app"
+
+          test "$api_health"  = "200" || { echo "::error::api did not become healthy"; docker logs ci-api; exit 1; }
+          test "$full_health" = "200" || { echo "::error::full did not become healthy"; docker logs ci-full; exit 1; }
+          test "$api_app"     = "404" || { echo "::error::bunwa:api served /app"; exit 1; }
+          test "$full_app"    = "200" || { echo "::error::bunwa:full did not serve /app"; exit 1; }
+
+          curl -s http://127.0.0.1:31902/app | grep -q "bunwa console" \
+            || { echo "::error::bunwa:full served something other than the console"; exit 1; }
+          echo "both images behave as their tags claim"
+
+      - name: Stop the containers
+        if: always()
+        run: docker rm -f ci-api ci-full || true

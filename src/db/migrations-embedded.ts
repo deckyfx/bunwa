@@ -9,12 +9,14 @@ import journalJson from "./migrations/meta/_journal.json" with { type: "json" };
 import m0000FullSchema from "./migrations/0000_full_schema.sql" with { type: "text" };
 import m0001RateLimits from "./migrations/0001_rate_limits.sql" with { type: "text" };
 import m0002RateLimitExpiry from "./migrations/0002_rate_limit_expiry.sql" with { type: "text" };
+import m0003StreamTickets from "./migrations/0003_stream_tickets.sql" with { type: "text" };
 
 /** Migration file name to its raw SQL, exactly as drizzle-kit wrote it. */
 const files: Record<string, string> = {
   "0000_full_schema.sql": m0000FullSchema,
   "0001_rate_limits.sql": m0001RateLimits,
   "0002_rate_limit_expiry.sql": m0002RateLimitExpiry,
+  "0003_stream_tickets.sql": m0003StreamTickets,
 };
 
 export interface EmbeddedJournalEntry { idx: number; when: number; tag: string; breakpoints: boolean }

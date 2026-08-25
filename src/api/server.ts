@@ -15,6 +15,8 @@ import { adminRoutes } from "./routes/admin";
 import { deviceRoutes } from "./routes/devices";
 import { messageRoutes } from "./routes/messages";
 import { ruleRoutes } from "./routes/rules";
+import { eventRoutes } from "./routes/events";
+import { createStaticHandler } from "./static";
 import { projectRoutes } from "./routes/project";
 import type { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
@@ -190,6 +192,7 @@ export function createApp(registry?: EngineRegistry) {
     // Route plugins mount after the probes. An orchestrator's liveness and
     // readiness checks must never be able to end up behind a plugin's auth.
     .use(projectRoutes)
+    .use(eventRoutes)
     .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
     .use(registry === undefined ? new Elysia() : messageRoutes(registry))
     .use(ruleRoutes)
@@ -206,6 +209,9 @@ export function createApp(registry?: EngineRegistry) {
 export function createServer(registry?: EngineRegistry) {
   const app = createApp(registry);
   const cfg = config();
+  // Null in the api image, where the console was never copied in. Resolved
+  // once: whether the files exist cannot change while the process runs.
+  const serveConsole = createStaticHandler();
 
   return Bun.serve({
     port: cfg.port,
@@ -223,6 +229,16 @@ export function createServer(registry?: EngineRegistry) {
       headers.set("x-correlation-id", correlationId);
       const identified = new Request(request, { headers });
 
+      // Static assets before the app, and outside it: they are not API routes,
+      // they carry no tenancy, and running them through the auth middleware
+      // would mean the console could not load the page that asks for a key.
+      if (serveConsole !== null && (url.pathname === "/app" || url.pathname.startsWith("/app/"))) {
+        return withContext({ correlationId }, async () => {
+          const asset = await serveConsole(identified);
+          return asset ?? new Response("Not found", { status: 404 });
+        });
+      }
+
       return withContext({ correlationId }, async () => {
         const response = await app.handle(identified);
         // Probes are logged at debug so a one-second orchestrator interval does
@@ -239,3 +255,17 @@ export function createServer(registry?: EngineRegistry) {
     },
   });
 }
+
+/**
+ * The server's shape, for the dashboard to import.
+ *
+ * Eden Treaty turns this into a fully-typed client with no code generation and
+ * no schema to keep in sync — a route that changes signature becomes a compile
+ * error in the dashboard rather than a 400 discovered by a user. That property
+ * is the reason [03](../../docs/03-architecture.md) chose Elysia at all, and it
+ * only holds if the type is actually exported, which until now it was not.
+ *
+ * Derived from createApp rather than declared, so it cannot drift from what the
+ * server really serves.
+ */
+export type App = ReturnType<typeof createApp>;

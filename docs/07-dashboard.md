@@ -109,8 +109,9 @@ quite different outcomes feel like one flow:
 └──────────────────────────────────────────────────┘
 ```
 
-All three states arrive on the same SSE stream, so the UI transitions rather
-than reloads. The third state is the one to get right — the developer needs to
+The first state arrives in the claim response itself, since the QR is withheld
+from the stream (see below). The other two transition over SSE rather than
+reloading. The third state is the one to get right — the developer needs to
 understand that the delay is a human on a phone, not a system fault.
 
 ### The WhatsApp challenge
@@ -171,7 +172,14 @@ Rules that follow from experience with this pattern:
 - **Never poll alongside SSE.** Pick one per data source, or debug ghosts.
 - **Show connection state.** A silently dead `EventSource` that shows stale data
   as if live is worse than an error banner.
-- **QR needs no special channel.** It is a `device.qr` event like any other.
+- **QR does not come over the stream.** This document originally said it was
+  "a `device.qr` event like any other". The implementation deliberately
+  disagrees, and is right to: `handleEngineEvent` returns before fan-out for
+  `device.qr` and `device.pair_code`, because a QR is a credential anyone who
+  sees it can scan to take over the account, and fanning it out would hand it
+  to every other project sharing that phone. It is returned synchronously to
+  the caller that started pairing. A console whose QR expires claims again
+  rather than waiting for an event that never arrives.
 
 ## Accessibility and performance budgets
 

@@ -149,6 +149,29 @@ reviews:
         MigrationManager.buildSequence(): pinning the values against the thing
         they exist to pin would make the test vacuous.
 
+    - path: "src/api/routes/events.ts"
+      instructions: >-
+        Do not report that requireApiKey's `as: "scoped"` leaks onto
+        GET /v1/events/stream and rejects requests without x-api-key. It does
+        not: the route is registered outside that group, and
+        src/api/__tests__/events.integration.test.ts opens it with a ticket and
+        no key, receiving 200 and an `event: stream.open` frame. Verified
+        against a running server as well. The stream must remain reachable
+        without a key — EventSource cannot send headers, which is the entire
+        reason ADR-0008 exists.
+
+    - path: "src/stores/stream-ticket-store.ts"
+      instructions: >-
+        Do not ask for spendTicket to take or bind an environmentId. At
+        GET /v1/events/stream there is no authenticated caller — the ticket is
+        the credential and the environment is what it resolves to, so a
+        caller-supplied environmentId would let the caller assert the tenancy
+        the ticket exists to prove. The binding is enforced in mintTicket,
+        which runs behind x-api-key and verifies the key belongs to the
+        environment. sweepTickets is cross-tenant for the same reason the
+        rate-limit sweep is: housekeeping run by the process, with no request
+        and no environment to scope to.
+
     - path: "src/tools/**"
       instructions: >-
         Diagnostic tooling, not production code. Hold it to a lower bar for

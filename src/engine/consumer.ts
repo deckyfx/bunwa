@@ -17,6 +17,7 @@ import { DeliveryStore } from "../stores/delivery-store";
 import { RuleStore } from "../stores/rule-store";
 import { evaluate } from "../rules/evaluate";
 import { MessageStore } from "../stores/message-store";
+import { publish } from "../events/bus";
 import { EVENT_SCHEMA_VERSION, type EventEnvelope, type EventType } from "../events/schema";
 import { log, withContext } from "../observability/logger";
 import type { DeviceEngine, EngineEvent } from "./types";
@@ -315,6 +316,12 @@ async function fanOut(event: EngineEvent, engineKind: string, database: Database
       meta: { engine: engineKind, origin: "engine" },
     };
     await DeliveryStore.enqueue(binding.environmentId, envelope, database);
+
+    // The same envelope, to anyone watching live. After the enqueue, not
+    // before: the durable path is the promise, and a console learning about an
+    // event that failed to persist would be showing something the tenant can
+    // never retrieve again.
+    publish(binding.environmentId, envelope);
   }
 }
 
