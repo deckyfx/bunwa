@@ -33,6 +33,18 @@ reviews:
         the smaller system. Postgres-specific advice (row-level security,
         LISTEN/NOTIFY, jsonb operators) is equally out of scope until that
         trigger is met: a second process needing concurrent access.
+
+        Do not report a duplicate or repeated declaration unless you have
+        confirmed it in the file's actual current contents. Two consecutive
+        reviews reported one as critical and compile-breaking — RELEASED in
+        src/db/__tests__/migrations.integration.test.ts, then MessageStoreSeam
+        in src/api/__tests__/messages.integration.test.ts. Each is declared
+        exactly once; tsc --noEmit exits 0 and the tests pass in both the
+        working tree and the committed blob. Both were introduced by a
+        whole-block rewrite, which appears to render as overlapping hunks.
+        Verify any redeclaration or "this file cannot compile" claim against
+        the file itself, not the diff, before reporting it.
+
     - path: "src/stores/device-store.ts"
       instructions: >-
         The consent state machine is enumerated exhaustively over (this
@@ -129,6 +141,13 @@ reviews:
         accepting it rather than from a delivery ack: engine acceptance was
         measured to mean nothing for up to 203 seconds after a silent
         disconnect.
+
+    - path: "src/db/__tests__/migrations.integration.test.ts"
+      instructions: >-
+        The RELEASED table is deliberately a hardcoded list of shipped
+        migration hashes and timestamps. Do not suggest deriving it from
+        MigrationManager.buildSequence(): pinning the values against the thing
+        they exist to pin would make the test vacuous.
 
     - path: "src/tools/**"
       instructions: >-

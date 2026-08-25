@@ -8,12 +8,19 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 
 import { createApp, problem, type Problem } from "../server";
+import { PRESSURE_GUIDANCE, type Pressure } from "../../ops/pressure";
 import { resetConfig } from "../../config/env";
 import { resetDatabase } from "../../db";
+import { captureEnv } from "../../testing/env";
 
 // A path under a file, so opening it fails — SQLite in :memory: always works,
 // which would leave the unreachable-database branch untested.
 const ENV = { NODE_ENV: "test", DATABASE_PATH: "/proc/version/nope.sqlite", LOG_LEVEL: "error" };
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(Object.keys(ENV));
 
 beforeAll(() => {
   resetConfig();
@@ -23,7 +30,7 @@ beforeAll(() => {
 afterAll(() => {
   resetConfig();
   resetDatabase();
-  for (const k of Object.keys(ENV)) delete Bun.env[k];
+  restoreEnv();
 });
 
 const app = createApp();
@@ -107,5 +114,37 @@ describe("problem()", () => {
     const p = problem(403, "forbidden", "Forbidden");
     expect(p).toEqual({ type: "https://bunwa.dev/errors/forbidden", title: "Forbidden", status: 403 });
     expect("detail" in p).toBe(false);
+  });
+});
+
+describe("GET /metrics", () => {
+  test("reports the four pressure signals with their thresholds", async () => {
+    // ADR-0005 defers Postgres until "a second process needs the data", which
+    // only works if something says when that day arrives.
+    const res = await get("/metrics");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      pressure: Pressure;
+      guidance: typeof PRESSURE_GUIDANCE;
+      busyRetriesTotal: number;
+    };
+    expect(Object.keys(body.pressure)).toEqual(
+      expect.arrayContaining(["databaseReachable", "busyRetriesPerMinute", "queue", "send", "pools", "databaseBytes"]),
+    );
+    // This fixture points at an unreachable database on purpose, and the
+    // endpoint still answers — saying so, rather than reporting zeros or
+    // failing. An operator reaching for metrics during a database incident is
+    // exactly who needs this to work.
+    expect(body.pressure.databaseReachable).toBe(false);
+    // Thresholds travel with the numbers: a metric with no threshold is a
+    // number nobody reads.
+    for (const g of Object.values(body.guidance)) expect(g.meaning).toBeString();
+  });
+
+  test("needs no credential, and exposes counts rather than content", async () => {
+    // An operator reaching for this mid-incident should not need a key, so it
+    // must never carry tenant names, phone numbers or message bodies.
+    const text = await (await get("/metrics")).text();
+    expect(text).not.toMatch(/@s\.whatsapp\.net|\+62|grande/i);
   });
 });

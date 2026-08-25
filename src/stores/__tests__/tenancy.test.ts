@@ -18,6 +18,12 @@ import { EnvironmentStore } from "../environment-store";
 import { ProjectStore } from "../project-store";
 import { ConflictError, NotFoundError, ValidationError } from "../errors";
 import { resetConfig } from "../../config/env";
+import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
 
 let dir: string;
 let database: Database;
@@ -36,7 +42,7 @@ beforeEach(async () => {
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   resetConfig();
-  for (const k of ["NODE_ENV", "LOG_LEVEL", "RUNTIME_DIR", "DATABASE_PATH"]) delete Bun.env[k];
+  restoreEnv();
 });
 
 /** Two tenants, so every isolation assertion has something to cross. */

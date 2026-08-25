@@ -10,6 +10,7 @@ import { sql } from "drizzle-orm";
 
 import { config } from "../config/env";
 import { db } from "../db";
+import { PRESSURE_GUIDANCE, busyRetryTotal, samplePressure } from "../ops/pressure";
 import { adminRoutes } from "./routes/admin";
 import { deviceRoutes } from "./routes/devices";
 import { messageRoutes } from "./routes/messages";
@@ -110,6 +111,9 @@ export function createApp(registry?: EngineRegistry) {
       // than by message text, which drifts the moment a message is reworded.
       if (error instanceof AuthError) {
         set.status = error.status;
+        // Retry-After on a 429 tells a caller when to come back. Without it a
+        // client that is looping simply loops faster against the refusal.
+        for (const [name, value] of Object.entries(error.headers ?? {})) set.headers[name] = value;
         return problem(error.status, error.type, error.title, error.detail, path, id);
       }
       if (error instanceof ValidationError) {
@@ -147,6 +151,25 @@ export function createApp(registry?: EngineRegistry) {
       status: "ok" as const,
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     }))
+
+    /**
+     * The four numbers that say when this architecture stops coping.
+     *
+     * Unauthenticated like the probes, and for the same reason: an operator
+     * reaching for it during an incident should not need a credential, and it
+     * exposes counts rather than content — no tenant names, no numbers, no
+     * message bodies. Not on the project API, because it is about the
+     * deployment rather than about any tenant.
+     */
+    .get("/metrics", async () => {
+      // Deliberately non-destructive. This endpoint is unauthenticated, and
+      // resetting the contention window here let any caller — a second
+      // scraper, a health check, anyone — clear the count between samples and
+      // keep the reported rate near zero while contention was real. The window
+      // rolls on elapsed time inside samplePressure instead.
+      const pressure = await samplePressure();
+      return { pressure, guidance: PRESSURE_GUIDANCE, busyRetriesTotal: busyRetryTotal() };
+    })
 
     /** Readiness. Answers "can this process serve traffic?", dependencies included. */
     .get("/readyz", async ({ set }) => {

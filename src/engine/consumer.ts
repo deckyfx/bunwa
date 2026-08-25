@@ -27,18 +27,6 @@ import type { DeviceEngine, EngineEvent } from "./types";
  * A set rather than an inline check, so a new pairing event cannot quietly opt
  * into fan-out by omission.
  */
-/** Consecutive budget breaches before a rule is switched off. */
-const TIMEOUT_BREACHES_BEFORE_DISABLE = 3;
-
-/**
- * Breaches per rule, in memory.
- *
- * Deliberately not persisted: a restart clearing the count is the right
- * behaviour, since the alternative is a rule disabled by a transient load spike
- * staying disabled for ever with nothing recording why.
- */
-const timeoutCounts = new Map<string, number>();
-
 const PAIRING_CREDENTIAL_EVENTS = new Set<EngineEvent["type"]>(["device.qr", "device.pair_code"]);
 
 /**
@@ -270,6 +258,13 @@ async function runRules(deviceId: string, event: EngineEvent, database: Database
 
     if (result.timedOut.length > 0) {
       // One slow pattern must degrade one rule, not the node.
+      //
+      // Logged and nothing more: a rule that blows its budget keeps running and
+      // keeps blowing it on every later event. A circuit breaker for this was
+      // written — TIMEOUT_BREACHES_BEFORE_DISABLE and a per-rule counter — and
+      // never wired to anything, so it protected nothing while reading as
+      // though it did. The dead declarations are gone and the gap is recorded
+      // in todo.txt rather than left looking handled.
       log.warn("rules exceeded their match budget", {
         virtualDeviceId: binding.id,
         rules: result.timedOut,

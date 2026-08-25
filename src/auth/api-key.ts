@@ -9,7 +9,6 @@
  * Only a hash is stored. The plaintext exists for the duration of the response
  * that creates it and is never recoverable afterwards.
  */
-import { ValidationError } from "../stores/errors";
 
 /** Bytes of randomness in the secret portion. 32 bytes is 256 bits. */
 const SECRET_BYTES = 32;
@@ -88,6 +87,16 @@ export function prefixOf(presented: string): string | null {
   return `bw_${kind}_${slug}_${secret!.slice(0, PREFIX_SECRET_CHARS)}`;
 }
 
+/**
+ * A hash of a key that does not exist, for equalising timing.
+ *
+ * An unknown prefix returns without hashing while a known one pays for Argon2id,
+ * and that difference is measurable — it tells an attacker when a prefix guess
+ * is right, which is the expensive half of finding a key. Verifying against
+ * this makes both paths cost the same.
+ *
+ * Computed once at module load rather than per request.
+ */
 export const DUMMY_KEY_HASH: Promise<string> = Bun.password.hash(
   "bw_live_nonexistent_0000000000000000000000000000000000000000",
   { algorithm: "argon2id" },
@@ -100,28 +109,11 @@ export const DUMMY_KEY_HASH: Promise<string> = Bun.password.hash(
  * for the derivation, so this must never be short-circuited by a cheaper check
  * on the plaintext.
  */
-/**
- * A hash of a key that does not exist, for equalising timing.
- *
- * An unknown prefix returns without hashing while a known one pays for Argon2id,
- * and that difference is measurable — it tells an attacker when a prefix guess
- * is right, which is the expensive half of finding a key. Verifying against
- * this makes both paths cost the same.
- *
- * Computed once at module load rather than per request.
- */
 export async function verifyApiKey(presented: string, hash: string): Promise<boolean> {
   try {
     return await Bun.password.verify(presented, hash);
   } catch {
     // A malformed stored hash must fail closed, not throw into the request path.
     return false;
-  }
-}
-
-/** Reject an obviously malformed key before doing any work. @throws ValidationError */
-export function assertWellFormed(presented: string): void {
-  if (prefixOf(presented) === null) {
-    throw new ValidationError("api key is malformed");
   }
 }

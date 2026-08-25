@@ -12,6 +12,7 @@ import { startWorker } from "./delivery/worker";
 import { EngineRegistry } from "./engine/registry";
 import { GowaAdapter } from "./engine/gowa/adapter";
 import { startEngineConsumer } from "./engine/consumer";
+import { startHousekeeping } from "./ops/housekeeping";
 import { log } from "./observability/logger";
 
 /** How long to let in-flight requests finish before closing connections. */
@@ -54,6 +55,12 @@ async function main(): Promise<void> {
 
   const server = createServer(registry);
   // In-process for now; moving it out is the same trigger as moving off SQLite.
+  // Sweeps that nothing else owns: expired idempotency keys, closed rate-limit
+  // windows, and — the one that matters — sends accepted but never
+  // acknowledged, which is how a silent delivery failure becomes an event
+  // rather than a customer complaint.
+  const stopHousekeeping = startHousekeeping();
+
   const stopWorker = startWorker({ allowInsecure: cfg.allowInsecureWebhookTargets });
   log.info("bunwa started", { ...cfg.describe(), url: server.url.toString() });
 
@@ -88,6 +95,9 @@ async function main(): Promise<void> {
     for (const result of await Promise.allSettled(stopConsumers.map((stop) => stop()))) {
       if (result.status === "rejected") log.warn("engine consumer failed to stop", { error: String(result.reason) });
     }
+    await stopHousekeeping().catch((err: unknown) => {
+      log.warn("housekeeping failed to stop", { error: err instanceof Error ? err.message : String(err) });
+    });
     await stopWorker().catch((err: unknown) => {
       log.warn("delivery worker failed to stop", { error: err instanceof Error ? err.message : String(err) });
     });

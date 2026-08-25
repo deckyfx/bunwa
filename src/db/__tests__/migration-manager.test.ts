@@ -14,9 +14,15 @@ import { join } from "node:path";
 import { MigrationManager, type AppliedMigrationRow } from "../migration-manager";
 import { embeddedFiles, embeddedJournal, embeddedMigrationCount } from "../migrations-embedded";
 import { resetConfig } from "../../config/env";
+import { captureEnv } from "../../testing/env";
 
 const RUNTIME = join(import.meta.dir, ".test-runtime");
 const ENV = { NODE_ENV: "test", DATABASE_PATH: ":memory:", LOG_LEVEL: "error", RUNTIME_DIR: RUNTIME };
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(Object.keys(ENV));
 
 beforeAll(() => {
   resetConfig();
@@ -24,7 +30,7 @@ beforeAll(() => {
 });
 afterAll(async () => {
   resetConfig();
-  for (const k of Object.keys(ENV)) delete Bun.env[k];
+  restoreEnv();
   await rm(RUNTIME, { recursive: true, force: true });
 });
 
@@ -113,7 +119,13 @@ describe("inspect", () => {
   });
 
   test("rejects a database holding migrations this build does not have", async () => {
-    const rows = [...rowsFor([0]), { hash: "deadbeef", created_at: "9999999999999" }];
+    // Every migration this build carries, plus one it does not. Derived from
+    // buildSequence rather than written as a literal count, because pinning
+    // "one migration" here made this assert the wrong thing the moment a
+    // second was added: the extra row landed on a real migration and failed
+    // as a mismatch instead of as an overrun.
+    const all = MigrationManager.buildSequence().map((_, i) => i);
+    const rows = [...rowsFor(all), { hash: "deadbeef", created_at: "9999999999999" }];
     const state = await MigrationManager.inspect(fakeDb(rows));
     expect(state.problem).toContain("beyond this build");
   });

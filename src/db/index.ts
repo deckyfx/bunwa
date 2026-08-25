@@ -84,4 +84,24 @@ export function resetDatabase(): void {
   instance = undefined;
 }
 
-export { schema };
+
+/**
+ * Open an existing database file without the power to change it.
+ *
+ * Inspection must not author what it inspects. `createDatabase` passes
+ * `create: true` and sets WAL, so pointing it at a missing backup produced the
+ * file, applied a journal mode to it, and then reported the empty result as
+ * the verdict — the check fabricated its own subject.
+ *
+ * Throws if the path does not exist, which is the honest answer for a backup
+ * that is not there.
+ */
+export function openReadOnly(path: string) {
+  const sqlite = new BunDatabase(path, { readonly: true, create: false });
+  // No journal_mode or busy_timeout here: both are writes, and the point of
+  // this handle is that it cannot perform one.
+  sqlite.exec("PRAGMA foreign_keys = ON");
+  const handle = drizzle(sqlite, { schema });
+  paths.set(handle, path);
+  return handle;
+}

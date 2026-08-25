@@ -22,19 +22,6 @@ export class ConfigError extends Error {
   override readonly name = "ConfigError";
 }
 
-/**
- * Read a required variable.
- *
- * A variable set to an empty string is a mistake, not an omission — treating it
- * as unset is how a deployment ends up running with a default nobody chose.
- */
-function required(source: Record<string, string | undefined>, key: string): string {
-  const raw = source[key];
-  if (raw === undefined) throw new ConfigError(`${key} is required`);
-  if (raw.trim() === "") throw new ConfigError(`${key} is set but empty`);
-  return raw;
-}
-
 /** Read an optional variable, applying a default only when it is truly absent. */
 function optional(source: Record<string, string | undefined>, key: string, fallback: string): string {
   const raw = source[key];

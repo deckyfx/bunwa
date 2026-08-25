@@ -20,6 +20,12 @@ import { DeviceStore } from "../../stores/device-store";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ProjectStore } from "../../stores/project-store";
 import { resetConfig } from "../../config/env";
+import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
 
 let dir: string;
 let app: ReturnType<typeof createApp>;
@@ -66,7 +72,7 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
   resetConfig();
   resetDatabase();
-  for (const k of ["NODE_ENV", "LOG_LEVEL", "RUNTIME_DIR", "DATABASE_PATH"]) delete Bun.env[k];
+  restoreEnv();
 });
 
 const claim = (key: string, alias: string, msisdn = NUMBER) =>
@@ -85,6 +91,24 @@ describe("POST /v1/devices/claim", () => {
     const body = (await res.json()) as { outcome: string; pairing?: { qr?: string } };
     expect(body.outcome).toBe("pending_pairing");
     expect(body.pairing?.qr).toBeString();
+  });
+
+  test("a database fault is not reported as a capacity problem", async () => {
+    // countByPool() used to sit inside the same try as choosePool, so a
+    // database failure was caught by the handler meaning "no pool has room"
+    // and answered with 503 plus Retry-After — telling the caller to retry a
+    // fault that retrying cannot fix, and hiding the real error entirely.
+    const real = DeviceStore.countByPool;
+    (DeviceStore as { countByPool: typeof DeviceStore.countByPool }).countByPool = () => {
+      throw new Error("database is on fire");
+    };
+    try {
+      const res = await claim(grandeProdKey, "otp-sender");
+      expect(res.status, "a database fault was reported as 503 capacity").not.toBe(503);
+      expect(res.status).toBeGreaterThanOrEqual(500);
+    } finally {
+      (DeviceStore as { countByPool: typeof DeviceStore.countByPool }).countByPool = real;
+    }
   });
 
   test("the same project's second environment is active immediately", async () => {

@@ -467,6 +467,44 @@ export const rules = sqliteTable(
   ],
 );
 
+/**
+ * Token buckets for rate limiting, one row per key and window.
+ *
+ * In the database rather than in memory because the limit has to survive a
+ * restart. A caller that has just been throttled will retry, and an in-memory
+ * counter would hand them a fresh allowance every deploy — which is exactly
+ * when a retry storm is most likely.
+ */
+export const rateLimits = sqliteTable(
+  "rate_limits",
+  {
+    /** What is being limited: an api key id, or an environment id for quotas. */
+    subject: text("subject").notNull(),
+    /** Which limit this row counts — sends, claims, requests. */
+    bucket: text("bucket").notNull(),
+    /** Start of the current window, truncated to the window size. */
+    windowStart: integer("window_start", { mode: "timestamp_ms" }).notNull(),
+    /**
+     * When this window closes: windowStart + the limit's windowMs.
+     *
+     * Stored rather than assumed, because the sweep previously deleted by
+     * windowStart against a fixed one-hour retention. That is only correct
+     * while every limit's window is shorter than the retention — an invariant
+     * nothing enforced, on a `consume(subject, limit)` that accepts any
+     * exported Limit. A longer window would have had its live row deleted
+     * mid-window, resetting the count and letting the caller past the limit.
+     */
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    count: integer("count").notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.subject, t.bucket, t.windowStart] }),
+    // The sweep deletes by window end; without this it scans the whole table.
+    index("rate_limits_window_idx").on(t.windowStart),
+    index("rate_limits_expiry_idx").on(t.expiresAt),
+  ],
+);
+
 export const projectsRelations = relations(projects, ({ many }) => ({
   environments: many(environments),
 }));
@@ -498,5 +536,6 @@ export type ConsentEvent = typeof consentEvents.$inferSelect;
 export type VirtualDevice = typeof virtualDevices.$inferSelect;
 export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 export type OutboundMessage = typeof outboundMessages.$inferSelect;
+export type RateLimit = typeof rateLimits.$inferSelect;
 export type Rule = typeof rules.$inferSelect;
 export type NewRule = typeof rules.$inferInsert;

@@ -18,6 +18,12 @@ import { createDatabase } from "../index";
 import { MigrationManager } from "../migration-manager";
 import { apiKeys, environments, projects } from "../schema";
 import { resetConfig } from "../../config/env";
+import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
+
+// Captured once, at module load: the process is shared across test
+// files, so deleting these keys strips whatever the runner supplied
+// from every file that runs later.
+const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
 
 const dirs: string[] = [];
 
@@ -36,7 +42,7 @@ function scratch() {
 afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   resetConfig();
-  for (const k of ["NODE_ENV", "LOG_LEVEL", "RUNTIME_DIR", "DATABASE_PATH"]) delete Bun.env[k];
+  restoreEnv();
 });
 
 describe("a real migration round trip", () => {
@@ -153,5 +159,109 @@ describe("the schema the migration produces", () => {
 
     await database.insert(projects).values({ slug: "grande", displayName: "Grande" });
     expect(() => database.insert(projects).values({ slug: "grande", displayName: "Dup" }).run()).toThrow();
+  });
+});
+
+describe("a released migration is immutable", () => {
+  // This exists because the rate_limits table was first added by editing
+  // 0000_full_schema in place. Every check passed: the schema was right, a
+  // fresh install worked, the full suite was green. Only an upgrade failed,
+  // and nothing in the repository performed one — MigrationManager.inspect()
+  // rejected any database carrying the previous baseline, so the service
+  // refused to start for exactly the users who already had data.
+  //
+  // The first version of this guard pinned only journal timestamps, which
+  // left the actual hole open: editing the SQL body without touching the
+  // journal still passed. inspect() compares the hash, so the hash is what
+  // has to be pinned.
+  //
+  // When a migration is legitimately added, add its row here. When an
+  // existing row needs changing, the change itself is the bug.
+  const RELEASED: { tag: string; hash: string; when: number }[] = [
+    {
+      tag: "0000_full_schema",
+      hash: "c4ef1122639dbcd6ad9220a6a60bafce25277bdb3b67472c4785ae0a7e22be01",
+      when: 1787499178671,
+    },
+    {
+      tag: "0001_rate_limits",
+      hash: "4730d2109199364d0791e02b47562542c56cdc924b5a6c71ab218530396bda3d",
+      when: 1787540388134,
+    },
+    {
+      tag: "0002_rate_limit_expiry",
+      hash: "fcb348cb11ea796069145be3ec129eb9d8e6a7b849f5c13cd637da647a639714",
+      when: 1787558564082,
+    },
+  ];
+
+  test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
+    const built = MigrationManager.buildSequence();
+
+    // By position, not by lookup. `find` by tag passed when a migration was
+    // inserted ahead of the pinned ones or added unlisted at the end, and
+    // inspect() compares applied rows by sequence position — so a reordering
+    // it would reject was a reordering this test accepted.
+    expect(built.length, "a migration was added or removed without pinning it here").toBe(RELEASED.length);
+
+    RELEASED.forEach((released, i) => {
+      const actual = built[i];
+      expect(actual?.tag, `position ${i} is no longer ${released.tag}`).toBe(released.tag);
+      // Both halves of the comparison, because a database records both. Pinning
+      // the timestamp alone let the SQL body change freely.
+      expect(actual!.hash, `migration ${released.tag} changed its contents`).toBe(released.hash);
+      expect(actual!.when, `migration ${released.tag} changed its timestamp`).toBe(released.when);
+    });
+  });
+
+  test("a database at the previous release upgrades instead of being rejected", async () => {
+    // The actual regression, reproduced rather than approximated: a database
+    // that recorded only the released 0000 row. Running the current sequence
+    // against a fresh database — as the first version of this test did — never
+    // reaches the comparison that failed in production.
+    const { database } = scratch();
+    const built = MigrationManager.buildSequence();
+    expect(built.length).toBeGreaterThan(1);
+
+    await MigrationManager.runMigrations(database);
+
+    // Roll the database back to the prior release: drop what 0001 created and
+    // forget that it ran, leaving 0000's recorded hash exactly as shipped.
+    database.run(sql`DROP TABLE IF EXISTS rate_limits`);
+    database.run(sql.raw(`DELETE FROM __drizzle_migrations WHERE created_at > ${built[0]!.when}`));
+
+    const before = await MigrationManager.inspect(database);
+    expect(before.problem, "the historical state must be acceptable, not rejected").toBeNull();
+    expect(before.pending).toBe(built.length - 1);
+
+    // Now the upgrade that used to exit 75.
+    await MigrationManager.runMigrations(database);
+
+    const after = await MigrationManager.inspect(database);
+    expect(after.problem).toBeNull();
+    expect(after.pending).toBe(0);
+
+    // The table alone proves nothing about the newest migration: 0001 creates
+    // rate_limits, so this assertion passed while 0002 was recorded as applied
+    // and had done nothing. What 0002 actually adds is the column and its
+    // index, so that is what the upgrade has to show.
+    const [table] = database.all<{ name: string }>(
+      sql`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'rate_limits'`,
+    );
+    expect(table?.name).toBe("rate_limits");
+
+    const columns = database.all<{ name: string; notnull: number }>(sql`PRAGMA table_info(rate_limits)`);
+    const expiresAt = columns.find((c) => c.name === "expires_at");
+    expect(expiresAt, "0002 was recorded as applied without adding expires_at").toBeDefined();
+    expect(expiresAt!.notnull).toBe(1);
+
+    const indexes = database.all<{ name: string }>(sql`PRAGMA index_list(rate_limits)`);
+    expect(indexes.map((i) => i.name)).toContain("rate_limits_expiry_idx");
+
+    // And the backfill ran, rather than leaving rows that read as expired.
+    const [row] = database.all<{ n: number }>(
+      sql`SELECT COUNT(*) AS n FROM rate_limits WHERE expires_at = 0`,
+    );
+    expect(Number(row?.n ?? 0)).toBe(0);
   });
 });
