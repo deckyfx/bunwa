@@ -11,6 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { api, ApiError, type VirtualDevice, type Whoami } from "./api";
 import { ClaimScreen } from "./ClaimScreen";
 import { useEventStream } from "./useEventStream";
+import { Deliveries } from "./Deliveries";
 
 /** Where the key lives between reloads. */
 const KEY_STORAGE = "bunwa.console.key";
@@ -49,6 +50,9 @@ export function App() {
   const [devices, setDevices] = useState<VirtualDevice[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Bumped by any event, so children refetch without each opening its own
+  // stream — docs/07 wants one connection per console, not one per widget.
+  const [revision, setRevision] = useState(0);
 
   const load = useCallback(async (withKey: string) => {
     if (withKey === "") {
@@ -93,6 +97,9 @@ export function App() {
     apiKey: who === null ? "" : key,
     onEvent: (type) => {
       if (type.startsWith("device.")) void load(key);
+      // Any event at all may have produced a delivery, including the
+      // message.undelivered the housekeeper raises.
+      setRevision((r) => r + 1);
     },
   });
 
@@ -147,6 +154,8 @@ export function App() {
       )}
 
       {who !== null && <ClaimScreen apiKey={key} onClaimed={() => void load(key)} />}
+
+      {who !== null && <Deliveries apiKey={key} revision={revision} />}
 
       {devices !== null && (
         <section aria-labelledby="devices">

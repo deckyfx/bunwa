@@ -1,0 +1,104 @@
+/**
+ * Webhook deliveries.
+ *
+ * The last piece of stage 3's exit criteria: a developer watches a delivery
+ * succeed without leaving the console. It is also the screen docs/07 says is
+ * asked for "eventually, in anger" — the question is always "did you send it?",
+ * and answering it from logs is archaeology.
+ *
+ * State and attempt count are shown together on purpose. `pending` with three
+ * attempts is a very different situation from `pending` with none: the first is
+ * a failing endpoint backing off, the second is work that has not started.
+ */
+import { useCallback, useEffect, useState } from "react";
+
+import { api, ApiError, type Delivery } from "./api";
+
+interface Props {
+  apiKey: string;
+  /** Bumped by the caller when an event says something changed. */
+  revision: number;
+}
+
+export function Deliveries({ apiKey, revision }: Props) {
+  const [rows, setRows] = useState<Delivery[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [replaying, setReplaying] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setRows(await api.deliveries(apiKey));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "could not load deliveries");
+    }
+  }, [apiKey]);
+
+  useEffect(() => {
+    void load();
+  }, [load, revision]);
+
+  async function replay(id: string) {
+    setReplaying(id);
+    try {
+      await api.replay(apiKey, id);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "could not replay");
+    } finally {
+      setReplaying(null);
+    }
+  }
+
+  return (
+    <section aria-labelledby="deliveries">
+      <h2 id="deliveries">Webhook deliveries</h2>
+
+      {error !== null && <p role="alert">{error}</p>}
+
+      {rows === null ? (
+        <p>Loading…</p>
+      ) : rows.length === 0 ? (
+        <p>Nothing delivered yet. Events appear here once a webhook is configured.</p>
+      ) : (
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Event</th>
+              <th scope="col">State</th>
+              <th scope="col">Attempts</th>
+              <th scope="col">Next / delivered</th>
+              <th scope="col"><span className="sr-only">Actions</span></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((d) => (
+              <tr key={d.id}>
+                <td>{d.eventType}</td>
+                <td>{d.state}</td>
+                {/* Attempts beside state, because "pending, 3 attempts" and
+                    "pending, 0 attempts" mean opposite things. */}
+                <td>{d.attemptCount}</td>
+                <td>
+                  <time dateTime={d.deliveredAt ?? d.nextAttemptAt}>
+                    {d.deliveredAt ?? d.nextAttemptAt}
+                  </time>
+                </td>
+                <td>
+                  {/* Offered only where it can help. Replaying a delivered
+                      event sends it twice, and replaying one still backing off
+                      does nothing the worker was not already going to do. */}
+                  {(d.state === "failed" || d.state === "dead") && (
+                    <button type="button" onClick={() => void replay(d.id)} disabled={replaying === d.id}>
+                      {replaying === d.id ? "replaying…" : "replay"}
+                    </button>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </section>
+  );
+}

@@ -59,6 +59,24 @@ export interface ClaimResult {
   message?: string;
 }
 
+/**
+ * A queued webhook delivery.
+ *
+ * Transcribed from a live response, not from the schema and not from memory —
+ * the first two types in this file were invented and both were wrong. Pinned by
+ * the contract test in the API suite.
+ */
+export interface Delivery {
+  id: string;
+  eventId: string;
+  eventType: string;
+  state: "pending" | "delivered" | "failed" | "dead";
+  attemptCount: number;
+  nextAttemptAt: string;
+  deliveredAt: string | null;
+  createdAt: string;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -103,6 +121,10 @@ async function call<T>(path: string, key: string, init: RequestInit = {}): Promi
 export const api = {
   whoami: (key: string) => call<Whoami>("/v1/whoami", key),
   devices: (key: string) => call<VirtualDevice[]>("/v1/devices", key),
+  deliveries: (key: string, limit = 20) =>
+    call<Delivery[]>(`/v1/deliveries?limit=${String(limit)}`, key),
+  replay: (key: string, id: string) =>
+    call<unknown>(`/v1/deliveries/${encodeURIComponent(id)}/replay`, key, { method: "POST" }),
   claim: (key: string, msisdn: string, alias: string) =>
     call<ClaimResult>("/v1/devices/claim", key, {
       method: "POST",

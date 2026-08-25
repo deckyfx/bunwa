@@ -28,6 +28,9 @@ import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { DeviceStore } from "../../stores/device-store";
 import { handleEngineEvent } from "../../engine/consumer";
+import { DeliveryStore } from "../../stores/delivery-store";
+import { environmentWebhooks } from "../../db/schema";
+import { EVENT_SCHEMA_VERSION } from "../../events/schema";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 
@@ -37,6 +40,7 @@ let dir: string;
 let database: Database;
 let app: ReturnType<typeof createApp>;
 let key: string;
+let environmentId: string;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), "bunwa-contract-"));
@@ -51,6 +55,7 @@ beforeEach(async () => {
 
   const project = await ProjectStore.create({ slug: "grande", displayName: "Grande" }, database);
   const environment = await EnvironmentStore.create({ projectId: project.id, slug: "production" }, database);
+  environmentId = environment.id;
   key = (
     await ApiKeyStore.create(
       { projectId: project.id, environmentId: environment.id, label: "console", scopes: ["send:text"] },
@@ -113,6 +118,47 @@ describe("the fields dashboard/src/api.ts transcribes", () => {
     // The shape the console originally assumed, so the specific mistake is
     // pinned as wrong rather than merely absent from the list above.
     expect(body["project"], "whoami went back to a nested project object").toBeUndefined();
+  });
+
+  test("GET /v1/deliveries carries exactly the keys the console reads", async () => {
+    // Seeded through the store, so the row is the one the route really
+    // returns rather than a literal shaped like it.
+    await database.insert(environmentWebhooks).values({
+      environmentId,
+      url: "https://example.test/hook",
+      secret: "a-secret-long-enough",
+    });
+    await DeliveryStore.enqueue(
+      environmentId,
+      {
+        schema: EVENT_SCHEMA_VERSION,
+        id: "evt-contract",
+        type: "device.connected",
+        occurred_at: new Date(0).toISOString(),
+        environment: { id: environmentId, slug: "production" },
+        project: { id: "p", slug: "grande" },
+        data: {},
+        meta: { origin: "engine" },
+      },
+      database,
+    );
+
+    const body = (await (await get("/v1/deliveries?limit=5")).json()) as Record<string, unknown>[];
+    expect(body.length, "no delivery was enqueued, so nothing is asserted").toBeGreaterThan(0);
+
+    const row = body[0]!;
+    for (const field of [
+      "id",
+      "eventId",
+      "eventType",
+      "state",
+      "attemptCount",
+      "nextAttemptAt",
+      "deliveredAt",
+      "createdAt",
+    ]) {
+      expect(Object.keys(row), `deliveries lost ${field}`).toContain(field);
+    }
   });
 
   test("GET /v1/devices carries exactly the keys the console reads", async () => {
