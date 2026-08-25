@@ -193,6 +193,11 @@ describe("a released migration is immutable", () => {
       hash: "fcb348cb11ea796069145be3ec129eb9d8e6a7b849f5c13cd637da647a639714",
       when: 1787558564082,
     },
+    {
+      tag: "0003_stream_tickets",
+      hash: "3a4cb63e1f8c6bb678caefd7e6855e1c49873a3f6398dd81fd81d826684dcd90",
+      when: 1787637210655,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
@@ -225,9 +230,24 @@ describe("a released migration is immutable", () => {
 
     await MigrationManager.runMigrations(database);
 
-    // Roll the database back to the prior release: drop what 0001 created and
-    // forget that it ran, leaving 0000's recorded hash exactly as shipped.
-    database.run(sql`DROP TABLE IF EXISTS rate_limits`);
+    // Roll the database back to the baseline: forget every migration after
+    // 0000 and drop what they created, leaving 0000's recorded hash exactly as
+    // shipped.
+    //
+    // Listed rather than derived, and deliberately: adding a migration without
+    // adding its objects here makes this test fail with "already exists",
+    // which is the same loud-on-omission behaviour RELEASED has. It failed
+    // exactly that way when 0003 arrived.
+    const CREATED_AFTER_BASELINE: Record<string, readonly string[]> = {
+      "0001_rate_limits": ["rate_limits"],
+      "0002_rate_limit_expiry": [], // alters rate_limits, creates nothing
+      "0003_stream_tickets": ["stream_tickets"],
+    };
+    for (const migration of built.slice(1)) {
+      const tables = CREATED_AFTER_BASELINE[migration.tag];
+      expect(tables, `migration ${migration.tag} is not listed in CREATED_AFTER_BASELINE`).toBeDefined();
+      for (const table of tables!) database.run(sql.raw(`DROP TABLE IF EXISTS ${table}`));
+    }
     database.run(sql.raw(`DELETE FROM __drizzle_migrations WHERE created_at > ${built[0]!.when}`));
 
     const before = await MigrationManager.inspect(database);

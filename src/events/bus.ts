@@ -70,8 +70,16 @@ export function publish(environmentId: string, envelope: EventEnvelope): void {
       // were live is worse than one showing a disconnect — it cannot tell that
       // it missed the event it was waiting for.
       waiter.closed = "overflow";
+      // Dropped here rather than left for the iterator's finally. That finally
+      // only runs if someone is iterating, and the subscriber most likely to
+      // overflow is the one that stopped — so relying on it kept the waiter,
+      // its twenty envelopes and the environment entry for the life of the
+      // process. Verified before fixing: subscriberCount stayed at 1.
+      waiter.pending.length = 0;
       waiter.resolve?.();
       waiter.resolve = null;
+      set.delete(waiter);
+      if (set.size === 0) waiters.delete(environmentId);
       continue;
     }
 
@@ -81,7 +89,15 @@ export function publish(environmentId: string, envelope: EventEnvelope): void {
   }
 }
 
-/** Start watching one environment. */
+/**
+ * Start watching one environment.
+ *
+ * Exists so a console can show what is happening now without polling, which
+ * docs/07 rules out explicitly: polling alongside SSE is how a UI ends up
+ * debugging ghosts. The view is bounded and scoped to the environment the
+ * caller already proved it may see, and it carries the same envelopes the
+ * webhook receives rather than a second shape that could disagree with them.
+ */
 export function subscribe(environmentId: string): Subscription {
   const waiter: Waiter = { pending: [], resolve: null, closed: null };
   let set = waiters.get(environmentId);

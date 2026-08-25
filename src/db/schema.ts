@@ -475,6 +475,41 @@ export const rules = sqliteTable(
  * counter would hand them a fresh allowance every deploy — which is exactly
  * when a retry storm is most likely.
  */
+/**
+ * Single-use tickets for the SSE stream ([ADR-0008](../../docs/adr/0008-sse-stream-tickets.md)).
+ *
+ * EventSource cannot send headers, so the stream cannot be authenticated the
+ * way every other route is. A ticket is minted with the API key, spent once by
+ * the stream, and worthless within seconds — which bounds the exposure a query
+ * parameter creates instead of making it permanent, as putting the key itself
+ * there would.
+ *
+ * The hash is stored, not the ticket. The same reasoning as api_keys: a ticket
+ * lives for a minute, but a database dump lives longer than that, and there is
+ * no reason to leave a usable credential in it.
+ */
+export const streamTickets = sqliteTable(
+  "stream_tickets",
+  {
+    /** SHA-256 of the ticket the client holds. */
+    tokenHash: text("token_hash").primaryKey(),
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    /** Which key minted it, so a stream can be traced to a credential. */
+    apiKeyId: text("api_key_id")
+      .notNull()
+      .references(() => apiKeys.id, { onDelete: "cascade" }),
+    expiresAt: integer("expires_at", { mode: "timestamp_ms" }).notNull(),
+    ...timestamps,
+  },
+  (t) => [
+    // The sweep deletes by expiry; without this it scans the whole table.
+    index("stream_tickets_expiry_idx").on(t.expiresAt),
+    index("stream_tickets_environment_idx").on(t.environmentId),
+  ],
+);
+
 export const rateLimits = sqliteTable(
   "rate_limits",
   {
@@ -536,6 +571,7 @@ export type ConsentEvent = typeof consentEvents.$inferSelect;
 export type VirtualDevice = typeof virtualDevices.$inferSelect;
 export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 export type OutboundMessage = typeof outboundMessages.$inferSelect;
+export type StreamTicket = typeof streamTickets.$inferSelect;
 export type RateLimit = typeof rateLimits.$inferSelect;
 export type Rule = typeof rules.$inferSelect;
 export type NewRule = typeof rules.$inferInsert;

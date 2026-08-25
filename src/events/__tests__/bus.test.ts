@@ -127,6 +127,28 @@ describe("subscriptions do not leak", () => {
     expect(subscriberCount("env-1")).toBe(0);
   });
 
+  test("an overflowed subscriber is dropped even if nobody ever reads it", () => {
+    // The leak the abandoned-iterator test above does not cover. That one
+    // relies on the generator's finally, which only runs while someone is
+    // iterating — and the subscriber most likely to overflow is precisely the
+    // one that stopped. Measured before the fix: subscriberCount stayed at 1
+    // with twenty envelopes held behind it, for the life of the process.
+    const stalled = subscribe("env-1");
+    for (let i = 0; i < 100; i++) publish("env-1", envelope(`e${i}`));
+
+    expect(stalled.reason()).toBe("overflow");
+    expect(subscriberCount("env-1"), "an overflowed subscriber was retained").toBe(0);
+  });
+
+  test("a later publish does not resurrect a dropped subscriber", () => {
+    const stalled = subscribe("env-1");
+    for (let i = 0; i < 100; i++) publish("env-1", envelope(`e${i}`));
+    publish("env-1", envelope("after"));
+
+    expect(subscriberCount("env-1")).toBe(0);
+    expect(stalled.reason()).toBe("overflow");
+  });
+
   test("close is safe twice", () => {
     const one = subscribe("env-1");
     one.close();
