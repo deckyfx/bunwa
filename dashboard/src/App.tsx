@@ -1,0 +1,143 @@
+/**
+ * The project console.
+ *
+ * docs/07 calls for two route trees — a project console for a developer at
+ * Grande, and an operator console for the fleet. This is the first screen of
+ * the first one: prove the key, then show what it can see. Routing arrives when
+ * there is a second screen to route to.
+ */
+import { useCallback, useEffect, useState } from "react";
+
+import { api, ApiError, type VirtualDevice, type Whoami } from "./api";
+
+/** Where the key lives between reloads. */
+const KEY_STORAGE = "bunwa.console.key";
+
+/**
+ * Held in localStorage, and that is a decision to revisit.
+ *
+ * ADR-0008 notes it: the console needs the key to mint stream tickets, so it
+ * must keep it somewhere, and localStorage is readable by any script that gets
+ * onto the page. It is acceptable for a console a developer runs against their
+ * own project and not for much else — which is the argument for the cookie
+ * session the ADR leaves on the table.
+ */
+function loadKey(): string {
+  try {
+    return localStorage.getItem(KEY_STORAGE) ?? "";
+  } catch {
+    // Private windows and blocked site data both throw rather than return null.
+    return "";
+  }
+}
+
+function storeKey(key: string): void {
+  try {
+    if (key === "") localStorage.removeItem(KEY_STORAGE);
+    else localStorage.setItem(KEY_STORAGE, key);
+  } catch {
+    // Not fatal: the console works, it just forgets on reload.
+  }
+}
+
+export function App() {
+  const [key, setKey] = useState(loadKey);
+  const [draft, setDraft] = useState(key);
+  const [who, setWho] = useState<Whoami | null>(null);
+  const [devices, setDevices] = useState<VirtualDevice[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async (withKey: string) => {
+    if (withKey === "") return;
+    setBusy(true);
+    setError(null);
+    try {
+      // whoami first: it is the cheapest way to tell a bad key from a working
+      // key with nothing behind it, and those need different messages.
+      const identity = await api.whoami(withKey);
+      setWho(identity);
+      setDevices(await api.devices(withKey));
+    } catch (err) {
+      setWho(null);
+      setDevices(null);
+      setError(
+        err instanceof ApiError
+          ? `${err.message}${err.detail === null ? "" : ` — ${err.detail}`}`
+          : "could not reach the API",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void load(key);
+  }, [key, load]);
+
+  return (
+    <main>
+      <h1>bunwa console</h1>
+
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          storeKey(draft);
+          setKey(draft);
+        }}
+      >
+        <label htmlFor="apikey">API key</label>
+        <input
+          id="apikey"
+          type="password"
+          value={draft}
+          placeholder="bw_live_…"
+          onChange={(e) => setDraft(e.target.value)}
+          autoComplete="off"
+        />
+        <button type="submit" disabled={busy}>
+          {busy ? "checking…" : "connect"}
+        </button>
+      </form>
+
+      {error !== null && <p role="alert">{error}</p>}
+
+      {who !== null && (
+        <section aria-labelledby="ctx">
+          <h2 id="ctx">
+            {who.project.slug} / {who.environment.slug}
+          </h2>
+          <p>{who.scopes.length} scope(s)</p>
+        </section>
+      )}
+
+      {devices !== null && (
+        <section aria-labelledby="devices">
+          <h2 id="devices">Virtual devices</h2>
+          {devices.length === 0 ? (
+            <p>None yet. Claiming a number is the next screen.</p>
+          ) : (
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Alias</th>
+                  <th scope="col">Status</th>
+                  <th scope="col">Number</th>
+                </tr>
+              </thead>
+              <tbody>
+                {devices.map((d) => (
+                  <tr key={d.id}>
+                    <td>{d.alias}</td>
+                    <td>{d.status}</td>
+                    <td>{d.phoneNumber ?? "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
+    </main>
+  );
+}

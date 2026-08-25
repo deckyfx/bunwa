@@ -5,7 +5,8 @@
  * send headers, so the stream cannot use `x-api-key` like everything else. A
  * ticket is minted with the key, spent once, and expires in seconds.
  */
-import { and, eq, gt, isNull, lte } from "drizzle-orm";
+import { and, eq, exists, gt, isNull, lte, or, sql } from "drizzle-orm";
+import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 
 import { db, type Database } from "../db";
 import { apiKeys, streamTickets } from "../db/schema";
@@ -29,6 +30,27 @@ export interface MintedTicket {
 export interface TicketClaims {
   environmentId: string;
   apiKeyId: string;
+}
+
+/**
+ * A key that is still allowed to act, in SQL.
+ *
+ * Mirrors `ApiKeyStore.isUsable`, which is the definition the rest of the
+ * system authenticates against — revoked, or past its expiry, is not usable.
+ * Written once because mint and spend both need it, and a copy in each is how
+ * the two come to disagree: the first version checked revokedAt in mint,
+ * checked nothing in spend, and missed expiresAt in both.
+ *
+ * Takes a literal id or a column, so the spend can correlate against
+ * stream_tickets.api_key_id inside one statement rather than reading the row
+ * first and then deciding.
+ */
+function liveKey(apiKeyId: string | SQLiteColumn, now: Date) {
+  return and(
+    eq(apiKeys.id, apiKeyId),
+    isNull(apiKeys.revokedAt),
+    or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, now)),
+  );
 }
 
 /** SHA-256, hex. The same reasoning as api_keys: never store the usable form. */
@@ -60,13 +82,7 @@ export async function mintTicket(
   const [key] = await database
     .select({ id: apiKeys.id })
     .from(apiKeys)
-    .where(
-      and(
-        eq(apiKeys.id, apiKeyId),
-        eq(apiKeys.environmentId, environmentId),
-        isNull(apiKeys.revokedAt),
-      ),
-    )
+    .where(and(eq(apiKeys.environmentId, environmentId), liveKey(apiKeyId, now)))
     .limit(1);
 
   if (key === undefined) {
@@ -111,9 +127,24 @@ export async function spendTicket(
   now: Date = new Date(),
   database: Database = db(),
 ): Promise<TicketClaims | null> {
+  // Liveness is re-checked here, not only at minting. A ticket minted a second
+  // before its key was revoked would otherwise open a stream that outlives the
+  // revocation for as long as the connection stays up — unbounded, and the
+  // opposite of what revoking a key is for.
+  //
+  // In the same statement as the spend, for the same reason expiry is: a
+  // separate check leaves a window between deciding and acting.
   const [row] = await database
     .delete(streamTickets)
-    .where(and(eq(streamTickets.tokenHash, hashOf(ticket)), gt(streamTickets.expiresAt, now)))
+    .where(
+      and(
+        eq(streamTickets.tokenHash, hashOf(ticket)),
+        gt(streamTickets.expiresAt, now),
+        exists(
+          database.select({ one: sql`1` }).from(apiKeys).where(liveKey(streamTickets.apiKeyId, now)),
+        ),
+      ),
+    )
     .returning({
       environmentId: streamTickets.environmentId,
       apiKeyId: streamTickets.apiKeyId,

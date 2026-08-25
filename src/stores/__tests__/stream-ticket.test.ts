@@ -159,6 +159,61 @@ describe("a ticket authorises one environment", () => {
   });
 });
 
+describe("a ticket is only as live as the key behind it", () => {
+  test("an expired key cannot mint", async () => {
+    // revokedAt was checked and expiresAt was not — one of the two ways a key
+    // stops being usable, which ApiKeyStore.isUsable has always treated as a
+    // pair.
+    const expiring = await ApiKeyStore.create(
+      {
+        projectId,
+        environmentId,
+        label: "expiring",
+        scopes: ["send:text"],
+        expiresAt: new Date(1_000),
+      },
+      database,
+    );
+
+    await expect(
+      mintTicket(environmentId, expiring.apiKey.id, new Date(2_000), database),
+    ).rejects.toThrow(/does not belong/);
+  });
+
+  test("revoking the key kills a ticket already minted", async () => {
+    // The window this closes: mint, revoke, then spend. Without the check at
+    // spend time the stream opens anyway and lives as long as the connection
+    // does, which is unbounded — the opposite of what revoking a key means.
+    const { ticket } = await mintTicket(environmentId, apiKeyId, new Date(0), database);
+    await ApiKeyStore.revoke(projectId, environmentId, apiKeyId, database);
+
+    expect(await spendTicket(ticket, new Date(1_000), database)).toBeNull();
+  });
+
+  test("a key expiring after minting kills the ticket too", async () => {
+    const expiring = await ApiKeyStore.create(
+      {
+        projectId,
+        environmentId,
+        label: "short-lived",
+        scopes: ["send:text"],
+        expiresAt: new Date(5_000),
+      },
+      database,
+    );
+    const { ticket } = await mintTicket(environmentId, expiring.apiKey.id, new Date(0), database);
+
+    // Inside the ticket's own TTL, but past the key's expiry.
+    expect(await spendTicket(ticket, new Date(6_000), database)).toBeNull();
+  });
+
+  test("a live key still spends normally", async () => {
+    // The checks must not refuse the ordinary case.
+    const { ticket } = await mintTicket(environmentId, apiKeyId, new Date(0), database);
+    expect((await spendTicket(ticket, new Date(1_000), database))?.environmentId).toBe(environmentId);
+  });
+});
+
 describe("the ticket itself is never stored", () => {
   test("the row holds a hash, and the plaintext appears nowhere", async () => {
     // A ticket lives for a minute; a database dump lives for months. There is
