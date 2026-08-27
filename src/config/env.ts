@@ -125,8 +125,6 @@ export class Config {
    * Null disables the engine entirely, which is the right default for a process
    * that only serves the admin API or runs migrations — registering a pool that
    * cannot answer would report every device degraded.
-   */
-  readonly gowaBaseUrl: string | null;
   /** Devices per engine pool. Bounds the blast radius of one pool failing. */
   readonly enginePoolCapacity: number;
 
@@ -166,8 +164,6 @@ export class Config {
       );
     }
     this.allowInsecureWebhookTargets = boolean(source, "ALLOW_INSECURE_WEBHOOK_TARGETS", false);
-    const gowa = source["GOWA_BASE_URL"];
-    this.gowaBaseUrl = gowa === undefined || gowa.trim() === "" ? null : gowa.trim();
     this.enginePoolCapacity = integer(source, "ENGINE_POOL_CAPACITY", 25, 1, 500);
 
     // WhatsApp credentials are encrypted at rest; this is the key.
@@ -252,9 +248,10 @@ export class Config {
       runtimeDir: this.runtimeDir,
       adminApiEnabled: this.adminApiEnabled,
       allowInsecureWebhookTargets: this.allowInsecureWebhookTargets,
-      // Redacted: a base URL may carry basic-auth credentials for the engine,
-      // and describe() is written to the application log at every start.
-      gowa: this.gowaBaseUrl === null ? "(disabled)" : redactUrl(this.gowaBaseUrl),
+      baileysEnabled: this.baileysEnabled,
+      // Never the key itself, only whether one is present. describe() is
+      // written to the application log at every start.
+      credentialEncryptionKey: this.credentialEncryptionKey === null ? "(unset)" : "(set)",
       enginePoolCapacity: this.enginePoolCapacity,
     };
   }

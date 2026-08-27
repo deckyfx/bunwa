@@ -11,7 +11,6 @@ import { MigrationManager } from "./db/migration-manager";
 import { startWorker } from "./delivery/worker";
 import { EngineRegistry } from "./engine/registry";
 import { BaileysAdapter } from "./engine/baileys/adapter";
-import { GowaAdapter } from "./engine/gowa/adapter";
 import { startEngineConsumer } from "./engine/consumer";
 import { startHousekeeping } from "./ops/housekeeping";
 import { log } from "./observability/logger";
@@ -37,28 +36,21 @@ async function main(): Promise<void> {
   // an unattended schema change is not something a deploy should decide.
   await MigrationManager.init();
 
-  // Registration order is preference order: the pairing route asks the registry
-  // for capacity without naming an engine, so what a deployment registers, and
-  // in what sequence, is the whole of the choice. gowa first while it is the
-  // proven one; ADR-0002 keeps it registered even after Baileys works, because
-  // two engines is the failover.
+  // Baileys is the engine. gowa was engine #1 through stages 0-4 and is gone:
+  // ADR-0002 kept it as a failover, and that stopped being worth its weight
+  // once the pivot was committed — two engines is insurance only while both
+  // are maintained, and nothing was maintaining the adapter.
   //
-  // Capacity is bounded because a process holding every device is the blast
-  // radius ADR-0003 exists to avoid.
+  // Capacity is bounded because one process holding every device is the blast
+  // radius ADR-0003 exists to avoid. That reasoning changed shape rather than
+  // going away: these sockets share this process, so the bound is on sockets
+  // rather than on containers.
   const registry = new EngineRegistry();
-  if (cfg.gowaBaseUrl !== null) {
-    registry.register({
-      id: "gowa-1",
-      kind: "gowa",
-      capacity: cfg.enginePoolCapacity,
-      engine: new GowaAdapter({ baseUrl: cfg.gowaBaseUrl }),
-    });
-  }
 
   if (cfg.baileysEnabled) {
-    // Registered after gowa, so gowa is preferred while it is the proven one —
-    // registration order is preference order. ADR-0002 keeps both: two working
-    // engines is the failover, and it costs one directory.
+    // The only engine now. Still behind a flag rather than unconditional: it
+    // has never paired a real device, and a deployment should choose that
+    // rather than be upgraded into it.
     registry.register({
       id: "baileys-1",
       kind: "baileys",
@@ -72,7 +64,7 @@ async function main(): Promise<void> {
     // Said once, loudly. A server with no engine answers /health and every
     // read, then fails only when someone tries to pair — which reads as a
     // pairing bug rather than a deployment that was never given an engine.
-    log.warn("no engine is configured; pairing will be refused (set GOWA_BASE_URL, or BAILEYS_ENABLED with CREDENTIAL_ENCRYPTION_KEY)");
+    log.warn("no engine is configured; pairing will be refused (set BAILEYS_ENABLED and CREDENTIAL_ENCRYPTION_KEY)");
   }
 
   // Engine events reach the control plane only through this. Without it a

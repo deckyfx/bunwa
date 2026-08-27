@@ -1,6 +1,6 @@
 # bunwa
 
-A Bun/TypeScript rewrite of [gowa](https://github.com/aldinokemal/go-whatsapp-web-multidevice) — a WhatsApp Web multi-device HTTP API — plus features the original does not have.
+A Bun/TypeScript multi-tenant WhatsApp proxy. Speaks WhatsApp directly through [Baileys](https://github.com/WhiskeySockets/Baileys), with the tenancy, consent and delivery guarantees a shared number needs.
 
 > Side project. The control plane works and is tested, and a first console
 > screen claims a number, shows a scannable QR and watches webhook deliveries.
@@ -13,8 +13,8 @@ A Bun/TypeScript rewrite of [gowa](https://github.com/aldinokemal/go-whatsapp-we
 | 0 — Understand gowa | ✅ | Measured against a live instance; findings in [docs/12](docs/12-stage0-findings.md) |
 | 1 — Control plane | ✅ | Tenancy, consent, messaging, rules, durable webhook delivery |
 | 2 — Hardening | ✅ | Verified backups, rate limits, pressure signals, housekeeping |
-| 3 — Dashboard | 🚧 | Project console: claim, QR, deliveries, live over SSE. Both image tags build and are checked in CI. No operator console, routing or styling yet |
-| 4 — Pivot to Baileys | ⏳ | Replace gowa as the engine ([roadmap](docs/08-roadmap.md)) |
+| 3 — Dashboard | ✅ | Claim, QR, conversations, deliveries; two image tags |
+| 4 — Pivot to Baileys | ✅ | gowa removed; Baileys is the engine |
 | 5 — Features | ⏳ | Ordered by real usage, not novelty |
 
 458 tests across two suites — 454 control plane, 4 dashboard — and
@@ -26,10 +26,14 @@ design.
 
 ## How it fits together
 
-bunwa is a multi-tenant control plane. It does not talk to WhatsApp itself: an
-**engine** does, behind a seven-method `DeviceEngine` interface. gowa is
-engine 1, running on the container loopback; Baileys is planned as engine 2, at
-which point gowa becomes the fallback rather than the dependency.
+bunwa is a multi-tenant control plane that also holds the WhatsApp connection.
+An **engine** sits behind a seven-method `DeviceEngine` interface; Baileys is
+that engine, in-process, and exactly one file may import it
+([ADR-0009](docs/adr/0009-baileys-version-and-isolation.md)).
+
+It began as a proxy in front of gowa. Stages 0-4 removed that, so bunwa now
+owns the credentials, the Signal keys and the history — nothing else is left
+holding them ([docs/13](docs/13-owning-the-data.md)).
 
 Devices are system-owned and global. A project claims a phone number, and the
 hierarchy above it is **Project → Environment → Virtual Device**, with the API
@@ -47,16 +51,6 @@ bun install
 bun run dev
 ```
 
-## Upstream reference
-
-The original Go implementation is cloned into `reference/gowa` for reading only. It is
-git-ignored, excluded from `tsconfig.json`, marked read-only in VS Code, and mounted as a
-second folder in `bunwa.code-workspace`.
-
-```bash
-bun run reference:update   # re-clone / fast-forward to upstream main
-```
-
 ## Scripts
 
 | Script | Description |
@@ -64,7 +58,6 @@ bun run reference:update   # re-clone / fast-forward to upstream main
 | `bun run dev` | Run the app in watch mode |
 | `bun run start` | Run the app once |
 | `bun run typecheck` | Type-check without emitting |
-| `bun run reference:update` | Refresh the gowa reference clone |
 
 ## Licence
 

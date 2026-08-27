@@ -12,7 +12,7 @@ import { LIMITS } from "../../ops/rate-limit";
 import { DeviceStore } from "../../stores/device-store";
 import { problem } from "../server";
 import type { EngineRegistry } from "../../engine/registry";
-import { EngineError, persistedKind } from "../../engine/types";
+import { EngineError } from "../../engine/types";
 import { currentCorrelationId, log } from "../../observability/logger";
 import { UnavailableError } from "../../stores/errors";
 
@@ -107,11 +107,9 @@ export function deviceRoutes(registry: EngineRegistry) {
           await pool.engine.provision(result.device.id);
           // Recorded after provision succeeds, so a device is never counted
           // against a pool that failed to take it.
-          // The pool's own kind, not a translation of it. The ternary here
-          // mapped everything that was not "native" onto "gowa", so a Baileys
-          // pool would have recorded its devices as gowa ones — and the row is
-          // what a later migration or support question reads.
-          await DeviceStore.assignPool(result.device.id, pool.id, persistedKind(pool.kind), result.device.id);
+          // The pool's own kind, recorded as-is. There is no translation
+          // layer any more: the row says which engine holds the device.
+          await DeviceStore.assignPool(result.device.id, pool.id, pool.kind, result.device.id);
           const session = await pool.engine.startPairing(result.device.id, body.pairingMethod ?? "qr");
           return {
             outcome: result.outcome,

@@ -19,8 +19,6 @@ sessions/
 .DS_Store
 *.local
 
-# read-only upstream reference clone (gowa)
-reference/
 
 # stage 0 harness output — contains WhatsApp session credentials
 deploy/stage0/data/

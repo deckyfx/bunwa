@@ -30,6 +30,5 @@
 
   "include": ["src"],
 
-  // Upstream Go reference clone — not part of this project
-  "exclude": ["node_modules", "reference", "dist"]
+  "exclude": ["node_modules", "dist"]
 }
