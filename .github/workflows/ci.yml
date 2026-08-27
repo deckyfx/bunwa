@@ -133,6 +133,19 @@ jobs:
             exit 1
           fi
 
+          # 124 is timeout killing it, which means the process was still alive.
+          # Checked before the message, because a server that logs the config
+          # error and then serves anyway prints exactly what the grep below is
+          # looking for — and refusing to start is the whole claim.
+          #
+          # Third time this step has been able to pass for the wrong reason:
+          # first any non-zero exit counted, then the message alone did.
+          if [ "$status" -eq 124 ]; then
+            echo "::error::the image did not exit; it was still running when the timeout killed it"
+            printf '%s\n' "$output"
+            exit 1
+          fi
+
           if ! printf '%s' "$output" | grep -Fq "BAILEYS_ENABLED requires CREDENTIAL_ENCRYPTION_KEY"; then
             echo "::error::the image failed, but not for the reason this step exists to check"
             printf '%s\n' "$output"
