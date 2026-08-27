@@ -4,8 +4,10 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>bunwa console</title>
-    <!-- Resolved by bun-plugin-tailwind; no config file and no build step. -->
-    <link rel="stylesheet" href="tailwindcss" />
+    <!-- One stylesheet. global.css imports tailwindcss itself, so a second
+         <link rel="stylesheet" href="tailwindcss"> here emitted the whole
+         utility layer twice — two render-blocking requests for one set of
+         rules. Resolved by bun-plugin-tailwind either way; no config file. -->
     <link rel="stylesheet" href="./global.css" />
   </head>
   <body class="bg-white text-slate-900 dark:bg-slate-950 dark:text-slate-100">

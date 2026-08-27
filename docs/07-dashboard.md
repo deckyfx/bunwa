@@ -130,6 +130,31 @@ listed as the intended answers rather than being deleted, because the reasoning
 does not expire — but four screens is not the size at which they earn their
 weight.
 
+Two things the table did not name have since been added:
+
+| Concern | Choice | Rationale |
+| --- | --- | --- |
+| Icons | lucide-react | One set drawn on one grid, tree-shaken per icon. Eight icons cost 1.5 KB gzipped. `react-icons` was the alternative and is the wrong shape here: it aggregates twenty-odd sets whose stroke weights and corner radii do not agree, so its breadth is only useful if you intend to mix them. |
+| Fonts | Fontsource, self-hosted | Inter for prose, JetBrains Mono for identifiers. From npm rather than a `<link>` to Google Fonts, because a console that renders in a fallback face on an air-gapped deployment and reports every operator's IP to a third party is not a property to accept for one line of markup. |
+
+The mono face is the one carrying weight. Most of the load-bearing text on
+these screens is msisdns, JIDs, ULIDs, correlation ids and API keys — read
+character by character, and often retyped — so `0` against `O` and `1` against
+`l` is a legibility requirement rather than a preference. `tnum` and `zero` are
+on for the same reason.
+
+Fonts are also where the only real budget cost is, and it is worth writing down
+because the obvious approach is 3× worse than the one taken. Fontsource splits
+each family across thirteen unicode-range subsets so a browser fetches only the
+one it needs. **Bun inlines every `url()` in a stylesheet as a base64 data URI**,
+which resolves all thirteen at build time and defeats that mechanism entirely.
+Measured on the served page: importing the package's own CSS for both families
+is **313 KB gzipped of render-blocking CSS**; naming the two latin files
+directly in our own `@font-face` rules is **96 KB**. The cost of the second is a
+hardcoded path into someone else's package, which is why a test asserts those
+files exist and are woff2 — a renamed file would otherwise build clean and fall
+back to the system stack in silence.
+
 Server state is **zustand** stores under `src/console/store/`, one per subject,
 each holding the Eden client and the guards that go with it. That was not a
 preference for zustand over TanStack Query so much as the smallest thing that

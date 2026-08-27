@@ -1,13 +1,141 @@
 @import "tailwindcss";
 
 /*
+ * Fonts, from npm and served from our own origin.
+ *
+ * Not a Google Fonts <link>. That is one line instead of twenty, and it means
+ * an operator console that renders in a fallback face on an air-gapped
+ * deployment and reports every operator's IP to a third party on every load.
+ * Fontsource ships the woff2 files as an ordinary package, so the bundler
+ * emits them and neither is true.
+ *
+ * The subset is named explicitly rather than importing the package's own CSS,
+ * and that is the whole reason these rules are written out by hand. Fontsource
+ * splits each family across thirteen unicode-range subsets so a browser
+ * downloads only the one it needs — but Bun inlines every url() in a
+ * stylesheet as a base64 data URI, which resolves all thirteen at build time
+ * and defeats the mechanism entirely. Measured on the served page:
+ * `@import "@fontsource-variable/inter/wght.css"` for both families is 313 KB
+ * gzipped of render-blocking CSS. Naming the latin file directly is 96 KB.
+ *
+ * Both faces are variable, so one file covers the whole weight range.
+ *
+ * These paths are checked by a test. If a Fontsource upgrade renames a file
+ * the build still succeeds and the console silently falls back to the system
+ * stack, which is the exact shape of failure this project keeps finding: it
+ * works, and it is wrong.
+ */
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2") format("woff2-variations");
+}
+
+@font-face {
+  font-family: "JetBrains Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 800;
+  src: url("@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+
+/*
  * The console's own tokens.
  *
  * Deliberately few. This is an operator surface, not a marketing page: the
  * things worth distinguishing at a glance are device state and message
  * direction, and everything else should stay quiet enough that those stand out.
+ *
+ * Two families and no third. Inter for prose, JetBrains Mono for anything the
+ * operator has to read character by character — and on this screen that is
+ * most of the load-bearing text: msisdns, JIDs, ULIDs, correlation ids and API
+ * keys. A mono face is not decoration there. It is the difference between
+ * 0 and O, and between 1, l and I, in a string somebody is about to paste into
+ * a support ticket.
  */
+@theme {
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  /*
+   * Both of these, and this is not redundant.
+   *
+   * `--font-sans` only backs the `font-sans` utility. What preflight puts on
+   * the document root is `var(--default-font-family, <system stack>)`, which
+   * is a different variable — so setting `--font-sans` alone downloaded 48 KB
+   * of Inter and then rendered the page in the system stack anyway, with
+   * nothing anywhere reporting a problem. Caught by reading the served CSS;
+   * it would not have been caught by looking at the screen, because the
+   * fallback looks fine.
+   */
+  --default-font-family: var(--font-sans);
+  --default-mono-font-family: var(--font-mono);
+}
+
 :root {
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   color-scheme: light dark;
+}
+
+/*
+ * Digits line up in columns, and zero is slashed.
+ *
+ * `tnum` because the deliveries and messages tables put numbers under each
+ * other and proportional digits make a column of them ragged. `zero` because
+ * this console displays identifiers that are read aloud and retyped.
+ *
+ * On body rather than :root so it inherits everywhere without having to be
+ * remembered at each call site.
+ */
+body {
+  font-feature-settings: "tnum" 1, "zero" 1;
+}
+
+/*
+ * Anything clickable says so.
+ *
+ * `<button>` inherits `cursor: default` from every UA stylesheet, so the
+ * console's controls looked exactly like the text around them — including the
+ * conversation rows in the thread list, which are buttons and read as a
+ * list of labels until you happen to click one. Nothing in the bundle set
+ * `cursor` at all before this rule.
+ *
+ * In `@layer base` so it stays below the utilities: a `cursor-*` class on a
+ * specific element still wins, which is what makes this a default rather than
+ * something to fight later.
+ */
+@layer base {
+  a[href],
+  button,
+  label[for],
+  summary,
+  select,
+  [role="button"],
+  input:is([type="button"], [type="submit"], [type="reset"], [type="checkbox"], [type="radio"], [type="file"]) {
+    cursor: pointer;
+  }
+
+  /*
+   * And anything that is not clickable *right now* says that instead.
+   *
+   * Every button on these screens has a disabled state — claim while a claim
+   * is in flight, send with an empty draft, replay while replaying — and a
+   * pointer over a control that will not respond is the interface lying about
+   * what a click will do.
+   *
+   * `button:disabled` (0,1,1) outranks the bare `button` (0,0,1) above, so
+   * specificity settles it there. The `input` row is a tie — `:is()` takes the
+   * specificity of its most specific argument, which makes both selectors
+   * (0,1,1) — and source order breaks it. That is the only reason this block
+   * has to come second, and the reason to leave it here rather than tidy the
+   * two into one place.
+   */
+  button:disabled,
+  select:disabled,
+  input:disabled,
+  [role="button"][aria-disabled="true"] {
+    cursor: not-allowed;
+  }
 }

@@ -6,6 +6,7 @@
  * four screens needed the same guards and each had written its own.
  */
 import { useEffect, useState } from "react";
+import { LoaderCircle, Wifi, WifiOff } from "lucide-react";
 
 import { ChatsPage } from "./pages/ChatsPage";
 import { ClaimPage } from "./pages/ClaimPage";
@@ -13,6 +14,21 @@ import { DeliveriesPage } from "./pages/DeliveriesPage";
 import { DevicesPage } from "./pages/DevicesPage";
 import { useEventStream } from "./hooks/useEventStream";
 import { useSession } from "./store/session";
+
+/**
+ * The event stream's state as a shape.
+ *
+ * `live` is deliberately the quiet one. A connected stream is the normal case
+ * and should not draw the eye; the two that matter are `connecting`, which
+ * spins so a wait looks like a wait, and `stale`, which is the console
+ * admitting that what is on screen may be out of date.
+ */
+function StreamIcon({ state }: { state: ReturnType<typeof useEventStream> }) {
+  if (state === "live") return <Wifi aria-hidden size={12} className="text-emerald-600" />;
+  if (state === "connecting")
+    return <LoaderCircle aria-hidden size={12} className="animate-spin text-amber-600" />;
+  return <WifiOff aria-hidden size={12} className="text-rose-600" />;
+}
 
 export function App() {
   const { apiKey, identity, error, busy, connect } = useSession();
@@ -45,11 +61,17 @@ export function App() {
         </div>
 
         {/* The stream state is shown because "nothing is happening" and "we
-            stopped listening" look identical otherwise. */}
+            stopped listening" look identical otherwise.
+
+            The icon carries the same fact as the word, on purpose: this sits
+            in the corner of the header and is read peripherally, where a
+            shape registers and a four-letter word does not. `aria-label` on
+            the wrapper keeps one announcement rather than two. */}
         <span
           aria-label={`event stream ${stream}`}
-          className="rounded-full bg-slate-100 px-2 py-0.5 text-xs dark:bg-slate-800"
+          className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-2 py-0.5 text-xs dark:bg-slate-800"
         >
+          <StreamIcon state={stream} />
           {stream}
         </span>
       </header>
