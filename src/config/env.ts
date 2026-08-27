@@ -8,6 +8,8 @@
  * and malformed is an error.
  */
 
+import { keyFromSecret } from "../crypto/secret-box";
+
 /** Runtime mode. Controls logging format and migration strictness. */
 export type NodeEnv = "development" | "test" | "production";
 
@@ -128,6 +130,15 @@ export class Config {
   /** Devices per engine pool. Bounds the blast radius of one pool failing. */
   readonly enginePoolCapacity: number;
 
+  /**
+   * Key for encrypting WhatsApp credentials at rest, or null outside production.
+   *
+   * Null is permitted in development so a fresh clone runs without ceremony;
+   * the stores refuse to write credentials when it is null rather than writing
+   * them unencrypted.
+   */
+  readonly credentialEncryptionKey: string | null;
+
   constructor(source: Record<string, string | undefined> = Bun.env) {
     this.nodeEnv = oneOf(source, "NODE_ENV", NODE_ENVS, "development");
     this.port = integer(source, "PORT", 3000, 1, 65535);
@@ -153,6 +164,34 @@ export class Config {
     const gowa = source["GOWA_BASE_URL"];
     this.gowaBaseUrl = gowa === undefined || gowa.trim() === "" ? null : gowa.trim();
     this.enginePoolCapacity = integer(source, "ENGINE_POOL_CAPACITY", 25, 1, 500);
+
+    // WhatsApp credentials are encrypted at rest; this is the key.
+    //
+    // Production refuses to start without it rather than falling back to
+    // plaintext. An optional secret is one that is absent in the deployment
+    // that matters, and the failure would be silent — devices would pair,
+    // messages would send, and the account-takeover material would simply be
+    // sitting in the database in the clear.
+    const credentialKey = source["CREDENTIAL_ENCRYPTION_KEY"];
+    const suppliedKey = credentialKey === undefined || credentialKey.trim() === "" ? null : credentialKey.trim();
+
+    if (suppliedKey === null && this.isProduction) {
+      throw new ConfigError(
+        "CREDENTIAL_ENCRYPTION_KEY is required in production: WhatsApp credentials are account-takeover material and must not be stored in the clear. Generate one with `openssl rand -hex 32`.",
+      );
+    }
+
+    if (suppliedKey !== null) {
+      try {
+        // Validated at startup, not at first write. A malformed key discovered
+        // when a device pairs is discovered in front of a customer.
+        keyFromSecret(suppliedKey);
+      } catch (err) {
+        throw new ConfigError(`CREDENTIAL_ENCRYPTION_KEY is not usable: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    this.credentialEncryptionKey = suppliedKey;
     if (this.allowInsecureWebhookTargets && this.isProduction) {
       throw new ConfigError("ALLOW_INSECURE_WEBHOOK_TARGETS must not be true in production");
     }
