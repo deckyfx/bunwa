@@ -21,6 +21,7 @@ import { BaileysAdapter } from "./engine/baileys/adapter";
 import { startEngineConsumer } from "./engine/consumer";
 import { startHousekeeping } from "./ops/housekeeping";
 import { log } from "./observability/logger";
+import { currentLogFile } from "./observability/sinks";
 
 /** How long to let in-flight requests finish before closing connections. */
 const SHUTDOWN_DRAIN_MS = 10_000;
@@ -97,7 +98,9 @@ async function main(consolePage?: ConsolePage): Promise<void> {
   const stopHousekeeping = startHousekeeping();
 
   const stopWorker = startWorker({ allowInsecure: cfg.allowInsecureWebhookTargets });
-  log.info("bunwa started", { ...cfg.describe(), url: server.server?.url.toString() });
+  // The file this line landed in is named in the line itself, so someone
+  // handed a log excerpt can find the rest of it.
+  log.info("bunwa started", { ...cfg.describe(), logFile: currentLogFile(), url: server.server?.url.toString() });
 
   /** Drain in-flight requests before exiting, so a deploy drops nothing. */
   // Idempotent: two signals in quick succession must not run this twice and

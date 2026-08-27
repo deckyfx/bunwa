@@ -20,6 +20,8 @@ export interface Identity {
   projectId: string;
   environmentId: string;
   scopes: string[];
+  /** The zone the server renders timestamps in. See `useServerTimezone`. */
+  serverTimezone: string;
 }
 
 interface SessionState {
@@ -108,3 +110,13 @@ export const useSession = create<SessionState>((set, get) => ({
     set((state) => ({ revision: state.revision + 1 }));
   },
 }));
+
+/**
+ * The zone to render timestamps in.
+ *
+ * The server's, not the browser's. A console showing the reader's local time
+ * while the logs show Jakarta means two people looking at the same incident
+ * read different clocks. UTC is the fallback for the moment before the
+ * identity has loaded, and is at least honestly labelled.
+ */
+export const useServerTimezone = (): string => useSession((s) => s.identity?.serverTimezone ?? "UTC");

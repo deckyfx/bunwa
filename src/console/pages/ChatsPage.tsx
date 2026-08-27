@@ -12,26 +12,30 @@ import { useEffect } from "react";
 
 import { StatusPill } from "../components/StatusPill";
 import { useChats } from "../store/chats";
-import { useSession } from "../store/session";
+import { useServerTimezone, useSession } from "../store/session";
+import { renderDateTime, renderIso } from "../../time/render";
 
 /**
  * A message timestamp, in both forms a `<time>` element wants.
  *
- * Tolerant of a string as well as a Date: Eden revives the field from JSON, and
- * a shape change there should degrade to showing the raw value rather than
- * throwing inside a list render.
+ * Rendered in the server's zone so this reads the same as the logs it will be
+ * compared against, rather than in whatever zone the reader's browser is in.
+ *
+ * Tolerant of a string as well as a Date, and of neither being valid: Eden
+ * revives the field from JSON, and `renderIso`/`renderDateTime` both throw on a
+ * non-finite date — inside a list render, which would take the whole
+ * conversation down rather than show one bad row. Verified that they throw
+ * rather than assumed.
  */
-function occurredAt(value: Date | string): { machine: string; human: string } {
+function occurredAt(value: Date | string, zone: string): { machine: string; human: string } {
   const at = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(at.getTime())) return { machine: "", human: String(value) };
-  return {
-    machine: at.toISOString(),
-    human: at.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
-  };
+  return { machine: renderIso(at, zone), human: renderDateTime(at, zone) };
 }
 
 export function ChatsPage() {
   const revision = useSession((s) => s.revision);
+  const zone = useServerTimezone();
   const {
     threads,
     selectedId,
@@ -122,14 +126,12 @@ export function ChatsPage() {
                   >
                     <p>{message.body ?? `[${message.kind}]`}</p>
                     <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
-                      {/* `dateTime` has to be machine-readable and the text
-                          does not. String(date) gave both the same
-                          "Thu Aug 28 2026 06:15:04 GMT+0700" — which is not a
-                          valid datetime value, so the attribute conveyed
-                          nothing to anything parsing it, and is more than a
-                          reader needs beside a message. */}
-                      <time dateTime={occurredAt(message.occurredAt).machine}>
-                        {occurredAt(message.occurredAt).human}
+                      {/* `dateTime` must be machine-readable and the visible
+                          text must not be — String(date) gave both the same
+                          "Thu Aug 28 2026 06:15:04 GMT+0700", which is not a
+                          valid datetime value and is more than a reader needs. */}
+                      <time dateTime={occurredAt(message.occurredAt, zone).machine}>
+                        {occurredAt(message.occurredAt, zone).human}
                       </time>
                       {/* Outbound only, and honest: pending means the engine
                           has not acknowledged it yet. */}

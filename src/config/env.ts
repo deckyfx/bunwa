@@ -25,6 +25,47 @@ export class ConfigError extends Error {
 }
 
 /** Read an optional variable, applying a default only when it is truly absent. */
+/** How often the log file rolls over. */
+export const LOG_ROTATIONS = ["hourly", "daily", "weekly", "never"] as const;
+export type LogRotation = (typeof LOG_ROTATIONS)[number];
+
+/**
+ * Read one of a fixed set of values.
+ *
+ * Refuses anything else rather than falling back: a misspelled rotation that
+ * silently became "daily" would look correct in every config dump while doing
+ * something the operator did not ask for.
+ */
+function enumerated<T extends string>(
+  source: Record<string, string | undefined>,
+  key: string,
+  allowed: readonly T[],
+  fallback: T,
+): T {
+  const raw = source[key];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const value = raw.trim().toLowerCase() as T;
+  if (!allowed.includes(value)) {
+    throw new ConfigError(`${key} must be one of ${allowed.join(", ")}, got ${raw}`);
+  }
+  return value;
+}
+
+/**
+ * Whether this runtime can actually format in that zone.
+ *
+ * Asked of Intl rather than checked against a list, because the list that
+ * matters is the one the process has.
+ */
+function isUsableTimezone(zone: string): boolean {
+  try {
+    new Intl.DateTimeFormat("en-GB", { timeZone: zone });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function optional(source: Record<string, string | undefined>, key: string, fallback: string): string {
   const raw = source[key];
   if (raw === undefined) return fallback;
@@ -120,6 +161,27 @@ export class Config {
    */
   readonly allowInsecureWebhookTargets: boolean;
   /**
+   * The timezone every rendered date is expressed in.
+   *
+   * One setting rather than each formatter choosing, because a log line, a
+   * console timestamp and a support answer that disagree by seven hours are
+   * worse than any of them being in UTC. Stored timestamps stay UTC — this
+   * governs presentation only.
+   */
+  readonly serverTimezone: string;
+
+  /**
+   * How often the log file rolls over.
+   *
+   * A single growing file is the disk filling by another route, and the one
+   * thing nobody notices until it happens.
+   */
+  readonly logRotation: LogRotation;
+
+  /** Where rotated log files are written. */
+  readonly logDir: string;
+
+  /**
    * Devices per engine pool. Bounds the blast radius of one pool failing.
    *
    * ADR-0003 set this bound when a pool was a separate container, so the
@@ -167,6 +229,19 @@ export class Config {
     }
     this.allowInsecureWebhookTargets = boolean(source, "ALLOW_INSECURE_WEBHOOK_TARGETS", false);
     this.enginePoolCapacity = integer(source, "ENGINE_POOL_CAPACITY", 25, 1, 500);
+
+    // Validated against the runtime's own database rather than a list we would
+    // have to maintain: Intl knows every zone this process can actually
+    // format, so an accepted value is one that works.
+    this.serverTimezone = optional(source, "SERVER_TIMEZONE", "Asia/Jakarta");
+    if (!isUsableTimezone(this.serverTimezone)) {
+      throw new ConfigError(
+        `SERVER_TIMEZONE is not a timezone this runtime knows: ${this.serverTimezone}. Use an IANA name such as Asia/Jakarta.`,
+      );
+    }
+
+    this.logRotation = enumerated(source, "LOG_ROTATION", LOG_ROTATIONS, "daily");
+    this.logDir = optional(source, "LOG_DIR", "./data/logs");
 
     // WhatsApp credentials are encrypted at rest; this is the key.
     //
@@ -246,6 +321,9 @@ export class Config {
       port: this.port,
       host: this.host,
       logLevel: this.logLevel,
+      serverTimezone: this.serverTimezone,
+      logRotation: this.logRotation,
+      logDir: this.logDir,
       database: this.databasePath,
       migrateStrict: this.migrateStrict,
       runtimeDir: this.runtimeDir,

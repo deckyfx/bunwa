@@ -68,7 +68,9 @@ describe("GET /v1/whoami", () => {
   test("resolves the tenant from the key alone", async () => {
     const res = await get("/v1/whoami", { "x-api-key": key });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ...ids, scopes: ["send:text"] });
+    // Exact match, not a subset: whoami is the endpoint an integrator hits
+    // first, and a field appearing in it silently is a contract change.
+    expect(await res.json()).toEqual({ ...ids, scopes: ["send:text"], serverTimezone: "Asia/Jakarta" });
   });
 
   test("rejects a request with no credential", async () => {

@@ -16,6 +16,7 @@ import { config, ConfigError } from "../config/env";
 import { createDatabase } from "../db";
 import { log } from "../observability/logger";
 import { backupFilename, createBackup, listBackups, pruneBackups, verifyBackup } from "./backup";
+import { formatDateTime } from "../time/format";
 
 /** How many snapshots to keep. Enough to survive a bad one going unnoticed. */
 const KEEP = 7;
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
       return;
     }
     for (const b of backups) {
-      console.log(`  ${b.path}  ${(b.sizeBytes / 1024).toFixed(0)} KiB  ${b.createdAt.toISOString()}`);
+      console.log(`  ${b.path}  ${(b.sizeBytes / 1024).toFixed(0)} KiB  ${formatDateTime(b.createdAt)}`);
     }
     return;
   }

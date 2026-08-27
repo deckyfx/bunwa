@@ -10,6 +10,7 @@ import { Elysia, t } from "elysia";
 import { requireApiKey, requireScope } from "../../auth/middleware";
 import { DeliveryStore } from "../../stores/delivery-store";
 import { WebhookStore } from "../../stores/webhook-store";
+import { serverTimezone } from "../../time/format";
 
 export const projectRoutes = new Elysia({ prefix: "/v1" })
   .use(requireApiKey)
@@ -24,6 +25,11 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
     projectId: auth.projectId,
     environmentId: auth.environmentId,
     scopes: auth.scopes,
+    // The zone every timestamp the server renders is in. Returned here so the
+    // console shows the same wall clock as the logs rather than the reader's
+    // own — an operator in another country comparing a screen against a log
+    // file must not be silently seven hours out.
+    serverTimezone: serverTimezone(),
   }))
 
   /** Where this environment's events are delivered. The secret is never returned. */
