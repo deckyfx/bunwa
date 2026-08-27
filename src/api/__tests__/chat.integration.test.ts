@@ -17,6 +17,7 @@ import { ProjectStore } from "../../stores/project-store";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { DeviceStore } from "../../stores/device-store";
+import { handleEngineEvent } from "../../engine/consumer";
 import { ChatStore } from "../../stores/chat-store";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
@@ -61,6 +62,15 @@ beforeEach(async () => {
   const device = (
     await DeviceStore.claim({ environmentId: env.id, msisdn: "+628123456789", alias: "otp" }, database)
   ).device;
+
+  // Activated through the engine event the product uses. ChatStore.record
+  // refuses an environment with no active binding, and a fixture that faked
+  // the state would test a situation the system cannot reach.
+  await handleEngineEvent(
+    { type: "device.connected", deviceId: device.id, jid: "628123456789@s.whatsapp.net", pushName: null },
+    database,
+    "fake",
+  );
 
   await ChatStore.record(
     {

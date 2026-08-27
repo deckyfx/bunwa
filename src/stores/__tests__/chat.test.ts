@@ -7,7 +7,6 @@
  * show the customer the same thing twice.
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
-import { sql } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,13 +19,31 @@ import { ChatStore } from "../chat-store";
 import { DeviceStore } from "../device-store";
 import { ProjectStore } from "../project-store";
 import { EnvironmentStore } from "../environment-store";
+import { handleEngineEvent } from "../../engine/consumer";
 
 const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
+
+/**
+ * Bring a claimed device to an active binding.
+ *
+ * Through the engine event the product actually uses, rather than an UPDATE.
+ * ChatStore.record now refuses an environment with no active binding, and a
+ * fixture that fakes the state would be testing a situation the system cannot
+ * reach — which is how the original tenancy tests came to pass against a leak.
+ */
+async function activate(deviceId: string, database: Database): Promise<void> {
+  await handleEngineEvent(
+    { type: "device.connected", deviceId, jid: "628777777777@s.whatsapp.net", pushName: null },
+    database,
+    "fake",
+  );
+}
 
 let dir: string;
 let database: Database;
 let environmentId: string;
 let otherEnvironmentId: string;
+let otherProjectId: string;
 let deviceId: string;
 let otherDeviceId: string;
 
@@ -41,11 +58,16 @@ beforeEach(async () => {
   database = createDatabase(join(dir, "t.sqlite"));
   await MigrationManager.runMigrations(database);
 
+  // Two projects, not two environments of one. Consent is granted per
+  // (device, project), so a second environment inside the same project shares
+  // its consent and could never demonstrate the boundary being tested here.
   const project = await ProjectStore.create({ slug: "grande", displayName: "G" }, database);
   const env = await EnvironmentStore.create({ projectId: project.id, slug: "prod" }, database);
-  const other = await EnvironmentStore.create({ projectId: project.id, slug: "staging" }, database);
+  const secondProject = await ProjectStore.create({ slug: "rival", displayName: "R" }, database);
+  const other = await EnvironmentStore.create({ projectId: secondProject.id, slug: "prod" }, database);
   environmentId = env.id;
   otherEnvironmentId = other.id;
+  otherProjectId = secondProject.id;
 
   deviceId = (
     await DeviceStore.claim({ environmentId, msisdn: "+628111111111", alias: "otp" }, database)
@@ -56,6 +78,11 @@ beforeEach(async () => {
       database,
     )
   ).device.id;
+
+  // Both paired, because an inbound message for an unpaired device is not a
+  // situation the product can produce.
+  await activate(deviceId, database);
+  await activate(otherDeviceId, database);
 });
 
 afterEach(() => {
@@ -166,33 +193,46 @@ describe("one tenant cannot see another's conversations", () => {
 });
 
 describe("two projects sharing one phone number", () => {
-  // The case the tests above could not catch, and a review said so: they used
-  // different devices, so the assertions held whether or not scoping worked.
+  // The case the earlier tests could not catch: they used different devices,
+  // so the assertions held whether or not scoping worked.
   //
-  // The consent flow exists precisely so two projects can bind one number.
-  // Chat rows key on the global devices.id, so scoping a thread through the
-  // device matched every environment bound to it. Measured before the fix: the
-  // second project read the first one's message body verbatim.
-  test("the second project cannot read the first one's conversation", async () => {
-    const shared = (
-      await DeviceStore.claim({ environmentId, msisdn: "+628777777777", alias: "shared" }, database)
-    ).device;
+  // The fixture goes through the real consent flow rather than setting
+  // virtual_devices.status with raw SQL. A review pointed out that bypassing
+  // it proved isolation from an unauthorised state, which is a weaker claim
+  // than the one that matters — two projects that both legitimately hold the
+  // number still cannot see each other's messages.
+  async function shareDeviceWithSecondProject(): Promise<string> {
+    const first = await DeviceStore.claim(
+      { environmentId, msisdn: "+628777777777", alias: "shared" },
+      database,
+    );
 
-    // Bind the other environment to the same device and make it active. How it
-    // got there is the consent flow's business; what an active second binding
-    // can see is this test's.
-    await DeviceStore.claim(
+    const second = await DeviceStore.claim(
       { environmentId: otherEnvironmentId, msisdn: "+628777777777", alias: "shared-too" },
       database,
     );
-    database.run(
-      sql`UPDATE virtual_devices SET status = 'active' WHERE environment_id = ${otherEnvironmentId}`,
+    expect(second.outcome, "the second claim should need the phone holder's consent").toBe(
+      "awaiting_confirmation",
     );
+
+    // The phone holder says yes, exactly as they would over WhatsApp.
+    const consent = await DeviceStore.consentFor(first.device.id, otherProjectId, database);
+    expect(consent?.challengeToken).toBeString();
+    await DeviceStore.respondToConsent(consent!.challengeToken!, "granted", "whatsapp_reply", {}, database);
+
+    // Pairing completes once, for the device both projects now hold.
+    await activate(first.device.id, database);
+
+    return first.device.id;
+  }
+
+  test("the second project cannot read the first one's conversation", async () => {
+    const deviceId = await shareDeviceWithSecondProject();
 
     await ChatStore.record(
       {
         environmentId,
-        deviceId: shared.id,
+        deviceId,
         peerJid: "628999@s.whatsapp.net",
         direction: "inbound",
         providerMessageId: "shared-1",
@@ -206,7 +246,7 @@ describe("two projects sharing one phone number", () => {
     const theirs = await ChatStore.threadsForEnvironment(otherEnvironmentId, 50, database);
     expect(theirs, "the other project saw a conversation on a shared device").toEqual([]);
 
-    // And it cannot reach the messages by knowing the thread id either.
+    // Nor by knowing the thread id, which is the attack a UUID does not stop.
     const mine = await ChatStore.threadsForEnvironment(environmentId, 50, database);
     const thread = mine.find((candidate) => candidate.peerJid === "628999@s.whatsapp.net");
     expect(thread).toBeDefined();
@@ -217,12 +257,9 @@ describe("two projects sharing one phone number", () => {
   });
 
   test("each project keeps its own history on the same device", async () => {
-    // Not isolation for its own sake: both projects legitimately use the
-    // number, so both must be able to hold a conversation with the same peer
-    // without seeing each other's.
-    const shared = (
-      await DeviceStore.claim({ environmentId, msisdn: "+628777777777", alias: "shared" }, database)
-    ).device;
+    // Isolation is not the whole requirement: both projects legitimately use
+    // the number, so both must be able to talk to the same peer.
+    const deviceId = await shareDeviceWithSecondProject();
 
     for (const [env, body] of [
       [environmentId, "mine"],
@@ -231,7 +268,7 @@ describe("two projects sharing one phone number", () => {
       await ChatStore.record(
         {
           environmentId: env,
-          deviceId: shared.id,
+          deviceId,
           peerJid: "628999@s.whatsapp.net",
           direction: "inbound",
           providerMessageId: `msg-${body}`,
@@ -253,6 +290,54 @@ describe("two projects sharing one phone number", () => {
     expect((await ChatStore.messagesInThread(otherEnvironmentId, theirs[0]!.id, 200, database))[0]!.body).toBe(
       "theirs",
     );
+  });
+
+  test("an environment with no binding cannot record at all", async () => {
+    // The store refuses rather than trusting the caller's environmentId. Every
+    // caller derives it from an active binding today, so this is the boundary
+    // where a mistake upstream would otherwise become one tenant's history
+    // filed under another's.
+    const orphan = await DeviceStore.claim(
+      { environmentId, msisdn: "+628666666666", alias: "mine-only" },
+      database,
+    );
+
+    await expect(
+      ChatStore.record(
+        {
+          environmentId: otherEnvironmentId,
+          deviceId: orphan.device.id,
+          peerJid: "628999@s.whatsapp.net",
+          direction: "inbound",
+          providerMessageId: "no-binding",
+          kind: "text",
+          body: "should not be stored",
+          occurredAt: new Date(5_000),
+        },
+        database,
+      ),
+    ).rejects.toThrow(/no active binding/);
+  });
+});
+
+describe("thread ordering", () => {
+  test("a late-arriving older message does not drag the thread down the list", async () => {
+    // WhatsApp redelivers, so an older message can arrive after a newer one.
+    // Taking the last write would sort a live conversation below stale ones
+    // and hide it from the console.
+    await ChatStore.record(inbound({ providerMessageId: "new", occurredAt: new Date(90_000) }), database);
+    await ChatStore.record(inbound({ providerMessageId: "old", occurredAt: new Date(10_000) }), database);
+
+    const [thread] = await ChatStore.threadsForEnvironment(environmentId, 50, database);
+    expect(thread!.lastMessageAt?.getTime(), "the thread timestamp moved backwards").toBe(90_000);
+  });
+
+  test("a genuinely newer message does move it", async () => {
+    await ChatStore.record(inbound({ providerMessageId: "first", occurredAt: new Date(10_000) }), database);
+    await ChatStore.record(inbound({ providerMessageId: "second", occurredAt: new Date(90_000) }), database);
+
+    const [thread] = await ChatStore.threadsForEnvironment(environmentId, 50, database);
+    expect(thread!.lastMessageAt?.getTime()).toBe(90_000);
   });
 });
 

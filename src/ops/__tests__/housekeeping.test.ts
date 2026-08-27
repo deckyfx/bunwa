@@ -27,6 +27,7 @@ import { ProjectStore } from "../../stores/project-store";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { mintTicket, ticketCount, TICKET_TTL_MS } from "../../stores/stream-ticket-store";
+import { handleEngineEvent } from "../../engine/consumer";
 import { ChatStore } from "../../stores/chat-store";
 import { DeviceStore } from "../../stores/device-store";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
@@ -224,6 +225,15 @@ describe("runHousekeeping", () => {
     const device = (
       await DeviceStore.claim({ environmentId: environment.id, msisdn: "+628555555555", alias: "otp" }, database)
     ).device;
+
+  // Activated through the engine event the product uses. ChatStore.record
+  // refuses an environment with no active binding, and a fixture that faked
+  // the state would test a situation the system cannot reach.
+  await handleEngineEvent(
+    { type: "device.connected", deviceId: device.id, jid: "628123456789@s.whatsapp.net", pushName: null },
+    database,
+    "fake",
+  );
 
     const ancient = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
     await ChatStore.record(

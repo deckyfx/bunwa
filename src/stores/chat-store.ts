@@ -12,6 +12,7 @@ import { and, desc, eq, lt, sql } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import { chatMessages, chatThreads, virtualDevices } from "../db/schema";
+import { ValidationError } from "./errors";
 import { withTransaction } from "../db/transaction";
 
 export interface RecordedMessage {
@@ -50,6 +51,33 @@ export const ChatStore = {
    */
   async record(input: RecordedMessage, database: Database = db()): Promise<{ id: string; threadId: string } | null> {
     return withTransaction(database, async (tx) => {
+      // The environment is checked against the device, not trusted.
+      //
+      // Every caller today derives it from an active binding, so this is
+      // defence in depth — but it is the boundary where a mistake upstream
+      // becomes one tenant's history filed under another's, and the store is
+      // the last place that can still refuse. A review pointed out that the
+      // shared-device test recorded for an environment with no binding at all
+      // and the store accepted it.
+      const [binding] = await tx
+        .select({ id: virtualDevices.id })
+        .from(virtualDevices)
+        .where(
+          and(
+            eq(virtualDevices.deviceId, input.deviceId),
+            eq(virtualDevices.environmentId, input.environmentId),
+            eq(virtualDevices.status, "active"),
+          ),
+        )
+        .limit(1);
+
+      if (binding === undefined) {
+        throw new ValidationError(
+          "that environment has no active binding for this device",
+          "environmentId",
+        );
+      }
+
       if (input.providerMessageId !== null) {
         const [existing] = await tx
           .select({ id: chatMessages.id, threadId: chatMessages.threadId })
@@ -78,7 +106,10 @@ export const ChatStore = {
         .onConflictDoUpdate({
           target: [chatThreads.environmentId, chatThreads.deviceId, chatThreads.peerJid],
           set: {
-            lastMessageAt: input.occurredAt,
+            // Never backwards. A message that arrives late but happened
+            // earlier would otherwise drop the conversation below older ones,
+            // so the console would sort a live thread out of sight.
+            lastMessageAt: sql`MAX(COALESCE(${chatThreads.lastMessageAt}, 0), ${input.occurredAt.getTime()})`,
             // Counted in SQL rather than read-then-written: two inbound
             // messages arriving together would otherwise both read the same
             // value and the count would drift low.
@@ -165,10 +196,17 @@ export const ChatStore = {
 
   /** Mark a thread read. Scoped, so one tenant cannot clear another's badge. */
   async markRead(environmentId: string, threadId: string, database: Database = db()): Promise<boolean> {
-    const owned = await this.threadIsOwnedBy(environmentId, threadId, database);
-    if (!owned) return false;
-    await database.update(chatThreads).set({ unreadCount: 0 }).where(eq(chatThreads.id, threadId));
-    return true;
+    // One scoped update rather than a check followed by an unscoped write.
+    // The check was correct and the write filtered on threadId alone, so the
+    // boundary lived in two statements with a gap between them; here it is a
+    // single predicate the database enforces.
+    const updated = await database
+      .update(chatThreads)
+      .set({ unreadCount: 0 })
+      .where(and(eq(chatThreads.id, threadId), eq(chatThreads.environmentId, environmentId)))
+      .returning({ id: chatThreads.id });
+
+    return updated.length > 0;
   },
 
   /** Whether an environment owns a thread. The check every mutation needs. */
@@ -213,11 +251,22 @@ export const ChatStore = {
    * deleting it would make the peer vanish from the console rather than merely
    * lose its history.
    */
-  async sweepOlderThan(cutoff: Date, database: Database = db()): Promise<number> {
-    const removed = await database
-      .delete(chatMessages)
-      .where(lt(chatMessages.occurredAt, cutoff))
-      .returning({ id: chatMessages.id });
+  async sweepOlderThan(
+    cutoff: Date,
+    database: Database = db(),
+    environmentId?: string,
+  ): Promise<number> {
+    // Cross-tenant by default because housekeeping is run by the process, not
+    // by a request — the same shape as the rate-limit and ticket sweeps. The
+    // optional scope exists so a future per-tenant retention or erasure
+    // request cannot reach for the global one by accident and delete everyone
+    // else's history.
+    const where =
+      environmentId === undefined
+        ? lt(chatMessages.occurredAt, cutoff)
+        : and(lt(chatMessages.occurredAt, cutoff), eq(chatMessages.environmentId, environmentId));
+
+    const removed = await database.delete(chatMessages).where(where).returning({ id: chatMessages.id });
     return removed.length;
   },
 };
