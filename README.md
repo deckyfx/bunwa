@@ -88,6 +88,7 @@ in a deploy.
 | `bun test` | The whole suite — server and console |
 | `bun run db:generate` | Generate a migration from `src/db/schema.ts`, then re-embed |
 | `bun run db:migrate` | Apply pending migrations |
+| `bun run db:purge` | Delete the database and start blank. Asks first; `--dry-run`, `--migrate`, `--yes` |
 | `bun run db:embed` | Rebuild the migration manifest compiled into the binary |
 | `bun run db:studio` | Drizzle Studio against the local database |
 | `bun run backup` | Take a verified snapshot; refuses one whose schema does not match the build |
