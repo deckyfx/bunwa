@@ -408,8 +408,15 @@ export async function openSocket(options: SocketOptions): Promise<SocketHandle> 
   };
 
   socket.ev.on("creds.update", () => {
-    void saveCreds();
-    emit({ kind: "credentials_updated" });
+    // Caught, not floated. An unhandled rejection from the SQLite upsert can
+    // terminate the process, and even when it does not, the device keeps
+    // running with credentials that were never persisted — so the next restart
+    // makes the customer re-pair for a failure nobody saw.
+    void saveCreds()
+      .then(() => emit({ kind: "credentials_updated" }))
+      .catch((err: unknown) => {
+        log.error("could not persist credentials", err, { deviceId: options.deviceId });
+      });
   });
 
   socket.ev.on("messages.upsert", ({ messages, type }) => {

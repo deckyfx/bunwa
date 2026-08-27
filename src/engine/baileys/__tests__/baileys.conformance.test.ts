@@ -1,11 +1,16 @@
 /**
  * The conformance suite against the Baileys adapter.
  *
- * `canPairUnattended` is false, and that is the honest answer: pairing needs a
- * person holding a phone. The harness declares it up front rather than
- * discovering it, because a `pair()` that bails at runtime leaves the callback
- * returning normally and the runner records a pass — which is how seven checks
- * were once reported green for an engine that had never run them.
+ * `canPairUnattended` is true here, and the qualifier matters: pairing is
+ * driven through a stub, not through WhatsApp. Against the real socket it
+ * would be false — pairing needs a person holding a phone — and an earlier
+ * version of this file said so while setting true, which left a reader unable
+ * to tell which claim was current.
+ *
+ * The flag is declared up front rather than discovered, because a `pair()`
+ * that bails at runtime leaves the callback returning normally and the runner
+ * records a pass — which is how seven checks were once reported green for an
+ * engine that had never run them.
  *
  * A real database is set up here, unlike the FakeEngine run. This engine keeps
  * credentials in SQLite, so storage is a genuine dependency rather than test

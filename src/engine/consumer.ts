@@ -189,13 +189,25 @@ async function recordInbound(
   // consent flow allows — and each keeps its own history. Recording once
   // against the device instead let any project bound to the number read every
   // other project's conversation; measured before this changed.
-  const bindings = await database
-    .select({ environmentId: virtualDevices.environmentId })
-    .from(virtualDevices)
-    .where(and(eq(virtualDevices.deviceId, event.deviceId), eq(virtualDevices.status, "active")));
-
+  let bindings: { environmentId: string }[];
   try {
-    for (const binding of bindings) {
+    // Inside the boundary: a failed lookup used to reject out of
+    // recordInbound, so the rules and the fan-out never ran for a message
+    // whose only problem was that history could not be written.
+    bindings = await database
+      .select({ environmentId: virtualDevices.environmentId })
+      .from(virtualDevices)
+      .where(and(eq(virtualDevices.deviceId, event.deviceId), eq(virtualDevices.status, "active")));
+  } catch (err) {
+    log.error("could not resolve bindings for inbound message", err, { deviceId: event.deviceId });
+    return;
+  }
+
+  for (const binding of bindings) {
+    // Each binding independently. One tenant's write failing must not silence
+    // every later tenant on the same device — they are separate customers who
+    // share only a phone number.
+    try {
       await ChatStore.record(
         {
           environmentId: binding.environmentId,
@@ -213,11 +225,14 @@ async function recordInbound(
         },
         database,
       );
+    } catch (err) {
+      // Never fatal to the event loop. A history write that fails must not
+      // stop the rules, the fan-out, or the next message.
+      log.error("could not record inbound message", err, {
+        deviceId: event.deviceId,
+        environmentId: binding.environmentId,
+      });
     }
-  } catch (err) {
-    // Never fatal to the event loop. A history write that fails must not stop
-    // the rules, the fan-out, or the next message.
-    log.error("could not record inbound message", err, { deviceId: event.deviceId });
   }
 }
 

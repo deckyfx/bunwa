@@ -106,6 +106,19 @@ jobs:
           docker build --target api  -t bunwa:api  .
           docker build --target full -t bunwa:full .
 
+      - name: The engine that stores credentials refuses to start without a key
+        # A container that boots without it would write account-takeover
+        # material to the database in the clear. Asserted here because it is a
+        # deployment property: the unit test proves the config object refuses,
+        # this proves the image does.
+        run: |
+          if docker run --rm -e NODE_ENV=production -e BAILEYS_ENABLED=true bunwa:api \
+               bun run src/index.ts 2>/dev/null; then
+            echo "::error::the image started with baileys enabled and no encryption key"
+            exit 1
+          fi
+          echo "refused, as it should"
+
       - name: The api image carries no console
         # The whole mechanism behind two tags from one binary. If assets ever
         # leak into this image, /app starts answering in a deployment that asked

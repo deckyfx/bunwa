@@ -134,6 +134,17 @@ export class BaileysAdapter implements DeviceEngine {
    */
   async startPairing(deviceId: string, method: PairingMethod): Promise<PairingSession> {
     await this.provision(deviceId);
+
+    if (method === "code") {
+      // Refused before anything is opened. Rejecting after connect() left a
+      // live WhatsApp socket and a rotating QR for a device nobody was
+      // pairing, held in session.handle with nothing to close it.
+      throw new EngineError(
+        "pairing by code needs the device msisdn, which the engine does not hold; use startPairingWithCode",
+        false,
+      );
+    }
+
     const session = this.sessions.get(deviceId)!;
 
     if (session.handle === null) await this.connect(deviceId);
@@ -143,15 +154,6 @@ export class BaileysAdapter implements DeviceEngine {
     }
 
     const expiresAt = new Date(Date.now() + QR_TTL_MS);
-
-    if (method === "code") {
-      // The number is required for a pairing code, and it is the device's own
-      // — not a recipient's. The caller holds it; the engine does not.
-      throw new EngineError(
-        "pairing by code needs the device msisdn, which the engine does not hold; use startPairingWithCode",
-        false,
-      );
-    }
 
     // The QR arrives asynchronously on the event stream. Waiting for the first
     // one here means the caller gets something to display rather than an empty
@@ -205,6 +207,14 @@ export class BaileysAdapter implements DeviceEngine {
     session.handle = null;
     session.connected = false;
     session.loggedIn = false;
+    // Cleared, or the device can never be paired again.
+    //
+    // `stopping` exists to keep a reconnect from fighting a deliberate stop.
+    // Leaving it set made connect() return early for ever, so a later
+    // startPairing found no handle, could not create one, and threw — the
+    // logout-then-re-pair workflow this engine ships with, broken by its own
+    // logout. purge is unaffected because it deletes the session entirely.
+    session.stopping = false;
     // The identity goes with the login. The slot stays, so re-pairing needs no
     // new consent — but reporting the old jid on a logged-out device would let
     // the control plane believe it still knows who this is.

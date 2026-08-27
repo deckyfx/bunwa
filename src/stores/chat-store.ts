@@ -135,7 +135,11 @@ export const ChatStore = {
           kind: input.kind,
           body: input.body,
           mediaId: input.mediaId ?? null,
-          status: input.status ?? (input.direction === "outbound" ? "pending" : null),
+          // undefined means "no opinion, use the default"; an explicit null
+          // means the caller decided there is no status, and coercing that to
+          // pending would invent a delivery state nobody asked for.
+          status:
+            input.status === undefined ? (input.direction === "outbound" ? "pending" : null) : input.status,
           occurredAt: input.occurredAt,
         })
         .returning({ id: chatMessages.id });
@@ -207,6 +211,27 @@ export const ChatStore = {
       .returning({ id: chatThreads.id });
 
     return updated.length > 0;
+  },
+
+  /**
+   * One thread by id, scoped to its environment.
+   *
+   * The tenant predicate stays in the statement rather than being applied by
+   * the caller after the fact, which is the same shape as threadIsOwnedBy and
+   * markRead. Returns null both for "not yours" and "does not exist", so a
+   * route cannot accidentally tell the two apart.
+   */
+  async findThread(
+    environmentId: string,
+    threadId: string,
+    database: Database = db(),
+  ): Promise<{ id: string; deviceId: string; peerJid: string } | null> {
+    const [row] = await database
+      .select({ id: chatThreads.id, deviceId: chatThreads.deviceId, peerJid: chatThreads.peerJid })
+      .from(chatThreads)
+      .where(and(eq(chatThreads.id, threadId), eq(chatThreads.environmentId, environmentId)))
+      .limit(1);
+    return row ?? null;
   },
 
   /** Whether an environment owns a thread. The check every mutation needs. */

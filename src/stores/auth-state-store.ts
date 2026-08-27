@@ -62,7 +62,14 @@ function requireKey(): Buffer {
 }
 
 export const AuthStateStore = {
-  /** The stored credentials for a device, or null if it has never paired. */
+  /**
+   * Restore a paired device's account state after a restart.
+   *
+   * The reason credentials are persisted at all: without this a process
+   * restart would make every customer re-pair, which is the most expensive
+   * thing this system could do to them. Null means the device has never
+   * paired, so the caller starts a fresh identity rather than failing.
+   */
   async loadCreds(deviceId: string, database: Database = db()): Promise<Buffer | null> {
     const [row] = await database
       .select({ ciphertext: deviceCredentials.ciphertext, iv: deviceCredentials.iv })
@@ -107,7 +114,8 @@ export const AuthStateStore = {
   ): Promise<Map<string, Buffer>> {
     if (ids.length === 0) return new Map();
 
-    const byHash = new Map(ids.map((id) => [keyIdHash(id), id]));
+    const key = requireKey();
+    const byHash = new Map(ids.map((id) => [keyIdHash(id, key), id]));
     const rows = await database
       .select({
         keyHash: deviceSignalKeys.keyHash,
@@ -123,7 +131,6 @@ export const AuthStateStore = {
         ),
       );
 
-    const key = requireKey();
     const out = new Map<string, Buffer>();
     for (const row of rows) {
       const id = byHash.get(row.keyHash);
@@ -156,7 +163,7 @@ export const AuthStateStore = {
     // exists. Code written against the wrapper looks transactional and is not.
     await withTransaction(database, async (tx) => {
       for (const entry of entries) {
-        const keyHash = keyIdHash(entry.id);
+        const keyHash = keyIdHash(entry.id, key);
 
         if (entry.value === null) {
           await tx

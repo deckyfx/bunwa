@@ -7,8 +7,10 @@
  * ever; the second hammers WhatsApp with credentials it has already rejected,
  * which is how a number gets restricted.
  *
- * Codes are asserted by number, taken from the library at 6.7.24, so an
+ * Codes are asserted by number, verified against the pinned 7.0.0-rc14, so an
  * upstream renumbering fails here rather than silently changing behaviour.
+ * The version is named because that is the whole value of the reference — an
+ * earlier draft said 6.7.24, which the project no longer uses.
  */
 import { describe, expect, test } from "bun:test";
 

@@ -108,3 +108,52 @@ describe("a disconnect that must not be retried", () => {
     await engine.close();
   }, 20_000);
 });
+
+describe("logout then pair again", () => {
+  test("a device logged out through the API can be re-paired", async () => {
+    // The workflow this engine ships with, and logout used to break it:
+    // `stopping` stayed set for ever, connect() returned early, and
+    // startPairing threw "could not open a socket" until the process
+    // restarted.
+    let opens = 0;
+    const engine = new BaileysAdapter({
+      openSocket: () => {
+        opens += 1;
+        return Promise.resolve(new StubSocket());
+      },
+    });
+
+    await engine.provision("d1");
+    await engine.startPairing("d1", "qr");
+    expect(opens).toBe(1);
+
+    await engine.logout("d1");
+
+    // The device must be usable again without a restart.
+    const session = await engine.startPairing("d1", "qr");
+    expect(session.qr, "the device could not be re-paired after logout").toBeString();
+    expect(opens).toBe(2);
+
+    await engine.close();
+  }, 20_000);
+});
+
+describe("pairing by code", () => {
+  test("is refused without opening a socket", async () => {
+    // Rejecting after connect() left a live WhatsApp connection and a
+    // rotating QR for a device nobody was pairing.
+    let opens = 0;
+    const engine = new BaileysAdapter({
+      openSocket: () => {
+        opens += 1;
+        return Promise.resolve(new StubSocket());
+      },
+    });
+
+    await engine.provision("d1");
+    await expect(engine.startPairing("d1", "code")).rejects.toThrow(/startPairingWithCode/);
+    expect(opens, "a socket was opened for a call that was going to be refused").toBe(0);
+
+    await engine.close();
+  }, 20_000);
+});

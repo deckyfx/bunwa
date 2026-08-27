@@ -79,18 +79,42 @@ describe("the key itself", () => {
 });
 
 describe("key ids are stored without the phone number", () => {
+  const SESSION = "628123456789@s.whatsapp.net";
+
   test("a session id does not survive hashing", () => {
     // Baileys' file store writes session-628123456789@s.whatsapp.net.json, so
     // the recipient list is a directory listing. This is the fix.
-    const hashed = keyIdHash("628123456789@s.whatsapp.net");
+    const hashed = keyIdHash(SESSION, KEY);
     expect(hashed).not.toContain("628123456789");
     expect(hashed).toMatch(/^[0-9a-f]{64}$/);
   });
 
   test("the same id hashes the same way, so lookup still works", () => {
-    // Deterministic on purpose: Baileys only ever asks for ids it already
-    // holds, so exact lookup is all that is needed and enumeration is not.
-    expect(keyIdHash("pre-key-42")).toBe(keyIdHash("pre-key-42"));
-    expect(keyIdHash("pre-key-42")).not.toBe(keyIdHash("pre-key-43"));
+    // Deterministic under one key: Baileys only ever asks for ids it already
+    // holds, so recomputing is all that is needed and reversing is not.
+    expect(keyIdHash("pre-key-42", KEY)).toBe(keyIdHash("pre-key-42", KEY));
+    expect(keyIdHash("pre-key-42", KEY)).not.toBe(keyIdHash("pre-key-43", KEY));
+  });
+
+  test("guessing the number does not reproduce the digest without the key", () => {
+    // The reason a bare SHA-256 was not enough. A phone number has nowhere
+    // near the entropy to hide behind an unkeyed hash — measured, recovering
+    // one from a ten-thousand-number range took 4ms — so anyone who could
+    // read the database could enumerate every recipient. An attacker who
+    // knows the exact id still cannot produce the stored value.
+    const unkeyed = new Bun.CryptoHasher("sha256").update(SESSION).digest("hex");
+    expect(keyIdHash(SESSION, KEY)).not.toBe(unkeyed);
+  });
+
+  test("a different key gives a different digest for the same id", () => {
+    expect(keyIdHash(SESSION, KEY)).not.toBe(keyIdHash(SESSION, keyFromSecret("b".repeat(64))));
+  });
+
+  test("the identifier secret is not the encryption key itself", () => {
+    // Domain separation: one secret with two jobs is one mistake away from a
+    // ciphertext and a digest sharing material.
+    expect(keyIdHash(SESSION, KEY)).not.toBe(
+      new Bun.CryptoHasher("sha256").update(Buffer.concat([KEY, Buffer.from(SESSION)])).digest("hex"),
+    );
   });
 });

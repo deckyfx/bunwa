@@ -26,13 +26,15 @@ export type EngineKind = "gowa" | "baileys" | "native" | "fake";
 /**
  * The kind as stored on a device row.
  *
- * Identical to EngineKind today, and separate on purpose: the persisted set is
- * a data format that outlives any one build, so widening it is a migration
- * question while widening EngineKind is not. The pairing route previously
+ * Identical to EngineKind today, and written out rather than aliased to it on
+ * purpose: the persisted set is a data format that outlives any one build, so
+ * widening it is a migration question while widening EngineKind is not. As an
+ * alias, a new engine kind would cross this boundary silently; spelled out,
+ * persistedKind fails to compile until someone decides what to store. The pairing route previously
  * collapsed everything that was not "native" into "gowa" at this boundary,
  * which recorded the wrong engine against every device a fake pool held.
  */
-export type PersistedEngineKind = EngineKind;
+export type PersistedEngineKind = "gowa" | "baileys" | "native" | "fake";
 
 /** The kind to record for a pool. Explicit so the mapping has one home. */
 export function persistedKind(kind: EngineKind): PersistedEngineKind {

@@ -12,7 +12,7 @@
  * corruption of a credential is worse than a loud failure — the loud one is a
  * restore, the silent one is a device behaving oddly for a week.
  */
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from "node:crypto";
 
 /** 96 bits, the size GCM is specified for. Not a preference. */
 const IV_BYTES = 12;
@@ -75,15 +75,30 @@ export function open(sealed: Sealed, key: Buffer): Buffer {
 }
 
 /**
- * The storage id for a Signal key.
+ * The storage id for a Signal key: keyed, not merely hashed.
  *
- * Baileys looks keys up by an id it already holds and never enumerates them,
- * so the id need not be recoverable — which matters because session ids are
- * `<msisdn>@s.whatsapp.net`. Baileys' file store puts that in a filename, so
- * an OTP sender ends up with one file per recipient and a contact list anyone
- * with directory access can read. Hashing keeps exact lookup and stores no
- * number.
+ * Session ids are `<msisdn>@s.whatsapp.net`, and Baileys' own store puts that
+ * straight into a filename, so an OTP sender's recipient list is a directory
+ * listing. Storing a digest instead was the fix — but the first version used
+ * a bare SHA-256, and a phone number has nowhere near enough entropy for that
+ * to hide anything. Measured: recovering one from a ten-thousand-number range
+ * took 4ms. Anyone who could read the database could enumerate every
+ * recipient, which is precisely what the digest was supposed to prevent.
+ *
+ * HMAC with a key derived from CREDENTIAL_ENCRYPTION_KEY makes the guess
+ * useless without the secret. Lookup still works because Baileys only ever
+ * asks for ids it already holds, so the value never needs to be reversed —
+ * only recomputed.
+ *
+ * The key is domain-separated from the encryption key rather than reused
+ * directly: one secret with two jobs is one mistake away from a ciphertext
+ * and a digest sharing material.
  */
-export function keyIdHash(id: string): string {
-  return new Bun.CryptoHasher("sha256").update(id).digest("hex");
+export function keyIdHash(id: string, key: Buffer): string {
+  return createHmac("sha256", deriveKeyIdSecret(key)).update(id).digest("hex");
+}
+
+/** A distinct secret for identifiers, from the same configured key. */
+function deriveKeyIdSecret(key: Buffer): Buffer {
+  return createHmac("sha256", key).update("bunwa:signal-key-id:v1").digest();
 }

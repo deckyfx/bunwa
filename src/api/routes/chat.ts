@@ -19,7 +19,13 @@ export const chatRoutes = new Elysia({ prefix: "/v1" })
   /** Conversations, newest first. */
   .get(
     "/chats",
-    async ({ auth, query }) => ChatStore.threadsForEnvironment(auth.environmentId, query.limit ?? 50),
+    async ({ auth, query, path }) => {
+      // Reading conversations is not a send permission. A key scoped only to
+      // send:text could list every thread and read every body, which is a
+      // wider grant than its scope names.
+      requireScope(auth, "receive:messages", path);
+      return ChatStore.threadsForEnvironment(auth.environmentId, query.limit ?? 50);
+    },
     { query: t.Object({ limit: t.Optional(t.Numeric({ minimum: 1, maximum: 200 })) }) },
   )
 
@@ -33,6 +39,7 @@ export const chatRoutes = new Elysia({ prefix: "/v1" })
   .get(
     "/chats/:id/messages",
     async ({ auth, params, query, set, path }) => {
+      requireScope(auth, "receive:messages", path);
       const owned = await ChatStore.threadIsOwnedBy(auth.environmentId, params.id);
       if (!owned) {
         set.status = 404;
@@ -50,6 +57,9 @@ export const chatRoutes = new Elysia({ prefix: "/v1" })
   .post(
     "/chats/:id/read",
     async ({ auth, params, set, path }) => {
+      // Clearing a badge mutates what another reader sees, so it needs the
+      // read scope rather than being treated as harmless.
+      requireScope(auth, "receive:messages", path);
       const marked = await ChatStore.markRead(auth.environmentId, params.id);
       if (!marked) {
         set.status = 404;
@@ -73,10 +83,12 @@ export const chatRoutes = new Elysia({ prefix: "/v1" })
     async ({ auth, params, body, set, path }) => {
       requireScope(auth, "send:text", path);
 
-      const thread = (await ChatStore.threadsForEnvironment(auth.environmentId, 200)).find(
-        (candidate) => candidate.id === params.id,
-      );
-      if (thread === undefined) {
+      // Looked up by id, not found by scanning the newest 200. An environment
+      // with more threads than that could not reply in an older conversation
+      // at all — the route answered 404 for a thread it owns — and every send
+      // loaded 200 rows to find one.
+      const thread = await ChatStore.findThread(auth.environmentId, params.id);
+      if (thread === null) {
         set.status = 404;
         return problem(404, "chat-not-found", "Not Found", "no such conversation", path);
       }

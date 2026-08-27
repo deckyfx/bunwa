@@ -29,6 +29,7 @@ let database: Database;
 let app: ReturnType<typeof createApp>;
 let key: string;
 let otherKey: string;
+let sendOnlyKey: string;
 let threadId: string;
 
 beforeEach(async () => {
@@ -46,15 +47,34 @@ beforeEach(async () => {
   const env = await EnvironmentStore.create({ projectId: project.id, slug: "prod" }, database);
   const other = await EnvironmentStore.create({ projectId: project.id, slug: "staging" }, database);
 
+  // Reading conversations needs receive:messages; replying needs send:text.
+  // The console holds both, which is what makes the send-only case below a
+  // real distinction rather than a quirk of the fixture.
   key = (
     await ApiKeyStore.create(
-      { projectId: project.id, environmentId: env.id, label: "console", scopes: ["send:text"] },
+      {
+        projectId: project.id,
+        environmentId: env.id,
+        label: "console",
+        scopes: ["send:text", "receive:messages"],
+      },
+      database,
+    )
+  ).plaintext;
+  sendOnlyKey = (
+    await ApiKeyStore.create(
+      { projectId: project.id, environmentId: env.id, label: "sender", scopes: ["send:text"] },
       database,
     )
   ).plaintext;
   otherKey = (
     await ApiKeyStore.create(
-      { projectId: project.id, environmentId: other.id, label: "other", scopes: ["send:text"] },
+      {
+        projectId: project.id,
+        environmentId: other.id,
+        label: "other",
+        scopes: ["send:text", "receive:messages"],
+      },
       database,
     )
   ).plaintext;
@@ -153,6 +173,24 @@ describe("marking read", () => {
     expect((await post(`/v1/chats/${threadId}/read`, {}, otherKey)).status).toBe(404);
     const body = (await (await get("/v1/chats")).json()) as { unreadCount: number }[];
     expect(body[0]!.unreadCount, "another environment cleared this badge").toBe(1);
+  });
+});
+
+describe("reading requires the read scope", () => {
+  test("a send-only key cannot list conversations", async () => {
+    // send:text is permission to send, not permission to read every message
+    // the number ever received. Without this the scope named a narrower grant
+    // than it gave.
+    expect((await get("/v1/chats", sendOnlyKey)).status).toBe(403);
+  });
+
+  test("a send-only key cannot read a thread", async () => {
+    expect((await get(`/v1/chats/${threadId}/messages`, sendOnlyKey)).status).toBe(403);
+  });
+
+  test("a send-only key cannot clear a badge", async () => {
+    // Clearing mutates what another reader sees, so it is not harmless.
+    expect((await post(`/v1/chats/${threadId}/read`, {}, sendOnlyKey)).status).toBe(403);
   });
 });
 

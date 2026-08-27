@@ -128,12 +128,32 @@ describe("redactUrl", () => {
 });
 
 describe("the credential encryption key", () => {
-  test("production refuses to start without one", () => {
+  test("a gowa-only production deployment does not need one", () => {
+    // It never holds WhatsApp credentials — gowa does. Demanding the key here
+    // was a barrier protecting nothing, and CI found it by refusing to start
+    // the api image.
+    expect(
+      new Config({ NODE_ENV: "production", DATABASE_PATH: "/tmp/x.sqlite" }).credentialEncryptionKey,
+    ).toBeNull();
+  });
+
+  test("the engine that stores credentials refuses to start without one", () => {
     // The failure this prevents is silent: devices pair, messages send, and
     // account-takeover material sits in the database in the clear.
-    expect(() =>
-      new Config({ NODE_ENV: "production", DATABASE_PATH: "/tmp/x.sqlite" }),
-    ).toThrow(/CREDENTIAL_ENCRYPTION_KEY is required in production/);
+    expect(
+      () => new Config({ NODE_ENV: "production", DATABASE_PATH: "/tmp/x.sqlite", BAILEYS_ENABLED: "true" }),
+    ).toThrow(/BAILEYS_ENABLED requires CREDENTIAL_ENCRYPTION_KEY/);
+  });
+
+  test("with a key, that engine starts", () => {
+    expect(
+      new Config({
+        NODE_ENV: "production",
+        DATABASE_PATH: "/tmp/x.sqlite",
+        BAILEYS_ENABLED: "true",
+        CREDENTIAL_ENCRYPTION_KEY: "a".repeat(64),
+      }).baileysEnabled,
+    ).toBe(true);
   });
 
   test("development runs without one", () => {

@@ -73,8 +73,16 @@ export function Chats({ apiKey, revision }: Props) {
   }, [selected, loadMessages, revision]);
 
   async function open(thread: ChatThread) {
-    setSelected(thread.id);
-    setMessages(null);
+    // Clearing on a re-click left the panel at "loading…" for ever: `selected`
+    // did not change, so the effect never re-ran. Switching threads also let
+    // an in-flight request for the previous one resolve underneath the new
+    // selection, showing its messages while the composer targeted the new
+    // thread — the operator would have replied into the wrong conversation.
+    if (thread.id !== selected) {
+      messagesGeneration.current += 1;
+      setSelected(thread.id);
+      setMessages(null);
+    }
     if (thread.unreadCount > 0) {
       // Cleared optimistically and then reloaded: the badge is the least
       // important thing on screen and should not wait on a round trip.

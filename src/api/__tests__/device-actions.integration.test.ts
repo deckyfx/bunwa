@@ -95,6 +95,12 @@ const post = (path: string, withKey = key) =>
 
 describe("logging a device out", () => {
   test("the owner can, and the engine is told", async () => {
+    // Paired first. provision() leaves loggedIn false, so asserting it is
+    // false after the call passed whether or not the endpoint did anything —
+    // the test could not fail.
+    engine.completePairing(deviceId, "628123456789@s.whatsapp.net", "Test");
+    expect((await engine.status(deviceId)).loggedIn).toBe(true);
+
     expect((await post("/v1/devices/otp/logout")).status).toBe(204);
     expect((await engine.status(deviceId)).loggedIn).toBe(false);
   });
