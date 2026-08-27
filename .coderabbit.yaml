@@ -196,10 +196,14 @@ reviews:
         DeviceEngine signature — the moment one does, every other engine has to
         satisfy a Baileys-shaped contract and the adapter boundary is gone. The
         version is pinned exactly, without a caret, on purpose: 7.0.0-rc14 is a
-        release candidate chosen deliberately by the owner (ADR-0009), with
-        gowa kept as the failover and shadow mode before any traffic. Do not
-        suggest widening the range, and do not suggest downgrading to the
-        6.x "legacy" line — that trade is recorded and settled. Pay particular attention to disconnect handling:
+        release candidate chosen deliberately by the owner (ADR-0009), against
+        the analysis, with both sides recorded there. Do not suggest widening
+        the range, do not suggest downgrading to the 6.x "legacy" line, and do
+        not describe the pin as an accident — that trade is recorded and
+        settled. The safety argument is no longer "gowa is the failover": there
+        is no second engine, and what stands in its place is BAILEYS_ENABLED
+        defaulting to off, so a deployment opts in to an engine that has never
+        paired a real device. Pay particular attention to disconnect handling:
         401, 403, 440, 500 and 411 must never be retried, and 515 must always
         be, because it is how pairing completes.
 

@@ -24,8 +24,4 @@ sessions/
 # runtime state materialised out of the binary
 .runtime/
 
-# Built console. An artefact of `bun run build`, copied into bunwa:full at
-# image build time — never committed, or the repo carries a stale copy of
-# whatever someone last built locally.
-dashboard/dist/
 note.txt

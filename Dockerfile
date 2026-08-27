@@ -3,16 +3,13 @@
 #   docker build --target api  -t bunwa:api  .
 #   docker build --target full -t bunwa:full .
 #
-# They differ by entry point, not by contents. That is the change this commit
-# range made: the console was a `dashboard/` subproject built to `dashboard/dist`
-# and copied into `full` only, and the build stage that produced it referenced
-# files this repository no longer has — so the image build failed outright.
+# They differ by entry point, not by contents. src/index.ts imports the console
+# page and serves it; src/index-headless.ts does not import it at all, so the
+# headless image cannot carry React to serve a route it never mounts.
 #
-# The console now lives in src/console and Bun bundles it from the HTML import
-# at serve time. `full` runs the entry point that imports that page; `api` runs
-# the one that does not, and never pulls React into what it serves. /app answers
-# a 404 naming the build rather than being absent, so an operator who expected
-# the console learns which image they are running.
+# This used to work by copying built assets into one image and not the other,
+# from a `dashboard/` subproject that no longer exists — the console lives in
+# src/console and Bun bundles it at startup.
 
 FROM oven/bun:1.4.0-slim AS deps
 WORKDIR /build
@@ -29,7 +26,7 @@ RUN useradd --system --uid 10001 --create-home bunwa
 COPY --from=deps /build/node_modules ./node_modules
 COPY package.json bun.lock ./
 COPY src ./src
-COPY drizzle.config.ts ./
+COPY drizzle.config.ts bunfig.toml ./
 # Created in the image and owned by the runtime user, so a fresh named volume
 # mounted here inherits that ownership. Without it Docker creates the mount
 # root-owned, the non-root process cannot open its own database, and the
@@ -54,16 +51,17 @@ EXPOSE 3000
 # Verified: without that step both images exit 75 with "pending migrations",
 # which is the guard working and not a packaging fault.
 #
-# No CMD on the shared stage. It used to run src/index.ts, which only exports
-# main and never calls it, so both images started a process that exited 0
-# immediately and served nothing. Each target names its own executable entry
-# point instead, which makes that failure impossible to reintroduce by editing
-# one line in the wrong place.
-
-# The API alone.
-FROM runtime AS api
-CMD ["bun", "run", "src/index-headless.ts"]
+# No CMD on the shared stage, deliberately. It used to carry one pointing at a
+# module that only exported main and never called it, so both images started a
+# process that exited 0 immediately and served nothing. Each target naming its
+# own entry point makes that impossible to reintroduce by editing one line in
+# the wrong place.
 
 # The API plus the console, served at /app by the same process.
 FROM runtime AS full
-CMD ["bun", "run", "src/index-console.ts"]
+CMD ["bun", "run", "src/index.ts"]
+
+# The API alone. /app answers a 404 naming the build rather than being absent,
+# so an operator who expected the console learns which image they are running.
+FROM runtime AS api
+CMD ["bun", "run", "src/index-headless.ts"]

@@ -33,9 +33,15 @@ confirmed by an ack rather than by the engine accepting it, and deleting the
 measurement would leave that design looking arbitrary. Where such a document
 now describes something that no longer exists, it says so at the top.
 
-Those documents cite `reference/gowa/…`, a read-only clone of upstream that was
-never committed and no longer exists locally either. Read those paths as
-citations into [gowa's repository][gowa] rather than as links.
+Those documents — and [02](02-requirements.md), [05](05-events-and-rules.md),
+[ADR-0003](adr/0003-process-isolation.md) and
+[ADR-0004](adr/0004-durable-delivery.md) — cite `reference/gowa/…`, a read-only
+clone of upstream that was never committed and no longer exists locally either.
+Every such link is dead. Read the paths as citations into [gowa's
+repository][gowa], at `main` @ `0427b9f`, which is the revision every
+measurement here was taken against. They are left as paths rather than rewritten
+into URLs because the path is the citation and a rewritten link would be
+asserting that a line number still means what it meant.
 
 Architecture decisions with lasting consequences live in [adr/](adr/).
 

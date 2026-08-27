@@ -55,7 +55,15 @@ plane. That is no longer necessary: the console imports the server's exported
 changes signature is a compile error rather than a 400 found in a browser. The
 cost of the earlier arrangement was paid before it was fixed — a hand-written
 `Whoami` and `VirtualDevice` were both wrong, and the page rendered
-"undefined / undefined" against a live API.
+"undefined / undefined" against a live API, and a hand-written `attempts` and
+`occurredAt` were wrong in the same way in the commit after that.
+
+The server exports two app types rather than one, `HeadlessApp` and
+`ConsoleApp`, built by two functions, with `App` aliased to the latter. The
+tempting shape is `treaty<HeadlessApp | ConsoleApp>`, and it is wrong: a union
+narrows to what both halves share, so it would silently drop routes instead of
+describing them. The console knows which server it is talking to, because it is
+served by it.
 
 What is genuinely lost is independent release: the console versions and ships
 with the API. Against a proxy that pointed at the wrong port and two Elysias

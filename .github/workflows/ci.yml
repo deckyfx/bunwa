@@ -35,8 +35,7 @@ jobs:
 
       - name: Install dependencies
         # One project now. The console moved into src/console, so there is no
-        # second manifest to resolve and no workspace to descend into — which
-        # is what CI used to fail on, with a missing `react`.
+        # second manifest to resolve and no workspace to descend into.
         run: bun install --frozen-lockfile
 
       - name: Typecheck
@@ -73,16 +72,18 @@ jobs:
           fi
           echo "embedded manifest is current"
 
-      - name: Verify the harness has no runtime data committed
-        # deploy/stage0/data holds WhatsApp session credentials and captured
-        # message payloads. It is git-ignored; this fails the build if that ever
-        # stops being true.
+      - name: Verify no session data is committed
+        # The stage-0 harness that this used to guard is gone with gowa, but the
+        # risk moved rather than disappeared: bunwa now holds the credentials
+        # itself, in the database. A committed .sqlite is a committed WhatsApp
+        # account.
         run: |
-          if git ls-files --error-unmatch 'deploy/stage0/data/*' >/dev/null 2>&1; then
-            echo "::error::runtime data is tracked in git"
+          if git ls-files | grep -qE '\.sqlite($|-wal$|-shm$)'; then
+            echo "::error::a database is tracked in git"
+            git ls-files | grep -E '\.sqlite($|-wal$|-shm$)'
             exit 1
           fi
-          echo "no runtime data tracked"
+          echo "no database tracked"
 
   images:
     # Separate job: the checks above are fast and this is not, so a typecheck
@@ -175,7 +176,8 @@ jobs:
         # must not import the console page, or React reaches a build whose whole
         # purpose is to exclude it.
         run: |
-          if docker run --rm bunwa:api sh -c 'grep -q "console/index.html" /app/src/index-headless.ts'; then
+          if docker run --rm bunwa:api test -e /app/src/console/index.html && \
+             docker run --rm bunwa:api sh -c 'grep -q "console/index.html" /app/src/index-headless.ts'; then
             echo "::error::the headless entry point imports the console page"
             exit 1
           fi

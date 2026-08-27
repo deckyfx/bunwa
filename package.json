@@ -6,8 +6,8 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "bun --watch run src/index-console.ts",
-    "start": "bun run src/index-console.ts",
+    "dev": "bun --watch run src/index.ts",
+    "start": "bun run src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "bun test",
     "db:generate": "drizzle-kit generate && bun run scripts/embed-migrations.ts",
