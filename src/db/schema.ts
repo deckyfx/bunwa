@@ -559,6 +559,113 @@ export const deviceSignalKeys = sqliteTable(
   ],
 );
 
+/**
+ * A conversation with one peer, on one device.
+ *
+ * Distinct from `outbound_messages`, which records what a tenant asked us to
+ * send and is part of the delivery contract. A thread is what the account
+ * actually saw, in both directions.
+ *
+ * Scoped by device rather than by environment: a device is owned by exactly
+ * one project, and every read joins through it. Putting environment here too
+ * would let the two disagree, and the version that is wrong would be the one
+ * the query trusts.
+ */
+export const chatThreads = sqliteTable(
+  "chat_threads",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    /** The peer's JID. A phone number, so it never reaches a log. */
+    peerJid: text("peer_jid").notNull(),
+    displayName: text("display_name"),
+    lastMessageAt: integer("last_message_at", { mode: "timestamp_ms" }),
+    unreadCount: integer("unread_count").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [
+    uniqueIndex("chat_threads_device_peer_idx").on(t.deviceId, t.peerJid),
+    // The console lists threads newest first, per device.
+    index("chat_threads_recent_idx").on(t.deviceId, t.lastMessageAt),
+  ],
+);
+
+/**
+ * One message, inbound or outbound.
+ *
+ * The first unbounded table in the system. Everything else is either fixed per
+ * tenant or swept; this grows for ever unless retention runs, and a disk
+ * filling is an outage 02 already names. The sweep ships in the same commit as
+ * the table for that reason.
+ */
+export const chatMessages = sqliteTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => chatThreads.id, { onDelete: "cascade" }),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    direction: text("direction", { enum: ["inbound", "outbound"] }).notNull(),
+    /**
+     * The engine's id for the message.
+     *
+     * How an ack is correlated back, and how a re-delivered inbound message is
+     * recognised as one we already have — WhatsApp resends, and a duplicate
+     * row would show the customer the same message twice.
+     */
+    providerMessageId: text("provider_message_id"),
+    kind: text("kind", { enum: ["text", "image", "video", "audio", "document", "unsupported"] })
+      .notNull()
+      .default("text"),
+    body: text("body"),
+    mediaId: text("media_id").references(() => chatMedia.id, { onDelete: "set null" }),
+    /** Outbound only. Inbound messages arrive already delivered. */
+    status: text("status", { enum: ["pending", "sent", "delivered", "read", "failed"] }),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    index("chat_messages_thread_idx").on(t.threadId, t.occurredAt),
+    // Retention deletes by age across every thread, so it must not scan.
+    index("chat_messages_age_idx").on(t.occurredAt),
+    // Deduplicating a resent inbound message needs this to be a lookup.
+    uniqueIndex("chat_messages_provider_idx").on(t.deviceId, t.providerMessageId),
+  ],
+);
+
+/**
+ * Media, on disk, referenced by row.
+ *
+ * Not a blob column: images and video would bloat every VACUUM INTO snapshot
+ * with bytes that never change, and the backup is already the slowest thing
+ * this system does.
+ */
+export const chatMedia = sqliteTable(
+  "chat_media",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    mimeType: text("mime_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    /** Content hash, so the same file stored twice is stored once. */
+    sha256: text("sha256").notNull(),
+    /** Relative to the media root. Never absolute — the root moves between deployments. */
+    storagePath: text("storage_path").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [index("chat_media_device_idx").on(t.deviceId), index("chat_media_sha_idx").on(t.sha256)],
+);
+
 export const streamTickets = sqliteTable(
   "stream_tickets",
   {

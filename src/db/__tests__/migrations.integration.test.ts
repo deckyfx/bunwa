@@ -203,6 +203,11 @@ describe("a released migration is immutable", () => {
       hash: "cf300cc262d126dd82831ea3d93efb157972648b29c42cc8a6f4a38407419f99",
       when: 1787799909561,
     },
+    {
+      tag: "0005_chat_history",
+      hash: "6d333763ad1a46bfe0ded0e54be27d16a54eb986077bab273cd3126a9fc37032",
+      when: 1787800801626,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
@@ -249,6 +254,7 @@ describe("a released migration is immutable", () => {
       "0003_stream_tickets": ["stream_tickets"],
       // The index goes with its table, so only tables need listing here.
       "0004_device_credentials": ["device_credentials", "device_signal_keys"],
+      "0005_chat_history": ["chat_messages", "chat_threads", "chat_media"],
     };
     for (const migration of built.slice(1)) {
       const tables = CREATED_AFTER_BASELINE[migration.tag];
