@@ -21,7 +21,7 @@ Every event, from every engine, has the same envelope. Consumers version against
   "virtual_device": { "id": "vdev_...", "alias": "otp-sender" },  // per-delivery
   "environment": { "id": "env_...", "slug": "production" },       // per-delivery
   "data": { /* type-specific */ },
-  "meta": { "engine": "gowa", "correlation_id": "..." }
+  "meta": { "engine": "baileys", "correlation_id": "..." }
 }
 ```
 
@@ -79,10 +79,21 @@ them and surfacing one later is a filter change, not a feature. See
 | `call.offer` | `call.offer` — **excluded from the default filter**; bunwa never answers or rejects ([02](02-requirements.md) F4b) |
 | `newsletter.*` | `newsletter.*` |
 
-## Part 2 — How the gowa adapter synthesises lifecycle events
+## Part 2 — How the gowa adapter synthesised lifecycle events
 
-gowa does not emit these. The adapter manufactures them from three sources, and
-this is the mechanism that lets limitation #1 be fixed **without forking gowa**.
+> **Historical since 2026-08-27.** The gowa adapter is deleted and the Baileys
+> port emits connection state directly, so none of the machinery below is in the
+> code. It is kept because the *problem* is not engine-specific: an engine tells
+> you what it feels like telling you, on its own schedule, and the control plane
+> needs lifecycle events that are complete and timely regardless. The three
+> conclusions that outlived the adapter are the ranking of sources by
+> trustworthiness, the insistence that an out-of-band channel is an optimisation
+> and never a source of truth, and the poller-and-reconciler pattern — which
+> exists to cover *the engine itself dying*, a failure no in-band event can
+> report, and which is the shape `sweepUnacked` still has today.
+
+gowa did not emit these. The adapter manufactured them from three sources, and
+this is the mechanism that let limitation #1 be fixed **without forking gowa**.
 
 ```
    ┌── gowa /ws (2 useful codes) ┐

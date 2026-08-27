@@ -2,6 +2,14 @@
 
 *Written 2026-08-22, against gowa `main` @ `0427b9f` (whatsmeow pinned 2026-08-21).*
 
+> **Historical, kept deliberately.** Stage 4 removed gowa; this document studies
+> it. It is retained because most of what is here is the evidence for decisions
+> that still stand rather than documentation of a dependency — delete the
+> measurement and the design it justifies looks arbitrary. `reference/gowa/…`
+> paths cite a read-only clone that was never committed and no longer exists;
+> read them as citations into [gowa's repository](https://github.com/aldinokemal/go-whatsapp-web-multidevice).
+> See [docs/README](README.md).
+
 ## Verdict
 
 **Worth building: 7.5 / 10 — but not in the order proposed.**

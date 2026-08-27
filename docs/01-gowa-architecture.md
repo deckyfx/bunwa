@@ -3,6 +3,14 @@
 *Stage 1 study notes. gowa `main` @ `0427b9f`, Go 1.26, Fiber v3, whatsmeow
 pinned 2026-08-21. Source lives read-only in [`reference/gowa`](../reference/gowa).*
 
+> **Historical, kept deliberately.** Stage 4 removed gowa; this document studies
+> it. It is retained because most of what is here is the evidence for decisions
+> that still stand rather than documentation of a dependency — delete the
+> measurement and the design it justifies looks arbitrary. `reference/gowa/…`
+> paths cite a read-only clone that was never committed and no longer exists;
+> read them as citations into [gowa's repository](https://github.com/aldinokemal/go-whatsapp-web-multidevice).
+> See [docs/README](README.md).
+
 Read this before writing any bunwa code. Most of gowa's design decisions are
 correct and should be copied; the goal here is to know precisely which ones are
 not, and why.

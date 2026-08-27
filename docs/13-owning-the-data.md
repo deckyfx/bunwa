@@ -1,7 +1,16 @@
 # 13 — Owning the data
 
-**Status:** plan · 2026-08-27 · supersedes the "no chat storage" rows in
-[02](02-requirements.md)
+**Status:** **implemented** · 2026-08-27 · supersedes the "no chat storage" rows
+in [02](02-requirements.md)
+
+> All six steps of the sequence at the end shipped with stage 4:
+> `device_credentials` and `device_signal_keys` hold AES-256-GCM ciphertext
+> keyed by `sha256(id)`, `chat_threads` / `chat_messages` / `chat_media` hold
+> the history, the adapter records inbound messages as they arrive, the console
+> shows threads with a composer, and the retention sweep runs in housekeeping
+> on the same loop as the other three — wired with the tables, as step 6
+> insisted. The tenses below are the plan's; they are left alone because the
+> argument, not the schedule, is what this document is for.
 
 ## Why this reverses an earlier decision
 

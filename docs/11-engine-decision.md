@@ -10,6 +10,15 @@ feature parity.*
 > [ADR-0007](adr/0007-gowa-engine-for-v1.md) for what the merged tree measured
 > and which obligations transfer with the pivot. The analysis below is unchanged
 > and still explains why gowa was right for v1.
+>
+> **2026-08-27.** Stage 4 shipped. Baileys is the engine, gowa is deleted, and
+> the two-image topology sketched below is not how it was built — there is one
+> process, and the `api`/`full` split is now whether the console page is
+> imported. Everything else stands: the size estimate for a `DeviceEngine` on
+> Baileys was roughly right, and the reason to choose gowa first — get the
+> control plane built without also writing a WhatsApp client — is why the pivot
+> was cheap when it came. `reference/gowa/…` paths cite a clone that no longer
+> exists.
 
 ## Decision
 

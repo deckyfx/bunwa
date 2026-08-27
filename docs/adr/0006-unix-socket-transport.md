@@ -1,6 +1,20 @@
 # ADR-0006 — Unix socket transport, and a colocated single-container option
 
-**Status:** Accepted · 2026-08-22
+**Status:** Accepted · 2026-08-22 · Superseded for v1 by
+[0007](0007-gowa-engine-for-v1.md) · **Moot since 2026-08-27**
+
+> **Moot, 2026-08-27.** This ADR is about how bunwa talks to gowa. Stage 4
+> removed gowa, and the engine is now in the same process, so there is no
+> inter-process transport to choose and no fork to maintain. Nothing here was
+> ever implemented: [0007](0007-gowa-engine-for-v1.md) had already deferred it
+> in favour of unmodified gowa on container loopback.
+>
+> It is kept for one thing that outlived its subject. The three facts in the
+> Context section were established by testing rather than assumption, and fact
+> 3 — **Bun's `WebSocket` client silently ignores the `unix` option and dials
+> TCP** — is a property of Bun, not of gowa. It cost a day to find and would
+> cost the same day again. The measurements are in
+> [10](../10-single-container.md).
 
 ## Context
 

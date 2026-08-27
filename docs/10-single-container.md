@@ -3,6 +3,22 @@
 *Explores: "can bunwa and gowa live in one container, talking over a socket file
 instead of a TCP port?"*
 
+> **Moot since 2026-08-27, and kept for the measurements.** The question this
+> document answers is how to colocate two processes. Stage 4 removed gowa and
+> put the engine in the API process, so there is one process, no socket file,
+> no supervisor and no fork. bunwa does ship as a single container — it just
+> did not get there this way.
+>
+> Nothing here was ever implemented; [ADR-0007](adr/0007-gowa-engine-for-v1.md)
+> had already deferred it in favour of unmodified gowa on container loopback.
+> What is worth keeping is the "Evidence" section. Those three results are
+> properties of Bun, not of gowa, and the third in particular cost a day to
+> establish: **`fetch` supports the `unix` option and `WebSocket` silently
+> ignores it**, dialling TCP and failing with a confusing 101 error. The
+> reasoning about the patches, the topology and what colocation costs is
+> preserved as the record of a decision, not as instructions — do not follow
+> it. `reference/gowa/…` paths cite a read-only clone that no longer exists.
+
 ## Short answer
 
 **Yes — mostly, and with one hard limitation I verified rather than assumed.**

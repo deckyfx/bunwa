@@ -20,7 +20,7 @@ import { chatRoutes } from "./routes/chat";
 import { consolePlugin, noConsolePlugin } from "./console-plugin";
 import type { ConsolePage } from "./types";
 import { projectRoutes } from "./routes/project";
-import type { EngineRegistry } from "../engine/registry";
+import { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
 import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../stores/errors";
 import { enterContext, log, sanitiseCorrelationId } from "../observability/logger";
@@ -93,7 +93,7 @@ async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?
  * headless binary to serve a route it never mounts.
  */
 
-export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) {
+export function createApp(registry?: EngineRegistry) {
   const app = new Elysia()
     // Correlation id first, so every later hook and handler logs under it.
     .derive({ as: "global" }, ({ request, set }) => {
@@ -251,9 +251,16 @@ export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) 
     // client is typed against the very app that answers it and there is no
     // proxy to keep in step — the console was briefly a second Elysia on
     // another port, and the two drifted within a day.
-    .use(consolePage === undefined ? noConsolePlugin : consolePlugin(consolePage))
-    .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
-    .use(registry === undefined ? new Elysia() : messageRoutes(registry))
+    .use(noConsolePlugin)
+    // Mounted unconditionally, with an empty registry when none was supplied.
+    //
+    // The ternary here made `App` the union of "these routes exist" and "they
+    // do not", so Eden could not see them at all and the console's typed
+    // client lost every device and message call. An empty registry already
+    // answers correctly — chooseAny throws EngineError and the route returns
+    // 503, which is a truer answer than the 404 an absent route gave.
+    .use(deviceRoutes(registry ?? new EngineRegistry()))
+    .use(messageRoutes(registry ?? new EngineRegistry()))
     .use(ruleRoutes)
 
 
@@ -277,7 +284,7 @@ export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) 
 
 export function createServer(registry?: EngineRegistry, consolePage?: ConsolePage) {
   const cfg = config();
-  const app = createApp(registry, consolePage);
+  const app = consolePage === undefined ? createApp(registry) : createConsoleApp(registry, consolePage);
 
   return app.listen({ port: cfg.port, hostname: cfg.host });
 }
@@ -294,4 +301,38 @@ export function createServer(registry?: EngineRegistry, consolePage?: ConsolePag
  * Derived from createApp rather than declared, so it cannot drift from what the
  * server really serves.
  */
-export type App = ReturnType<typeof createApp>;
+/**
+ * The API without the console.
+ *
+ * What `bun run start:headless` serves. /app answers a 404 that says which
+ * build this is, rather than being absent.
+ */
+export type HeadlessApp = ReturnType<typeof createApp>;
+
+/**
+ * The API with the console mounted.
+ *
+ * What `bun run start` serves, and what the browser's Eden client is typed
+ * against — the console only ever talks to a server that is serving it.
+ *
+ * Two concrete types rather than a union. `treaty<HeadlessApp | ConsoleApp>`
+ * would narrow to what both have in common, which loses routes instead of
+ * describing them: a union is the wrong tool for "one of these two shapes,
+ * and the caller knows which".
+ */
+export type ConsoleApp = ReturnType<typeof createConsoleApp>;
+
+/**
+ * The app a build with the console uses.
+ *
+ * Separate function rather than an argument, because a conditional mount makes
+ * the return type a union of "mounted" and "not mounted" — which is exactly
+ * how the device and message routes became invisible to Eden and the console's
+ * typed client silently lost every device call.
+ */
+export function createConsoleApp(registry: EngineRegistry | undefined, consolePage: ConsolePage) {
+  return createApp(registry).use(consolePlugin(consolePage));
+}
+
+/** The shape the console imports. Kept as `App` so callers need not choose. */
+export type App = ConsoleApp;

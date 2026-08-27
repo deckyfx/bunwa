@@ -1,0 +1,184 @@
+/**
+ * The chats store.
+ *
+ * Two properties here were reviewer findings against the component this
+ * replaced: replying into one conversation must not repaint another, and a
+ * duplicate send must not be possible. Both were fixed with per-component
+ * guards; the store keeps the behaviour with one.
+ */
+import { describe, expect, test, beforeEach, mock } from "bun:test";
+
+let threadsResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
+let messagesResolver: (id: string) => Promise<unknown> = () =>
+  Promise.resolve({ data: [], error: null });
+let sendResolver: () => Promise<unknown> = () => Promise.resolve({ data: {}, error: null });
+const readCalls: string[] = [];
+
+void mock.module("../lib/api", () => ({
+  client: () => ({
+    v1: {
+      chats: Object.assign(
+        (params: { id: string }) => ({
+          messages: {
+            get: () => messagesResolver(params.id),
+            post: () => sendResolver(),
+          },
+          read: {
+            post: () => {
+              readCalls.push(params.id);
+              return Promise.resolve({ data: null, error: null });
+            },
+          },
+        }),
+        { get: () => threadsResolver() },
+      ),
+    },
+  }),
+  anonymous: () => ({}),
+}));
+
+const { useChats } = await import("../store/chats");
+const { useSession } = await import("../store/session");
+
+const thread = (id: string, unread = 0) => ({
+  id,
+  deviceId: "d1",
+  alias: "otp",
+  peerJid: `628${id}@s.whatsapp.net`,
+  displayName: id === "t1" ? "Ana" : "Bo",
+  lastMessageAt: null,
+  unreadCount: unread,
+});
+
+const message = (id: string, body: string) => ({
+  id,
+  direction: "inbound" as const,
+  kind: "text",
+  body,
+  mediaId: null,
+  status: null,
+  occurredAt: new Date(0),
+});
+
+beforeEach(() => {
+  useSession.setState({ apiKey: "key-a", identity: null, error: null, busy: false, revision: 0 });
+  useChats.setState({
+    threads: null,
+    selectedId: null,
+    messages: null,
+    draft: "",
+    sending: false,
+    error: null,
+  });
+  readCalls.length = 0;
+});
+
+describe("loading", () => {
+  test("threads arrive with their unread counts", async () => {
+    threadsResolver = () => Promise.resolve({ data: [thread("t1", 2)], error: null });
+    await useChats.getState().loadThreads();
+    expect(useChats.getState().threads?.[0]?.unreadCount).toBe(2);
+  });
+
+  test("a response after the key changed is dropped", async () => {
+    // Painting the previous tenant's conversations is the failure this stops.
+    let release: ((v: unknown) => void) | undefined;
+    threadsResolver = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+
+    const inFlight = useChats.getState().loadThreads();
+    useSession.setState({ apiKey: "key-b" });
+    release?.({ data: [thread("t1")], error: null });
+    await inFlight;
+
+    expect(useChats.getState().threads, "a stale response painted the wrong tenant").toBeNull();
+  });
+});
+
+describe("opening a conversation", () => {
+  test("loads its messages and clears the badge", async () => {
+    threadsResolver = () => Promise.resolve({ data: [thread("t1", 3)], error: null });
+    messagesResolver = () => Promise.resolve({ data: [message("m1", "hello")], error: null });
+
+    await useChats.getState().loadThreads();
+    await useChats.getState().select("t1");
+
+    expect(useChats.getState().messages?.[0]?.body).toBe("hello");
+    expect(useChats.getState().threads?.[0]?.unreadCount).toBe(0);
+    // Cleared locally *and* on the server: a badge that only clears locally
+    // comes back on the next load.
+    expect(readCalls).toContain("t1");
+  });
+
+  test("messages for a thread the operator left are discarded", async () => {
+    threadsResolver = () => Promise.resolve({ data: [thread("t1"), thread("t2")], error: null });
+    await useChats.getState().loadThreads();
+
+    let release: ((v: unknown) => void) | undefined;
+    messagesResolver = (id) =>
+      id === "t1"
+        ? new Promise((resolve) => {
+            release = resolve;
+          })
+        : Promise.resolve({ data: [message("m2", "BO")], error: null });
+
+    const first = useChats.getState().select("t1");
+    await useChats.getState().select("t2");
+    release?.({ data: [message("m1", "ANA")], error: null });
+    await first;
+
+    expect(useChats.getState().messages?.[0]?.body, "the old thread repainted the panel").toBe("BO");
+  });
+});
+
+describe("replying", () => {
+  test("clears the draft and refreshes the thread", async () => {
+    threadsResolver = () => Promise.resolve({ data: [thread("t1")], error: null });
+    messagesResolver = () => Promise.resolve({ data: [message("m1", "hi")], error: null });
+    await useChats.getState().loadThreads();
+    await useChats.getState().select("t1");
+
+    useChats.getState().setDraft("replying");
+    await useChats.getState().send();
+
+    expect(useChats.getState().draft).toBe("");
+  });
+
+  test("a reply finishing after a thread switch does not repaint", async () => {
+    // The exact hazard a reviewer found: send closes over the thread it was
+    // called for, and the reload afterwards could win against the switch.
+    threadsResolver = () => Promise.resolve({ data: [thread("t1"), thread("t2")], error: null });
+    messagesResolver = (id) =>
+      Promise.resolve({ data: [message(`m-${id}`, id === "t1" ? "ANA" : "BO")], error: null });
+    await useChats.getState().loadThreads();
+    await useChats.getState().select("t1");
+
+    let release: ((v: unknown) => void) | undefined;
+    sendResolver = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+
+    useChats.getState().setDraft("to ana");
+    const sending = useChats.getState().send();
+    await useChats.getState().select("t2");
+    release?.({ data: {}, error: null });
+    await sending;
+
+    expect(useChats.getState().selectedId).toBe("t2");
+    expect(useChats.getState().messages?.[0]?.body, "the reply repainted the old thread").toBe("BO");
+  });
+
+  test("an empty draft sends nothing", async () => {
+    let called = false;
+    sendResolver = () => {
+      called = true;
+      return Promise.resolve({ data: {}, error: null });
+    };
+    useChats.setState({ selectedId: "t1", draft: "   " });
+    await useChats.getState().send();
+    expect(called).toBe(false);
+  });
+});

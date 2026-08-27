@@ -111,11 +111,15 @@ async function main(consolePage?: ConsolePage): Promise<void> {
     // Bounded: server.stop(false) waits indefinitely for in-flight requests, so
     // one stuck handler would block every later step and the process would
     // never exit. After the deadline, close connections and move on.
-    await Promise.race([
-      server.stop(false),
-      Bun.sleep(SHUTDOWN_DRAIN_MS).then(() => {
+    // Both branches discarded to void. createServer returns one of two app
+    // types now — with the console or without — and the race would otherwise
+    // have to reconcile their return types, which it has no reason to care
+    // about.
+    await Promise.race<void>([
+      server.stop(false).then(() => undefined),
+      Bun.sleep(SHUTDOWN_DRAIN_MS).then(async () => {
         log.warn("drain deadline reached; closing remaining connections", { afterMs: SHUTDOWN_DRAIN_MS });
-        return server.stop(true);
+        await server.stop(true);
       }),
     ]);
 

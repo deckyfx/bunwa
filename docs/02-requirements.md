@@ -122,9 +122,17 @@ messaging a real customer is a rule engine nobody will dare change.
 | F6.2 | Prometheus-compatible metrics: per device, per environment, per virtual device |
 | F6.3 | Health and readiness endpoints suitable for a container orchestrator |
 | F6.4 | Configuration from environment, validated and typed at boot — fail fast on a bad value |
-| F6.5 | Ship **two container tags from one build**: `api` (control plane + engine) and `full` (adds the dashboard) |
-| F6.6 | The dashboard is a **separate subproject** with its own build, absent from the `api` image |
+| F6.5 | Ship **two container tags from one build**: `api` (control plane + engine) and `full` (adds the console) |
+| F6.6 | ~~The dashboard is a **separate subproject** with its own build, absent from the `api` image~~ — **retired 2026-08-27.** The console lives in `src/console/` and is served by the same app; what F6.5 needs is that the `api` build not carry it, and that is now a matter of which entry point imports the page. See [07](07-dashboard.md). |
 | F6.7 | A single `docker run` must be enough to start — no database server, no queue server |
+
+Two of these have been overtaken and are left in place rather than edited into
+agreement with the code. F6.2 asks for Prometheus-compatible metrics; stage 2
+([08](08-roadmap.md)) argued that down to four numbers on a JSON `/metrics`
+endpoint, on the grounds that traces and scrapers earn their keep across process
+boundaries and there is one process. F6.5 is still the intent, and the
+[13](13-owning-the-data.md) note about chat storage retires the "no chat
+history" rows further up this document.
 
 ## Non-functional requirements
 
@@ -146,12 +154,12 @@ product in its own right.
 
 | Not building | Why |
 | --- | --- |
-| Chat history storage and search | gowa spends 3.9k lines on this. bunwa is a proxy; the projects own their data and already have databases. |
+| ~~Chat history storage and search~~ **reversed 2026-08-27** | gowa spends 3.9k lines on this. bunwa is a proxy; the projects own their data and already have databases. — That held while gowa was the engine and something else was the system of record. Stage 4 removed gowa, and a Baileys socket receives inbound messages whether or not there is anywhere to put them, so "the projects own their data" became a gap rather than a boundary. [13](13-owning-the-data.md). |
 | Chatwoot / helpdesk integration | 6.4k lines in gowa. Build it as a *consumer* of bunwa's webhooks if you want it. |
-| A CRM, inbox, or agent UI | The dashboard administers devices and links. It is not an inbox. |
+| A CRM, inbox, or agent UI | The console administers devices and links. It shows conversations because bunwa now stores them; that is a window onto the data, not an inbox product. |
 | Broadcast and campaign management | Ban risk, and a different product. Projects can drive it through the API. |
 | Meta Cloud API support | Different auth, different pricing, different capabilities. Possibly a future engine adapter; not now. |
-| Chat storage endpoints (`/chats`, `/chat/{jid}/messages`) | Follows from the first row |
+| ~~Chat storage endpoints (`/chats`, `/chat/{jid}/messages`)~~ **reversed** | Followed from the first row, and reversed with it |
 
 ## Compatibility stance
 

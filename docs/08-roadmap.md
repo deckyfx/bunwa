@@ -43,15 +43,24 @@ reversible instead of expensive and irreversible.
 - [x] Clone gowa read-only into `reference/gowa`
 - [x] Map architecture, layering, and event flow → [01](01-gowa-architecture.md)
 - [x] Confirm all three claimed limitations in source, not by assumption
-- [ ] Run gowa locally in Docker; pair a real device
-- [ ] Measure memory and file descriptors per connected device (open question 2)
-- [ ] Measure how long whatsmeow takes to notice a dropped socket (open question 3)
-- [ ] Verify `/ws` broadcast behaviour with two devices, one logging out
-- [ ] Verify `POST /devices/{id}/webhook` semantics: replace or append?
+- [x] Run gowa locally in Docker; pair a real device
+- [x] Measure memory and file descriptors per connected device (open question 2)
+- [x] Measure how long whatsmeow takes to notice a dropped socket (open question 3)
+- [x] Verify `/ws` broadcast behaviour with two devices, one logging out
+- [x] Verify `POST /devices/{id}/webhook` semantics: replace or append?
 
 **Exit criteria:** a device paired to a local gowa, receiving webhooks, and a
 written measurement of per-device cost. Those numbers set the deployment
 topology in [03](03-architecture.md) and cannot be guessed.
+
+**Status: done.** Every measurement is in [12](12-stage0-findings.md), which
+remains the most load-bearing document here — the 203-second gap between a
+silent disconnect and the engine admitting it is why a send is confirmed by an
+ack rather than by acceptance, and that design outlived the engine it was
+measured against. The harness that produced those numbers (`src/tools/`, the
+compose stack under `deploy/stage0/`, and the `reference/gowa` clone) was
+deleted with gowa in stage 4. The numbers are what mattered; the scripts that
+produced them measured a dependency that no longer exists.
 
 ---
 
@@ -232,9 +241,32 @@ incident is precisely who needs it to answer.
 - `bunwa:full` image tag; `bunwa:api` stays dashboard-free
 - Accessibility and performance budgets enforced in CI
 
+**Status: done, and smaller and differently shaped than this list.**
+[07](07-dashboard.md) carries the detail. Three things went another way:
+
+The separate subproject was built and then undone. It had its own
+`package.json`, lockfile, tsconfig, test runner and copy of Elysia, ran a
+second Elysia on a second port, and reached the API through a proxy. The two
+Elysias drifted within a day and the proxy pointed at the wrong port. The
+console now lives at `src/console/` and is served by the same app, which is
+also what made Eden Treaty trivial — the server's `App` type is an import
+rather than a published artefact.
+
+TanStack Router, TanStack Query and shadcn/ui are not installed. One route and
+five screens is not the size at which they earn their weight.
+
+The operator console does not exist, and neither do environments, API keys,
+webhook configuration, rules or logs. What exists is claim-a-number, virtual
+devices, deliveries, and conversations — the last of which this list could not
+have anticipated, because it only became bunwa's to show in stage 4.
+
+The accessibility and performance budgets are not enforced in CI. They were
+never measured, in either layout.
+
 **Exit criteria:** a Grande developer claims a number, completes pairing, and
 watches a webhook delivery succeed — without an operator, and without leaving
-the console. Both image tags build and run from one CI pipeline.
+the console. That path exists in the console; it has not been walked against a
+real phone.
 
 ---
 
@@ -243,78 +275,119 @@ the console. Both image tags build and run from one CI pipeline.
 **Goal:** make Baileys the primary engine and drop the gowa dependency.
 **Estimate:** 8–12 weeks. Detail in [ADR-0002](adr/0002-engine-adapter.md),
 [ADR-0007](adr/0007-gowa-engine-for-v1.md), [09](09-baileys-option.md),
-[11](11-engine-decision.md).
+[11](11-engine-decision.md), [13](13-owning-the-data.md).
 
 This was previously written as *optional*, entered only if gowa became a
-bottleneck. It is now a decision: gowa was chosen for v1 to get a working
-control plane without also writing a WhatsApp client, and that job is done.
+bottleneck. It became a decision: gowa was chosen for v1 to get a working
+control plane without also writing a WhatsApp client, and that job was done.
 
-### What the engine abstraction already buys
+**Status: done.** Baileys is the engine. gowa is gone — the adapter, the
+measurement harness, the compose stack and the reference clone, about 2,500
+lines, deleted rather than kept.
 
-Measured on the merged stage-2 tree, not estimated:
+### What the engine abstraction bought
+
+Measured on the merged stage-2 tree before the pivot, not estimated:
 
 - `DeviceEngine` is **seven methods** — `provision`, `startPairing`, `logout`,
   `purge`, `status`, `send`, `subscribe`.
-- Code coupling to gowa outside `src/engine/gowa/` is **14 lines** across six
+- Code coupling to gowa outside `src/engine/gowa/` was **14 lines** across six
   files: the composition root in `index.ts` (5), `GOWA_BASE_URL` in
   `config/env.ts` (4), a hardcoded `choosePool("gowa", …)` in
   `api/routes/devices.ts` (2), and one line each in `engine/types.ts`,
   `db/schema.ts` and `stores/device-store.ts`. Everything else mentioning gowa
-  is a comment citing the stage-0 measurements.
-- The **conformance suite runs against any engine** through a harness, so a new
-  adapter inherits eight behavioural guarantees the day it compiles.
+  was a comment citing the stage-0 measurements — and still is.
+- The **conformance suite runs against any engine** through a harness, so the
+  Baileys adapter inherited eight behavioural guarantees the day it compiled.
 
-The `choosePool("gowa", …)` line is the only genuine leak, and it should be
-config-driven before the pivot rather than during it.
+Those fourteen lines are the whole evidence for the abstraction. Replacing an
+engine cost a directory and a composition root, which is what
+[ADR-0002](adr/0002-engine-adapter.md) claimed it would and what makes the
+claim worth believing next time.
 
 ### Keeping a Baileys change to a few files
 
-Baileys is unofficial and moves quickly, so the requirement is that a breaking
-change upstream lands in one place:
+Baileys is unofficial and moves quickly, so the requirement was that a breaking
+change upstream lands in one place. All four hold:
 
 1. **A single port module** — `src/engine/baileys/socket.ts` — is the only file
-   permitted to import from `@whiskeysockets/baileys`. It exposes the narrow
-   surface bunwa needs and nothing else.
+   permitted to import from `@whiskeysockets/baileys`.
 2. The adapter (`src/engine/baileys/adapter.ts`) depends on that port, never on
-   library types. No Baileys type appears in a `DeviceEngine` signature — that
-   is what makes the engine replaceable at all.
-3. A CodeRabbit path instruction and a test assert rule 1, so an import added
-   elsewhere fails rather than being noticed later.
-4. Pin the version. Upgrade deliberately, with the conformance suite as the gate.
+   library types. No Baileys type appears in a `DeviceEngine` signature.
+3. A CodeRabbit path instruction **and a test** assert rule 1, so an import
+   added elsewhere fails rather than being noticed later.
+4. The version is pinned exactly — `7.0.0-rc14`, no caret. A release candidate,
+   chosen deliberately and against the analysis;
+   [ADR-0009](adr/0009-baileys-version-and-isolation.md) records both sides.
 
-### Sequence
+### What was planned, and what the plan got wrong
 
-1. Config-drive the engine kind, removing the hardcoded `"gowa"` from the
-   pairing route; add `baileys` to `EngineKind` and the `engine_kind` enum
-   (migration).
-2. The port module, then the adapter — ~2,000–2,500 lines under v1 scope
-   ([11](11-engine-decision.md)). Far larger than `GowaAdapter`'s 459, because
-   that one delegates to gowa over HTTP while this one *is* the client.
-3. **Session persistence.** gowa owns multi-device credentials today; bunwa
-   would own them — encrypted at rest, per device, surviving restarts. Losing
-   them means every customer re-pairs, so this is the highest-consequence data
-   in the system and needs its own design before any traffic depends on it.
-4. **Re-run stage 0 against Baileys.** The 203-second blind window in
-   [12](12-stage0-findings.md) is a gowa measurement. Baileys exposes connection
-   state directly and may be much better — "may" is not a basis for removing
-   the ack timeout that measurement justified.
-5. Rethink pools. `enginePoolId` bounds blast radius because a gowa container is
-   a separate process; in-process sockets share a process with request handling,
-   so what a pool *means* changes.
-6. Shadow mode, then migrate one internal device, then by cohort, rollback at
-   every step.
-7. **Keep the gowa adapter.** Two working engines is the failover ADR-0002 was
-   written for, and it costs one directory.
+The sequence below is the plan as written, with what happened to each step.
+
+1. **Config-drive the engine kind.** Done, and it went further than planned:
+   the pairing route names no engine at all. It asks the registry for any pool
+   with capacity, and preference is registration order decided in the
+   composition root. `EngineKind` is now `baileys | fake`.
+2. **The port module, then the adapter.** Done, at roughly the estimated size.
+3. **Session persistence.** Done, and it turned out to be the largest piece of
+   the stage rather than a step within it — [13](13-owning-the-data.md) is the
+   document it grew into. `useMultiFileAuthState` writes credentials in
+   plaintext and puts a recipient's phone number in a filename, which for an
+   OTP sender means the recipient list is a directory listing. Credentials are
+   now AES-256-GCM encrypted in the same database as everything else, so
+   `VACUUM INTO` captures them and the rows together; Signal key ids are stored
+   as `sha256(id)`, which works because Baileys only ever looks keys up by
+   known id and never enumerates.
+4. **Re-run stage 0 against Baileys.** *Not done.* The 203-second blind window
+   is a gowa measurement and the ack timeout exists because of it. The timeout
+   is still in place, which is the right default — but "Baileys may be better"
+   is still an assumption, and it is now the oldest unverified one in the
+   project.
+5. **Rethink pools.** Partly. `enginePoolId` and `ENGINE_POOL_CAPACITY` still
+   bound how many devices a pool takes, but a pool is no longer a process, so
+   what the bound protects has changed. See
+   [ADR-0003](adr/0003-process-isolation.md), which needs revisiting rather
+   than a fresh answer invented here.
+6. **Shadow mode, then migrate one internal device, then by cohort.** Not
+   reached, because there is nothing to migrate: no real device has ever paired.
+   `BAILEYS_ENABLED` defaults to off in place of a rollout — a deployment opts
+   in to an unproven engine rather than being upgraded into one.
+7. **Keep the gowa adapter as a failover.** *Reversed.* Two engines is
+   insurance only while both are maintained, and nothing was maintaining an
+   adapter for a dependency being removed. It was deleted rather than left to
+   rot into a failover that would fail. Recorded in
+   [ADR-0002](adr/0002-engine-adapter.md).
 
 **Exit criteria:** conformance parity, session state provably surviving restart
 and restore-from-backup, stage 0 re-measured, and 30 days of a production cohort
 on Baileys with no regression in delivery rate or reconnect latency.
 
+Two of the four are met: conformance parity, and session state surviving
+restart and restore. The other two need a real device, and no real device has
+ever paired. That is the honest position of the whole project, not just this
+stage.
+
 ---
 
 ## Stage 5 — Features
 
-Ordered by value, not by novelty. Revisit after stage 3 with real usage data.
+Ordered by value, not by novelty. Revisit with real usage data — of which there
+is still none, which is the argument for not starting any of them yet.
+
+Three things are ahead of every row in this table, because each is a gap
+between what the system claims and what it does rather than something it does
+not claim at all:
+
+1. **Pair a real device.** Everything below assumes traffic. Nothing here has
+   ever carried any, and the stage-0 blind window has never been re-measured
+   against Baileys.
+2. **Send the consent challenge and parse the reply.** A claim against a number
+   another project holds answers "the phone holder has been asked to confirm",
+   and nobody is asked (§1.3, exit criterion 2).
+3. **The three items in [`todo.txt`](../todo.txt)** — the terminable regex
+   worker, the DNS-pinned HTTP client, the rule circuit breaker, and the
+   per-virtual-device delivery queue the design specifies and the schema does
+   not have.
 
 | Feature | Notes |
 | --- | --- |
@@ -331,18 +404,23 @@ Ordered by value, not by novelty. Revisit after stage 3 with real usage data.
 
 ## Summary
 
-| Stage | Duration | Cumulative | Delivers |
+| Stage | Estimated | State | Delivers |
 | --- | --- | --- | --- |
-| 0 — Understand | 1 wk | 1 wk | Knowledge, measurements |
-| 1 — Control plane | 6–8 wk | 7–9 wk | **All three objectives** |
-| 2 — Hardening | 2–3 days | 7–9 wk | Backup, rate limits, the numbers that say when to scale |
-| 3 — Dashboard | 4–6 wk | 11–15 wk | Self-service |
-| 4 — Native engine | 8–12 wk | 19–27 wk | *Optional* independence |
-| 5 — Features | ongoing | — | Differentiation |
+| 0 — Understand | 1 wk | done | Knowledge, measurements |
+| 1 — Control plane | 6–8 wk | done | **All three objectives** |
+| 2 — Hardening | 2–3 days | done | Backup, rate limits, the numbers that say when to scale |
+| 3 — Console | 4–6 wk | done | Self-service, for four screens' worth of it |
+| 4 — Baileys engine | 8–12 wk | done | Independence, and ownership of the data that comes with it |
+| 5 — Features | ongoing | not started | Differentiation |
 
-Roughly **three months to the thing you actually need**, against roughly six
-before the original sequence reached the same point — and stage 4 becomes
-something you may rationally decide never to do.
+The estimates are left as they were written rather than replaced with actuals,
+because the point of recording them was the *sequence* they justified and that
+part held: the control plane arrived before the rewrite, and the rewrite was
+then a swap rather than a prerequisite. Stage 4 was written as something you
+might rationally decide never to do. It was decided on within days of stage 3
+landing, for a reason the estimate could not have contained — not that gowa
+became a bottleneck, but that the abstraction had held under two stages of
+pressure and the cost of the pivot was therefore knowable.
 
 ## Stage 1 completion note
 
@@ -363,3 +441,19 @@ What exists and is tested: matching, RE2-only pattern safety with the three
 mitigations, loop protection by origin and by depth, per-binding rule storage
 scoped to the environment, and a dry run that cannot send because the evaluator
 it calls has no way to.
+
+*Amended after stage 4.* Two more carve-outs in §1.3, found by checking this
+list against the code rather than against itself:
+
+**The WhatsApp challenge is not sent, and no reply is parsed.** `DeviceStore`
+runs the consent state machine — request, grant, deny, lapse, revoke — and
+writes the immutable audit log with evidence, and all of it is tested. Nothing
+calls `DeviceStore.respond` outside those tests. So exit criterion 2 above is
+unmet: a claim against a number another project holds returns 202 saying the
+phone holder has been asked to confirm, and no message is sent. This is the one
+place where the API states an action it does not take.
+
+**Postgres RLS policies** were never written, and cannot be: [ADR-0005](adr/0005-postgres-over-sqlite.md)
+moved the project to SQLite, where the tenant boundary is enforced in the store
+layer instead. The line is left in the list above as a record of what the plan
+said, not as outstanding work.

@@ -1,9 +1,22 @@
 # 12 — Stage 0 findings
 
-*Stage 0 complete except for the two-device memory check. Measurements from the harness in
-[`deploy/stage0/`](../deploy/stage0/README.md), against
+*Stage 0 complete except for the two-device memory check. Measurements from the
+harness in `deploy/stage0/`, against
 `ghcr.io/aldinokemal/go-whatsapp-web-multidevice:latest` (gowa UI v1.6.0),
 unmodified. Started 2026-08-22.*
+
+> **The most load-bearing document here, and the harness that produced it is
+> gone.** Stage 4 deleted gowa along with `src/tools/`, `deploy/stage0/` and the
+> `reference/gowa` clone, so nothing below can be re-run as written. The
+> measurements stay because the designs they justify are unchanged and the
+> reasons would otherwise be invisible — above all the **203 seconds** gowa
+> spent reporting a device connected after a silent disconnect, which is why a
+> send is confirmed by a delivery ack rather than by the engine accepting it,
+> and why `sweepUnacked` runs. That measurement is a gowa measurement. It has
+> **not** been re-taken against Baileys, which exposes connection state directly
+> and may be much better — "may" is not a basis for removing an ack timeout, so
+> the timeout stays and the re-measurement stays outstanding
+> ([08](08-roadmap.md), stage 4, step 4).
 
 Everything here replaces an assumption made earlier in the design docs.
 

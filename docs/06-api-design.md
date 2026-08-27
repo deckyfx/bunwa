@@ -9,7 +9,9 @@
    project id; it is derived from the credential. This makes cross-tenant access
    a structural impossibility rather than a validation rule.
 3. **gowa-shaped where it can be.** Send and group payloads stay recognisable so
-   existing integrations port with modest effort.
+   existing integrations port with modest effort. This outlived gowa itself:
+   the shape is now a compatibility promise to whoever is migrating, not a
+   consequence of what sits behind the route.
 4. **Versioned from the first commit.** `/v1` prefix. Retrofitting a version is
    never free.
 
@@ -96,7 +98,7 @@ Idempotency-Key: 9f2c...
 
 One endpoint, discriminated by `type`. v1 supports exactly six:
 
-| `type` | Payload | gowa endpoint behind it |
+| `type` | Payload | gowa endpoint it was mapped to |
 | --- | --- | --- |
 | `text` | `{ text }` | `/send/message` |
 | `image` | `{ media, caption? }` | `/send/image` |
@@ -104,6 +106,10 @@ One endpoint, discriminated by `type`. v1 supports exactly six:
 | `link` | `{ url, text?, preview: true }` | `/send/link` |
 | `audio` | `{ media, voice_note? }` | `/send/audio` |
 | `video` | `{ media, caption? }` | `/send/video` |
+
+The third column is historical: those routes are how the gowa adapter satisfied
+each type, and it is kept because it is the clearest statement of what each type
+means. Baileys is sent to directly.
 
 `media` accepts a URL, a base64 data URI, or a multipart upload. Adding a type
 later is a new union member, not an API change.
@@ -118,8 +124,11 @@ GET    /v1/devices/{ref}/messages/{message_id}/media  download inbound media
 ```
 
 Everything else — reactions, edits, revoke, forward, star, presence, groups — is
-deferred with the message types in [02](02-requirements.md). gowa already
-implements them, so surfacing one later is a route and a mapping, not a project.
+deferred with the message types in [02](02-requirements.md). That deferral was
+argued partly on gowa already implementing them, so surfacing one was a route
+and a mapping. It is not any more — each is now work in the adapter, which
+raises the price of every one of them and is a reason to keep the list short
+rather than a reason to revisit the deferral.
 
 ### Rules
 
@@ -173,9 +182,14 @@ revoke any of them now.* Because devices are system-owned, this is an operator
 view rather than a customer one — the customer's control is the WhatsApp
 challenge and the ability to unlink from their phone.
 
-`POST /admin/v1/devices/{id}/migrate` is how a device moves from the gowa engine
-to the native engine, one device at a time, reversibly. It is the technical
-mechanism that makes stage 4 safe.
+`POST /admin/v1/devices/{id}/migrate` was to be how a device moves from the gowa
+engine to the native engine, one device at a time, reversibly — the mechanism
+that made stage 4 safe. It was never built, and stage 4 did not need it: no real
+device had ever paired, so there was nothing to migrate and the safety came from
+`BAILEYS_ENABLED` defaulting to off instead. The route stays specified rather
+than deleted, because moving a device between pools is still what the
+`engine_kind` / `engine_pool_id` indirection in [04](04-data-model.md) exists
+for, and a second engine adapter would need exactly this.
 
 ## Errors
 
