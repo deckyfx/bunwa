@@ -119,13 +119,29 @@ jobs:
           #
           # timeout, because the failure mode if the guard is gone is a server
           # that starts and serves happily until the job is killed.
+          # A marker, because `timeout` forwards the command's own exit
+          # status: a container that genuinely exits 124 is otherwise
+          # indistinguishable from one the deadline killed. The marker is
+          # written inside the timeout and only after the command returns, so
+          # its absence means the deadline fired and its contents carry the
+          # real status.
           set +e
-          output=$(timeout 20s docker run --rm \
-            -e NODE_ENV=production \
-            -e BAILEYS_ENABLED=true \
-            bunwa:api bun run src/index.ts 2>&1)
-          status=$?
+          output=$(timeout 20s sh -c '
+            docker run --rm \
+              -e NODE_ENV=production \
+              -e BAILEYS_ENABLED=true \
+              bunwa:api bun run src/index.ts 2>&1
+            printf "__CONTAINER_EXITED_%s__\n" "$?"
+          ')
+          timed_out=$?
           set -e
+
+          if printf '%s' "$output" | grep -q "__CONTAINER_EXITED_"; then
+            status=$(printf '%s' "$output" | sed -n 's/.*__CONTAINER_EXITED_\([0-9]*\)__.*/\1/p' | tail -1)
+          else
+            # No marker: the command never returned.
+            status=124
+          fi
 
           if [ "$status" -eq 0 ]; then
             echo "::error::the image started with baileys enabled and no encryption key"
@@ -133,14 +149,15 @@ jobs:
             exit 1
           fi
 
-          # 124 is timeout killing it, which means the process was still alive.
-          # Checked before the message, because a server that logs the config
-          # error and then serves anyway prints exactly what the grep below is
-          # looking for — and refusing to start is the whole claim.
+          # Still running when the deadline fired. Checked before the message,
+          # because a server that logs the config error and then serves anyway
+          # prints exactly what the grep below looks for — and refusing to
+          # start is the whole claim.
           #
-          # Third time this step has been able to pass for the wrong reason:
-          # first any non-zero exit counted, then the message alone did.
-          if [ "$status" -eq 124 ]; then
+          # Fourth revision of this step. It has accepted any non-zero exit,
+          # then the message alone, then a timeout that printed the message;
+          # each fix was right about the case in front of it.
+          if [ "$timed_out" -eq 124 ] && ! printf '%s' "$output" | grep -q "__CONTAINER_EXITED_"; then
             echo "::error::the image did not exit; it was still running when the timeout killed it"
             printf '%s\n' "$output"
             exit 1
