@@ -11,6 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, type VirtualDevice, type Whoami } from "./api";
 import { ClaimScreen } from "./ClaimScreen";
 import { Chats } from "./Chats";
+import { Devices } from "./Devices";
 import { useEventStream } from "./useEventStream";
 import { Deliveries } from "./Deliveries";
 
@@ -201,31 +202,7 @@ export function App() {
       {who !== null && <Deliveries apiKey={key} revision={revision} />}
 
       {devices !== null && (
-        <section aria-labelledby="devices">
-          <h2 id="devices">Virtual devices</h2>
-          {devices.length === 0 ? (
-            <p>None yet. Claim one above.</p>
-          ) : (
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Alias</th>
-                  <th scope="col">Status</th>
-                  <th scope="col">Number</th>
-                </tr>
-              </thead>
-              <tbody>
-                {devices.map((d) => (
-                  <tr key={d.virtualDeviceId}>
-                    <td>{d.alias}</td>
-                    <td>{d.status}</td>
-                    <td>{d.msisdn ?? "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </section>
+        <Devices apiKey={key} devices={devices} onChanged={() => void load(key)} />
       )}
     </main>
   );

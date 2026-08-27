@@ -147,6 +147,14 @@ export const api = {
     call<Delivery[]>(`/v1/deliveries?limit=${String(limit)}`, key),
   replay: (key: string, id: string) =>
     call<unknown>(`/v1/deliveries/${encodeURIComponent(id)}/replay`, key, { method: "POST" }),
+  logoutDevice: (key: string, ref: string) =>
+    call<null>(`/v1/devices/${encodeURIComponent(ref)}/logout`, key, { method: "POST" }),
+  repairDevice: (key: string, ref: string) =>
+    call<{ pairing: { method: string; qr?: string; pairCode?: string; expiresAt: string } }>(
+      `/v1/devices/${encodeURIComponent(ref)}/repair`,
+      key,
+      { method: "POST" },
+    ),
   chats: (key: string) => call<ChatThread[]>("/v1/chats", key),
   chatMessages: (key: string, threadId: string) =>
     call<ChatMessage[]>(`/v1/chats/${encodeURIComponent(threadId)}/messages`, key),

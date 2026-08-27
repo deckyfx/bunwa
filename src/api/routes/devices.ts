@@ -172,5 +172,89 @@ export function deviceRoutes(registry: EngineRegistry) {
         deviceState: binding.device.state,
         lastSeenAt: binding.device.lastSeenAt,
       };
-    });
+    })
+
+    /**
+     * Unlink the device from WhatsApp, keeping the slot.
+     *
+     * Keeping the slot is the point: the binding and its consent survive, so
+     * re-pairing the same number needs no fresh confirmation from the phone
+     * holder. A purge would be the other thing, and it is not this.
+     */
+    .post(
+      "/devices/:ref/logout",
+      async ({ auth, params, set, path }) => {
+        requireScope(auth, "manage:devices", path);
+
+        const binding = await DeviceStore.findBinding(auth.environmentId, params.ref);
+        if (binding === null) {
+          set.status = 404;
+          return problem(404, "not-found", "Device not found", undefined, path, currentCorrelationId());
+        }
+
+        const poolId = await DeviceStore.poolIdFor(binding.device.id);
+        if (poolId === null) {
+          // Never paired, so there is no session to end. Idempotent rather
+          // than an error: the caller asked for it to be logged out and it is.
+          set.status = 204;
+          return null;
+        }
+
+        await registry.get(poolId).engine.logout(binding.device.id);
+        set.status = 204;
+        return null;
+      },
+      { params: t.Object({ ref: t.String() }) },
+    )
+
+    /**
+     * Start pairing again for a device that already exists.
+     *
+     * The recovery path for a device that was logged out remotely, or whose
+     * QR expired before anyone scanned it. Distinct from claiming: the number
+     * is already this project's, so there is no consent question to reopen.
+     */
+    .post(
+      "/devices/:ref/repair",
+      async ({ auth, params, set, path }) => {
+        requireScope(auth, "manage:devices", path);
+        // Same budget as a claim. Each attempt can put a QR in front of a
+        // person, and an unbounded loop here is how a device gets hammered.
+        requireWithinLimit(`env:${auth.environmentId}`, LIMITS.claim, path);
+
+        const binding = await DeviceStore.findBinding(auth.environmentId, params.ref);
+        if (binding === null) {
+          set.status = 404;
+          return problem(404, "not-found", "Device not found", undefined, path, currentCorrelationId());
+        }
+
+        const poolId = await DeviceStore.poolIdFor(binding.device.id);
+        if (poolId === null) {
+          set.status = 409;
+          return problem(
+            409,
+            "never-paired",
+            "Device has no engine",
+            "this device has never been paired; claim it instead",
+            path,
+            currentCorrelationId(),
+          );
+        }
+
+        const pool = registry.get(poolId);
+        await pool.engine.provision(binding.device.id);
+        const session = await pool.engine.startPairing(binding.device.id, "qr");
+
+        return {
+          virtualDeviceId: binding.virtualDevice.id,
+          pairing: {
+            method: session.method,
+            ...(session.qr === undefined ? {} : { qr: session.qr }),
+            ...(session.pairCode === undefined ? {} : { pairCode: session.pairCode }),
+            expiresAt: session.expiresAt.toISOString(),
+          },
+        };
+      },
+      { params: t.Object({ ref: t.String() }) },
+    );
 }
