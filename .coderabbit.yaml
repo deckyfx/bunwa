@@ -172,6 +172,20 @@ reviews:
         rate-limit sweep is: housekeeping run by the process, with no request
         and no environment to scope to.
 
+    - path: "src/engine/baileys/**"
+      instructions: >-
+        Only src/engine/baileys/socket.ts may import from
+        @whiskeysockets/baileys (ADR-0009). Flag any other file in the
+        repository that imports it, and flag any Baileys type appearing in a
+        DeviceEngine signature — the moment one does, every other engine has to
+        satisfy a Baileys-shaped contract and the adapter boundary is gone. The
+        version is pinned exactly, without a caret, on purpose: 6.7.24 is the
+        maintained stable line and 7.0.0 is a release candidate, which is not
+        what OTP traffic should run on. Do not suggest widening the range or
+        upgrading to latest. Pay particular attention to disconnect handling:
+        401, 403, 440, 500 and 411 must never be retried, and 515 must always
+        be, because it is how pairing completes.
+
     - path: "src/tools/**"
       instructions: >-
         Diagnostic tooling, not production code. Hold it to a lower bar for
