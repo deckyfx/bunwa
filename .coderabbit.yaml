@@ -172,6 +172,20 @@ reviews:
         rate-limit sweep is: housekeeping run by the process, with no request
         and no environment to scope to.
 
+    - path: "src/stores/auth-state-store.ts"
+      instructions: >-
+        Do not ask for an environment or project parameter on these methods.
+        Credentials belong to the WhatsApp account, the account belongs to the
+        device, and docs/04 makes devices global and system-owned so several
+        projects can share one number through consent. A device held by two
+        projects has exactly one set of credentials, so there is no environment
+        that owns them and the parameter could only be decorative. The tenant
+        boundary is enforced where it exists: chat rows carry environment_id,
+        ChatStore.record refuses an environment with no active binding, and the
+        device routes resolve a binding first. No request reaches this file —
+        its only caller is the Baileys port, with a device id the engine
+        already holds. The reasoning is in the module header.
+
     - path: "src/engine/baileys/**"
       instructions: >-
         Only src/engine/baileys/socket.ts may import from

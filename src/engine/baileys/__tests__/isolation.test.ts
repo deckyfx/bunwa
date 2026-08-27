@@ -11,10 +11,11 @@
  * but unused still couples us, and would not show up in any behavioural test.
  */
 import { describe, expect, test } from "bun:test";
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const PORT = "src/engine/baileys/socket.ts";
+const DASHBOARD = "dashboard/src";
 const LIBRARY = "@whiskeysockets/baileys";
 
 /** Every way a file could reach the library. */
@@ -64,7 +65,15 @@ describe("only the port module knows about Baileys", () => {
   test("the dashboard does not reach the library either", () => {
     // A separate subproject with its own dependencies, so its imports resolve
     // independently and would not be caught by the sweep above.
-    const offenders = sourceFiles("dashboard/src").filter((f) => {
+    //
+    // Asserted rather than skipped when the directory is missing. A skip would
+    // read as a pass, so moving the dashboard would silently stop this rule
+    // covering it — which is the failure mode this whole file exists to
+    // prevent, reproduced in the guard itself. The path is relative to the
+    // repository root, so a bare readdirSync would throw ENOENT and blame the
+    // filesystem rather than the move.
+    expect(existsSync(DASHBOARD), `${DASHBOARD} is gone; this sweep no longer covers it`).toBe(true);
+    const offenders = sourceFiles(DASHBOARD).filter((f) => {
       const text = readFileSync(f, "utf8");
       return IMPORT_FORMS.some((pattern) => pattern.test(text));
     });

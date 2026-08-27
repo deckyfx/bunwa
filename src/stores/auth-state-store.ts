@@ -10,6 +10,28 @@
  * account-takeover material and the Signal keys decrypt message content, so
  * neither is something to hold in the clear in a multi-tenant database
  * ([13](../../docs/13-owning-the-data.md)).
+ *
+ * ## Why these methods take a device and not an environment
+ *
+ * A review asked for tenant scoping here, as the store path instructions
+ * require, and it is the one place in the codebase where that would be wrong.
+ *
+ * Credentials belong to the WhatsApp account, and the account belongs to the
+ * device — which docs/04 makes global and system-owned precisely so several
+ * projects can share one number through the consent flow. A device held by two
+ * projects has exactly one set of credentials and one Signal session. There is
+ * no environment that owns them, so an environment parameter here could only
+ * be decorative: whatever value a caller passed, the same row would be read.
+ *
+ * What that scoping is for is enforced instead where the tenant boundary
+ * actually is. Chat history carries `environment_id` and is scoped on it.
+ * `ChatStore.record` refuses an environment with no active binding. The device
+ * routes resolve a binding before touching an engine.
+ *
+ * And no request reaches this file. Its only caller is the Baileys port, with
+ * a device id the engine already holds — never one a caller supplied. If that
+ * changes, the binding check belongs at the new caller, where an environment
+ * exists to check against.
  */
 import { and, count, eq, inArray } from "drizzle-orm";
 
