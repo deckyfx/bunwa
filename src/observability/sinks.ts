@@ -9,7 +9,7 @@ import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
 import { config, type LogLevel, type LogRotation } from "../config/env";
-import { formatDate, formatDateTime, serverTimezone } from "../time/format";
+import { formatDate, formatDateTime, formatIso, serverTimezone } from "../time/format";
 
 const ESC = "\u001b";
 
@@ -110,27 +110,31 @@ export function resetFileSink(): void {
 }
 
 /**
- * A styled line for a person reading a terminal.
+ * One line, for a person.
+ *
+ * The same shape whether it is going to a terminal or to a file; only the
+ * colour differs. A file that reads differently from the console is a file
+ * nobody checks against what they just saw on screen.
  *
  * The timestamp is in the server's timezone rather than UTC, so it matches
  * both the dashboard and whatever a support answer will say. The date is
  * carried too: a terminal left open overnight, or a line pasted into a ticket,
  * is otherwise a time with no day attached.
  */
-export function formatForConsole(
+export function formatLine(
   level: LogLevel,
   at: Date,
   correlationId: string | undefined,
   message: string,
   rest: string,
+  colour: boolean,
 ): string {
   const time = formatDateTime(at);
   const id = (correlationId ?? "--------").slice(0, 8);
   const label = level.toUpperCase().padEnd(5);
-  const tail = rest === "" ? "" : ` ${rest}`;
 
-  if (!useColour()) {
-    return `${time} ${label} [${id}] ${message}${tail}`;
+  if (!colour) {
+    return `${time} ${label} [${id}] ${message}${rest === "" ? "" : ` ${rest}`}`;
   }
 
   const styledTail = rest === "" ? "" : ` ${DIM}${rest}${RESET}`;
@@ -140,6 +144,88 @@ export function formatForConsole(
     `${DIM}[${id}]${RESET} ` +
     `${message}${styledTail}`
   );
+}
+
+/** The line as the terminal should see it — coloured, unless it should not be. */
+export const formatForConsole = (
+  level: LogLevel,
+  at: Date,
+  correlationId: string | undefined,
+  message: string,
+  rest: string,
+): string => formatLine(level, at, correlationId, message, rest, useColour());
+
+/**
+ * Whether a logfmt value can stand unquoted.
+ *
+ * Bare tokens are the readable case, so the set is as wide as the format
+ * safely allows: anything with a space, an equals sign, a quote or a newline
+ * must be quoted, or a parser will split the line in the wrong place.
+ */
+const BARE = /^[A-Za-z0-9._/:@+-]+$/;
+
+/** One `key=value` pair, quoted and escaped only where it has to be. */
+function pair(key: string, value: unknown): string {
+  if (value === undefined) return "";
+  if (value === null) return `${key}=null`;
+  if (typeof value === "number" || typeof value === "boolean") return `${key}=${String(value)}`;
+
+  const text = typeof value === "string" ? value : JSON.stringify(value);
+  if (text === undefined) return "";
+  // JSON.stringify does the escaping — including newlines, which is what keeps
+  // a stack trace on one line instead of becoming twenty unparseable ones.
+  return `${key}=${BARE.test(text) && text !== "" ? text : JSON.stringify(text)}`;
+}
+
+/** How deep to flatten before giving up and encoding the rest as JSON. */
+const MAX_DEPTH = 4;
+
+/**
+ * Nested objects become dotted keys: `error.message="upstream refused"`.
+ *
+ * Without this a logged Error arrives as one long JSON string inside a quoted
+ * value — escaped quotes inside escaped quotes, unreadable by eye and needing
+ * a second parse to query. Dotted keys are the convention logfmt consumers
+ * already expect. Arrays stay JSON: their indices make poor key names.
+ */
+function flatten(fields: Record<string, unknown>, prefix = "", depth = 0): Array<[string, unknown]> {
+  return Object.entries(fields).flatMap(([key, value]): Array<[string, unknown]> => {
+    const name = prefix === "" ? key : `${prefix}.${key}`;
+    const nested =
+      depth < MAX_DEPTH && typeof value === "object" && value !== null && !Array.isArray(value);
+
+    return nested ? flatten(value as Record<string, unknown>, name, depth + 1) : [[name, value]];
+  });
+}
+
+/**
+ * The line as the file should see it: logfmt.
+ *
+ * `time=... level=info msg="..." key=value`, one event per line. Chosen over
+ * JSON because the file is read by a person at least as often as by a machine,
+ * and over a purely human line because logfmt is a format the tooling already
+ * knows — Loki, Vector, Promtail, Splunk and Datadog all parse it without a
+ * custom regex. Never coloured, whatever the terminal is doing: escape codes
+ * in a file are a parse failure weeks after the run that produced them.
+ *
+ * The timestamp is RFC 3339 in the server's zone, so it carries its offset and
+ * cannot be misread as UTC.
+ */
+export function formatForFile(
+  level: LogLevel,
+  at: Date,
+  correlationId: string | undefined,
+  message: string,
+  fields: Record<string, unknown>,
+): string {
+  const parts = [
+    pair("time", formatIso(at)),
+    pair("level", level),
+    pair("msg", message),
+    pair("correlation_id", correlationId),
+    ...flatten(fields).map(([k, v]) => pair(k, v)),
+  ];
+  return parts.filter((p) => p !== "").join(" ");
 }
 
 /** What the sinks are doing. Logged once at startup so it is in the file too. */

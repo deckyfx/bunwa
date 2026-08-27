@@ -10,7 +10,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 
 import { config, type LogLevel } from "../config/env";
 import { formatIso } from "../time/format";
-import { formatForConsole, writeToFile } from "./sinks";
+import { formatForConsole, formatForFile, writeToFile } from "./sinks";
 
 /** Ordering used to decide whether a line clears the configured floor. */
 const SEVERITY: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -161,24 +161,25 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
     ...(context === undefined ? {} : { correlationId: context.correlationId }),
   };
 
-  const json = JSON.stringify(line);
+  const rawId = line["correlationId"];
+  const id = typeof rawId === "string" ? rawId : undefined;
+  const extra = Object.entries(line).filter(([k]) => !(CANONICAL_FIELDS as readonly string[]).includes(k));
+  const rest = extra.length === 0 ? "" : JSON.stringify(Object.fromEntries(extra));
 
-  // The file always gets JSON, in every environment. It is read by a query
-  // weeks later, not by a person now, and a file whose format depends on how
-  // the process was started is a file nothing can parse.
-  writeToFile(json, at);
+  // The file gets logfmt: readable by eye, and parsed out of the box by the
+  // tooling that would be pointed at it. The fields go in as a record rather
+  // than a pre-rendered blob, so each becomes its own queryable key.
+  writeToFile(formatForFile(level, at, id, message, Object.fromEntries(extra)), at);
 
   const out = level === "error" || level === "warn" ? console.error : console.log;
+
+  // Production stdout stays JSON: it is scraped by a collector, not read.
   if (cfg.isProduction) {
-    out(json);
+    out(JSON.stringify(line));
     return;
   }
 
-  // Development: one styled line for whoever is watching the terminal.
-  const rawId = line["correlationId"];
-  const id = typeof rawId === "string" ? rawId : undefined;
-  const rest = Object.entries(line).filter(([k]) => !(CANONICAL_FIELDS as readonly string[]).includes(k));
-  out(formatForConsole(level, at, id, message, rest.length === 0 ? "" : JSON.stringify(Object.fromEntries(rest))));
+  out(formatForConsole(level, at, id, message, rest));
 }
 
 /**
