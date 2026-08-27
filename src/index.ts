@@ -10,6 +10,7 @@ import { createServer } from "./api/server";
 import { MigrationManager } from "./db/migration-manager";
 import { startWorker } from "./delivery/worker";
 import { EngineRegistry } from "./engine/registry";
+import { BaileysAdapter } from "./engine/baileys/adapter";
 import { GowaAdapter } from "./engine/gowa/adapter";
 import { startEngineConsumer } from "./engine/consumer";
 import { startHousekeeping } from "./ops/housekeeping";
@@ -52,6 +53,19 @@ async function main(): Promise<void> {
       capacity: cfg.enginePoolCapacity,
       engine: new GowaAdapter({ baseUrl: cfg.gowaBaseUrl }),
     });
+  }
+
+  if (cfg.baileysEnabled) {
+    // Registered after gowa, so gowa is preferred while it is the proven one —
+    // registration order is preference order. ADR-0002 keeps both: two working
+    // engines is the failover, and it costs one directory.
+    registry.register({
+      id: "baileys-1",
+      kind: "baileys",
+      capacity: cfg.enginePoolCapacity,
+      engine: new BaileysAdapter(),
+    });
+    log.info("baileys engine registered", { capacity: cfg.enginePoolCapacity });
   }
 
   if (registry.list().length === 0) {

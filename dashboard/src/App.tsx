@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type VirtualDevice, type Whoami } from "./api";
 import { ClaimScreen } from "./ClaimScreen";
+import { Chats } from "./Chats";
 import { useEventStream } from "./useEventStream";
 import { Deliveries } from "./Deliveries";
 
@@ -194,6 +195,8 @@ export function App() {
       )}
 
       {who !== null && <ClaimScreen apiKey={key} onClaimed={() => void load(key)} />}
+
+      {who !== null && <Chats apiKey={key} revision={revision} />}
 
       {who !== null && <Deliveries apiKey={key} revision={revision} />}
 

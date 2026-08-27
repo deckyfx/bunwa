@@ -139,6 +139,9 @@ export class Config {
    */
   readonly credentialEncryptionKey: string | null;
 
+  /** Whether to register the in-process Baileys engine. Opt-in; see ADR-0009. */
+  readonly baileysEnabled: boolean;
+
   constructor(source: Record<string, string | undefined> = Bun.env) {
     this.nodeEnv = oneOf(source, "NODE_ENV", NODE_ENVS, "development");
     this.port = integer(source, "PORT", 3000, 1, 65535);
@@ -192,6 +195,20 @@ export class Config {
     }
 
     this.credentialEncryptionKey = suppliedKey;
+
+    // Whether to run WhatsApp in this process rather than proxying gowa.
+    //
+    // Off by default. The adapter passes its conformance suite against a stub,
+    // which proves it satisfies the contract and not that Baileys behaves as
+    // the stub does — that needs a real device. Until then a deployment opts
+    // in deliberately rather than being upgraded into it.
+    this.baileysEnabled = boolean(source, "BAILEYS_ENABLED", false);
+
+    if (this.baileysEnabled && suppliedKey === null) {
+      throw new ConfigError(
+        "BAILEYS_ENABLED requires CREDENTIAL_ENCRYPTION_KEY: this engine keeps WhatsApp credentials in the database and will not write them in the clear",
+      );
+    }
     if (this.allowInsecureWebhookTargets && this.isProduction) {
       throw new ConfigError("ALLOW_INSECURE_WEBHOOK_TARGETS must not be true in production");
     }

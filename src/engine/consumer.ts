@@ -17,6 +17,7 @@ import { DeliveryStore } from "../stores/delivery-store";
 import { RuleStore } from "../stores/rule-store";
 import { evaluate } from "../rules/evaluate";
 import { MessageStore } from "../stores/message-store";
+import { ChatStore } from "../stores/chat-store";
 import { publish } from "../events/bus";
 import { EVENT_SCHEMA_VERSION, type EventEnvelope, type EventType } from "../events/schema";
 import { log, withContext } from "../observability/logger";
@@ -62,6 +63,11 @@ export async function handleEngineEvent(
       await ackMessage(event.deviceId, event.messageId, event.status, database);
       break;
     case "message.received":
+      // Recorded before the rules run. A rule that throws must not lose the
+      // message: the history is what a support question is answered from, and
+      // "we received it but a rule failed" is recoverable while "we never
+      // wrote it down" is not.
+      await recordInbound(event, database);
       await runRules(event.deviceId, event, database);
       break;
     default:
@@ -149,6 +155,53 @@ export interface RuleSubject {
     has_media: boolean;
     media_kind: string | null;
   };
+}
+
+/**
+ * Write an inbound message to history.
+ *
+ * bunwa is the system of record for conversations now that gowa is gone
+ * ([13](../../docs/13-owning-the-data.md)). Until this existed the retention
+ * sweep was deleting from a table nothing wrote to.
+ *
+ * Messages the phone holder sent from their own handset are stored too: the
+ * console shows a conversation, and one that omits half of it is worse than
+ * none, because the reader cannot tell it is incomplete.
+ */
+async function recordInbound(
+  event: Extract<EngineEvent, { type: "message.received" }>,
+  database: Database,
+): Promise<void> {
+  const message = event.message;
+  const peer = message.chatId ?? message.chatLid ?? message.from;
+
+  if (peer === null) {
+    // Nothing to file it under. Logged rather than dropped silently, because
+    // a message with no chat is a shape we have not seen and want to know
+    // about.
+    log.warn("inbound message with no chat id; not recorded", { deviceId: event.deviceId });
+    return;
+  }
+
+  try {
+    await ChatStore.record(
+      {
+        deviceId: event.deviceId,
+        peerJid: peer,
+        direction: message.isFromMe ? "outbound" : "inbound",
+        providerMessageId: message.id,
+        kind: message.media === null ? "text" : "unsupported",
+        body: message.body,
+        occurredAt: message.timestamp,
+        displayName: message.pushName,
+      },
+      database,
+    );
+  } catch (err) {
+    // Never fatal to the event loop. A history write that fails must not stop
+    // the rules, the fan-out, or the next message.
+    log.error("could not record inbound message", err, { deviceId: event.deviceId });
+  }
 }
 
 /** Map an engine event onto the documented rule subject. */

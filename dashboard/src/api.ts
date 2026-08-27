@@ -118,6 +118,28 @@ async function call<T>(path: string, key: string, init: RequestInit = {}): Promi
   return (await response.json()) as T;
 }
 
+/** A conversation, as the console lists it. */
+export interface ChatThread {
+  id: string;
+  deviceId: string;
+  alias: string;
+  peerJid: string;
+  displayName: string | null;
+  lastMessageAt: string | null;
+  unreadCount: number;
+}
+
+/** One message in a conversation. */
+export interface ChatMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  kind: string;
+  body: string | null;
+  mediaId: string | null;
+  status: string | null;
+  occurredAt: string;
+}
+
 export const api = {
   whoami: (key: string) => call<Whoami>("/v1/whoami", key),
   devices: (key: string) => call<VirtualDevice[]>("/v1/devices", key),
@@ -125,6 +147,21 @@ export const api = {
     call<Delivery[]>(`/v1/deliveries?limit=${String(limit)}`, key),
   replay: (key: string, id: string) =>
     call<unknown>(`/v1/deliveries/${encodeURIComponent(id)}/replay`, key, { method: "POST" }),
+  chats: (key: string) => call<ChatThread[]>("/v1/chats", key),
+  chatMessages: (key: string, threadId: string) =>
+    call<ChatMessage[]>(`/v1/chats/${encodeURIComponent(threadId)}/messages`, key),
+  markChatRead: (key: string, threadId: string) =>
+    call<null>(`/v1/chats/${encodeURIComponent(threadId)}/read`, key, { method: "POST" }),
+  reply: (key: string, threadId: string, text: string) =>
+    call<{ id: string | null; status: string }>(
+      `/v1/chats/${encodeURIComponent(threadId)}/messages`,
+      key,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      },
+    ),
   claim: (key: string, msisdn: string, alias: string) =>
     call<ClaimResult>("/v1/devices/claim", key, {
       method: "POST",
