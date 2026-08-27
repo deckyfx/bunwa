@@ -36,14 +36,18 @@ Elysia's own `listen()` do the bundling, script injection and hot reload.
 bunwa/
 ├── src/               control plane
 │   └── console/       React SPA, served at /app by the same app
-├── src/index-console.ts    the API with the console mounted
+├── src/boot.ts             the startup sequence both entry points share
+├── src/index.ts            the API with the console mounted — the default
 └── src/index-headless.ts   the API alone
 ```
 
-The two entry points differ by one argument. `index-console.ts` imports the
-HTML and passes it to `main()`; `index-headless.ts` does not import it at all,
-which is what keeps React out of a headless build — a runtime switch would ship
-the thing it exists to exclude. `/app` still answers in a headless build, with a
+The two entry points differ by one argument. `index.ts` imports the HTML and
+passes it to `main()`; `index-headless.ts` does not import it at all, which is
+what keeps React out of what a headless build serves — a runtime switch would
+ship the thing it exists to exclude. Both are two lines over a shared
+`boot.ts`, which is deliberate: an entry point that owned its own copy of the
+startup sequence is how one of them ended up merely exporting `main` and
+serving nothing. `/app` still answers in a headless build, with a
 404 that says the console is not in this build, because an operator who expected
 it should learn that from the route rather than from a bare 404 that could mean
 anything.

@@ -54,9 +54,11 @@ The console is a React SPA in [`src/console/`](src/console/), served at `/app`
 by the same Elysia app that answers its API calls. One origin, so there is no
 proxy to keep in step and the browser's client can be Eden Treaty against the
 server's own exported `App` type rather than hand-written types that drift.
-Two entry points differ only in whether the console is mounted:
-`src/index-console.ts` includes it, `src/index-headless.ts` does not, and a
-headless build carries no React at all because the page is never imported.
+Two entry points differ only in whether the console is mounted, over the shared
+startup sequence in `src/boot.ts`: `src/index.ts` includes it and is what
+`bun run start` and the image both reach for, `src/index-headless.ts` does not.
+The headless entry point never imports the page, so nothing pulls React into
+what it serves.
 
 ## Requirements
 

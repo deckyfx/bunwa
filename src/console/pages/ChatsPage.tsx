@@ -16,12 +16,28 @@ import { useSession } from "../store/session";
 
 export function ChatsPage() {
   const revision = useSession((s) => s.revision);
-  const { threads, selectedId, messages, draft, sending, error, loadThreads, select, setDraft, send } =
-    useChats();
+  const {
+    threads,
+    selectedId,
+    messages,
+    draft,
+    sending,
+    error,
+    loadThreads,
+    select,
+    refresh,
+    setDraft,
+    send,
+  } = useChats();
 
+  // Both, on every event. The thread list alone left the conversation actually
+  // on screen stale: a new message bumped its row and its unread badge while
+  // the messages beside them did not move until the operator clicked away and
+  // back. `refresh` is a no-op when nothing is selected.
   useEffect(() => {
     void loadThreads();
-  }, [loadThreads, revision]);
+    void refresh();
+  }, [loadThreads, refresh, revision]);
 
   return (
     <section aria-labelledby="chats" className="rounded-lg border border-slate-200 dark:border-slate-800">

@@ -133,6 +133,77 @@ describe("opening a conversation", () => {
   });
 });
 
+describe("refreshing the open conversation", () => {
+  test("reloads the messages of the thread already on screen", async () => {
+    // The bug this pins: the revision effect reloaded the thread list only, so
+    // a message arriving in the conversation someone was reading bumped its
+    // row and left the messages beside it stale until a re-select.
+    threadsResolver = () => Promise.resolve({ data: [thread("t1")], error: null });
+    messagesResolver = () => Promise.resolve({ data: [message("m1", "first")], error: null });
+    await useChats.getState().loadThreads();
+    await useChats.getState().select("t1");
+
+    messagesResolver = () =>
+      Promise.resolve({ data: [message("m1", "first"), message("m2", "second")], error: null });
+    await useChats.getState().refresh();
+
+    expect(useChats.getState().messages?.length, "the open conversation stayed stale").toBe(2);
+  });
+
+  test("does not blank the panel while it reloads", async () => {
+    // A background reload repainting the conversation empty on every event is
+    // a worse lie than a moment of stale text, so refresh must not clear.
+    threadsResolver = () => Promise.resolve({ data: [thread("t1")], error: null });
+    messagesResolver = () => Promise.resolve({ data: [message("m1", "hello")], error: null });
+    await useChats.getState().loadThreads();
+    await useChats.getState().select("t1");
+
+    let release: ((v: unknown) => void) | undefined;
+    messagesResolver = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+
+    const inFlight = useChats.getState().refresh();
+    expect(useChats.getState().messages?.[0]?.body, "refresh blanked the panel").toBe("hello");
+    release?.({ data: [message("m1", "hello")], error: null });
+    await inFlight;
+  });
+
+  test("does nothing when no conversation is open", async () => {
+    // The revision effect calls it unconditionally, so this is the mount case.
+    let called = false;
+    messagesResolver = () => {
+      called = true;
+      return Promise.resolve({ data: [], error: null });
+    };
+    await useChats.getState().refresh();
+    expect(called).toBe(false);
+  });
+
+  test("a response after the key changed is dropped", async () => {
+    threadsResolver = () => Promise.resolve({ data: [thread("t1")], error: null });
+    messagesResolver = () => Promise.resolve({ data: [message("m1", "ANA")], error: null });
+    await useChats.getState().loadThreads();
+    await useChats.getState().select("t1");
+
+    let release: ((v: unknown) => void) | undefined;
+    messagesResolver = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+
+    const inFlight = useChats.getState().refresh();
+    useSession.setState({ apiKey: "key-b" });
+    release?.({ data: [message("m9", "OTHER TENANT")], error: null });
+    await inFlight;
+
+    expect(useChats.getState().messages?.[0]?.body, "a stale response painted the wrong tenant").toBe(
+      "ANA",
+    );
+  });
+});
+
 describe("replying", () => {
   test("clears the draft and refreshes the thread", async () => {
     threadsResolver = () => Promise.resolve({ data: [thread("t1")], error: null });

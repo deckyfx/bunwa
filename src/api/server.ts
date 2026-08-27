@@ -79,20 +79,16 @@ async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?
 }
 
 /**
- * Build the application. Exported unstarted so tests can drive it directly.
+ * Build the application, without the console. Exported unstarted so tests can
+ * drive it directly.
  *
  * The engine registry is optional: most routes never touch an engine, and
  * requiring one would make every HTTP test stand up a fake.
- */
-/**
- * What to serve at /app, if anything.
  *
- * A Bun HTML import when the console is included, and undefined in headless
- * mode. Passed in rather than imported here so the two entry points differ by
- * one argument: importing it unconditionally would bundle React into the
- * headless binary to serve a route it never mounts.
+ * The console page is not a parameter here. `createConsoleApp` adds it, so
+ * nothing in this path imports the page and a headless build never pulls React
+ * in to serve a route it does not mount.
  */
-
 export function createApp(registry?: EngineRegistry) {
   const app = new Elysia()
     // Correlation id first, so every later hook and handler logs under it.
@@ -276,12 +272,14 @@ export function createApp(registry?: EngineRegistry) {
 /**
  * Build the app and start listening.
  *
- * This used to wrap the app so every request ran inside a logging context, and
+ * Picks the console or headless shape from whether a page was supplied, which
+ * is the whole of the difference between the two entry points.
+ *
+ * It used to wrap the app so every request ran inside a logging context, and
  * the comment outlived the wrapper: the `derive` hook above enters the context
  * now. A comment describing a mechanism that has moved sends the next reader
  * looking for it here.
  */
-
 export function createServer(registry?: EngineRegistry, consolePage?: ConsolePage) {
   const cfg = config();
   const app = consolePage === undefined ? createApp(registry) : createConsoleApp(registry, consolePage);
@@ -290,22 +288,17 @@ export function createServer(registry?: EngineRegistry, consolePage?: ConsolePag
 }
 
 /**
- * The server's shape, for the dashboard to import.
- *
- * Eden Treaty turns this into a fully-typed client with no code generation and
- * no schema to keep in sync — a route that changes signature becomes a compile
- * error in the dashboard rather than a 400 discovered by a user. That property
- * is the reason [03](../../docs/03-architecture.md) chose Elysia at all, and it
- * only holds if the type is actually exported, which until now it was not.
- *
- * Derived from createApp rather than declared, so it cannot drift from what the
- * server really serves.
- */
-/**
  * The API without the console.
  *
  * What `bun run start:headless` serves. /app answers a 404 that says which
  * build this is, rather than being absent.
+ *
+ * Derived from `createApp` rather than declared, so it cannot drift from what
+ * the server really serves. Eden Treaty turns it into a fully-typed client
+ * with no code generation and no schema to keep in sync — a route that changes
+ * signature becomes a compile error in the console rather than a 400 found by
+ * a user, which is the reason [03](../../docs/03-architecture.md) chose Elysia
+ * at all, and it only holds if the type is actually exported.
  */
 export type HeadlessApp = ReturnType<typeof createApp>;
 

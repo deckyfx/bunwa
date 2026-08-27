@@ -64,7 +64,15 @@ export const useClaim = create<ClaimState>((set, get) => ({
     // Dropped if the session moved on. Claiming under one key and reporting
     // the result under another is how a console shows one project's device to
     // a different project.
-    if (useSession.getState().apiKey !== apiKey) return;
+    //
+    // Cleared, not just returned from. A bare return left `busy` true for
+    // ever, and the claim button is disabled on `busy` — so switching keys
+    // while a claim was in flight killed the form until a page reload, with
+    // nothing on screen to say why.
+    if (useSession.getState().apiKey !== apiKey) {
+      set({ busy: false, result: null, error: null });
+      return;
+    }
 
     if (error !== null) {
       set({ busy: false, error: "the claim was refused" });

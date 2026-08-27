@@ -14,6 +14,7 @@ import { config, ConfigError, type Config } from "./config/env";
 import { createServer } from "./api/server";
 import type { ConsolePage } from "./api/types";
 import { MigrationManager } from "./db/migration-manager";
+import { resetBus } from "./events/bus";
 import { startWorker } from "./delivery/worker";
 import { EngineRegistry } from "./engine/registry";
 import { BaileysAdapter } from "./engine/baileys/adapter";
@@ -28,11 +29,10 @@ const SHUTDOWN_DRAIN_MS = 10_000;
  * Start the process: validate config, migrate, register the engine, serve, and
  * then wait for a signal.
  *
- * Exported, and takes the console page as an argument rather than importing
- * it, so the two entry points differ by one argument instead of each owning a
- * copy of this sequence. `src/index-headless.ts` never imports the page, which
- * is what keeps React out of what a headless build serves; a runtime switch
- * would bundle the thing it exists to exclude.
+ * Takes the console page as an argument rather than importing it, so the
+ * headless entry point never pulls React in to serve a route it does not
+ * mount — and so neither entry point owns a copy of this sequence. Both are
+ * two lines over this function.
  */
 async function main(consolePage?: ConsolePage): Promise<void> {
   let cfg: Config;
@@ -107,22 +107,46 @@ async function main(consolePage?: ConsolePage): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("shutting down", { signal });
-    // Await the delivery pass in flight before the server: anything unfinished
-    // stays queued and resumes next start, but a half-written attempt does not.
     // Order matters. Stop accepting requests first: closing engines while
     // traffic is still arriving fails those requests for no reason. Then drain
-    // the delivery pass in flight, then release the engines.
+    // the delivery pass in flight — anything unfinished stays queued and
+    // resumes next start, but a half-written attempt does not — and only then
+    // release the engines.
     //
     // Bounded: server.stop(false) waits indefinitely for in-flight requests, so
     // one stuck handler would block every later step and the process would
     // never exit. After the deadline, close connections and move on.
-    // Both branches discarded to void. createServer returns one of two app
-    // types now — with the console or without — and the race would otherwise
-    // have to reconcile their return types, which it has no reason to care
-    // about.
+    //
+    // The event bus goes first, and this is the difference between exiting in a
+    // second and waiting out the deadline.
+    //
+    // An open SSE stream is an in-flight request that never finishes on its
+    // own: the handler is parked on the bus, and server.stop(false) waits for
+    // it. Closing the bus ends every subscription, so each stream's loop
+    // finishes, clears its heartbeat interval and completes its response.
+    // Without it a single console tab made every shutdown take ten seconds and
+    // look like a hang — Ctrl-C did nothing visible, so it read as one.
+    resetBus();
+
+    // `stopped` rather than relying on the race alone. Promise.race settles on
+    // the first branch but does not cancel the other, so the sleep still
+    // resolves later — and without this flag a shutdown whose remaining steps
+    // outlast the deadline logged "drain deadline reached" and forced the
+    // connections closed on a server that had already stopped cleanly. A
+    // warning that fires after a successful drain is worse than no warning: it
+    // is the log line an operator would reach for to explain a hang that did
+    // not happen.
+    //
+    // Both branches are discarded to void because createServer returns one of
+    // two app types — with the console or without — and the race has no reason
+    // to reconcile them.
+    let stopped = false;
     await Promise.race<void>([
-      server.stop(false).then(() => undefined),
+      server.stop(false).then(() => {
+        stopped = true;
+      }),
       Bun.sleep(SHUTDOWN_DRAIN_MS).then(async () => {
+        if (stopped) return;
         log.warn("drain deadline reached; closing remaining connections", { afterMs: SHUTDOWN_DRAIN_MS });
         await server.stop(true);
       }),

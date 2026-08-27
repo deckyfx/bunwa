@@ -51,6 +51,7 @@ interface ChatState {
 
   loadThreads: () => Promise<void>;
   select: (threadId: string) => Promise<void>;
+  refresh: () => Promise<void>;
   setDraft: (text: string) => void;
   send: () => Promise<void>;
 }
@@ -95,7 +96,6 @@ export const useChats = create<ChatState>((set, get) => ({
   },
 
   select: async (threadId: string) => {
-    const mine = ++selectionGeneration;
     const { apiKey } = useSession.getState();
     // Same early return as loadThreads. Without a credential the request is
     // refused, and the refusal became "could not load this conversation" — an
@@ -103,7 +103,34 @@ export const useChats = create<ChatState>((set, get) => ({
     // nobody is signed in. Signed out is not a failed load.
     if (apiKey === "") return;
 
+    // Blanked on an explicit selection, because the operator asked for a
+    // different conversation and showing the previous one's messages under the
+    // new one's name is worse than showing nothing for a moment. A background
+    // refresh does not do this — see below.
     set({ selectedId: threadId, messages: null, error: null });
+    await get().refresh();
+  },
+
+  /**
+   * Reload the open conversation in place.
+   *
+   * Split out of `select` because an event means the messages on screen are
+   * stale, not that the operator changed thread. The revision effect reloaded
+   * only the thread list, so a message arriving in the conversation someone was
+   * reading updated the unread badge beside it and left the messages
+   * themselves untouched until they clicked away and back — which is the one
+   * case "SSE for truth" exists to cover.
+   *
+   * No blanking, for the same reason: repainting an open conversation empty
+   * every time any event arrives is a worse lie than a half-second of stale
+   * text.
+   */
+  refresh: async () => {
+    const mine = ++selectionGeneration;
+    const threadId = get().selectedId;
+    if (threadId === null) return;
+    const { apiKey } = useSession.getState();
+    if (apiKey === "") return;
 
     const { data, error } = await client(apiKey).v1.chats({ id: threadId }).messages.get();
 
@@ -169,6 +196,8 @@ export const useChats = create<ChatState>((set, get) => ({
     }
 
     set({ draft: "", sending: false });
-    await get().select(selectedId);
+    // refresh, not select: the thread is already open, and re-selecting it
+    // blanks the pane the operator is reading in order to redraw it.
+    await get().refresh();
   },
 }));
