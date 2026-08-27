@@ -179,10 +179,11 @@ reviews:
         repository that imports it, and flag any Baileys type appearing in a
         DeviceEngine signature — the moment one does, every other engine has to
         satisfy a Baileys-shaped contract and the adapter boundary is gone. The
-        version is pinned exactly, without a caret, on purpose: 6.7.24 is the
-        maintained stable line and 7.0.0 is a release candidate, which is not
-        what OTP traffic should run on. Do not suggest widening the range or
-        upgrading to latest. Pay particular attention to disconnect handling:
+        version is pinned exactly, without a caret, on purpose: 7.0.0-rc14 is a
+        release candidate chosen deliberately by the owner (ADR-0009), with
+        gowa kept as the failover and shadow mode before any traffic. Do not
+        suggest widening the range, and do not suggest downgrading to the
+        6.x "legacy" line — that trade is recorded and settled. Pay particular attention to disconnect handling:
         401, 403, 440, 500 and 411 must never be retried, and 515 must always
         be, because it is how pairing completes.
 
