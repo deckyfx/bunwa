@@ -14,7 +14,7 @@ import { relations, sql } from "drizzle-orm";
 
 /** Anything that survives a JSON round trip. Used for stored bodies. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-import { foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { blob, foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /** Shared audit columns. Every table carries them; none is nullable. */
 const timestamps = {
@@ -500,6 +500,65 @@ export const rules = sqliteTable(
  * lives for a minute, but a database dump lives longer than that, and there is
  * no reason to leave a usable credential in it.
  */
+/**
+ * A device's WhatsApp credentials, encrypted.
+ *
+ * One row per device, rewritten whenever Baileys reports creds.update — which
+ * is often. Holds the noise key, signed identity key and adv secret: anyone
+ * who reads it owns the account, which is why it is sealed rather than stored
+ * ([13](../../docs/13-owning-the-data.md)).
+ *
+ * In the same database as everything else on purpose. Baileys writes these to
+ * a directory by default, so a VACUUM INTO snapshot and the credentials it
+ * needs could be captured at different moments — and a backup whose
+ * credentials do not match its rows is not a restore point.
+ */
+export const deviceCredentials = sqliteTable("device_credentials", {
+  deviceId: text("device_id")
+    .primaryKey()
+    .references(() => devices.id, { onDelete: "cascade" }),
+  ciphertext: blob("ciphertext", { mode: "buffer" }).notNull(),
+  iv: blob("iv", { mode: "buffer" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
+ * Signal protocol keys, encrypted, keyed by a hash of the id.
+ *
+ * Thousands per device and churning constantly: pre-keys are consumed and
+ * regenerated, and a session appears for every contact messaged.
+ *
+ * `key_hash` rather than the id itself because session ids are
+ * `<msisdn>@s.whatsapp.net`. Baileys' own store puts that in a filename, so an
+ * OTP sender accumulates one file per recipient and the contact list is a
+ * directory listing. Baileys only ever looks keys up by an id it already
+ * holds — its contract is get(type, ids[]) with no enumeration — so the id
+ * never needs to be recoverable and the number is never written down.
+ */
+export const deviceSignalKeys = sqliteTable(
+  "device_signal_keys",
+  {
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    keyType: text("key_type").notNull(),
+    keyHash: text("key_hash").notNull(),
+    ciphertext: blob("ciphertext", { mode: "buffer" }).notNull(),
+    iv: blob("iv", { mode: "buffer" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [
+    primaryKey({ columns: [t.deviceId, t.keyType, t.keyHash] }),
+    // Purge and logout delete every key for a device, and that must not be a
+    // scan of a table with thousands of rows per device in it.
+    index("device_signal_keys_device_idx").on(t.deviceId),
+  ],
+);
+
 export const streamTickets = sqliteTable(
   "stream_tickets",
   {
