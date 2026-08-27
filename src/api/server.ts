@@ -17,12 +17,13 @@ import { messageRoutes } from "./routes/messages";
 import { ruleRoutes } from "./routes/rules";
 import { eventRoutes } from "./routes/events";
 import { chatRoutes } from "./routes/chat";
-import { createStaticHandler } from "./static";
+import { consolePlugin, noConsolePlugin } from "./console-plugin";
+import type { ConsolePage } from "./types";
 import { projectRoutes } from "./routes/project";
 import type { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
 import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../stores/errors";
-import { log, withContext, sanitiseCorrelationId } from "../observability/logger";
+import { enterContext, log, sanitiseCorrelationId } from "../observability/logger";
 
 /** Process start, used to report uptime on the liveness probe. */
 const startedAt = Date.now();
@@ -83,14 +84,51 @@ async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?
  * The engine registry is optional: most routes never touch an engine, and
  * requiring one would make every HTTP test stand up a fake.
  */
-export function createApp(registry?: EngineRegistry) {
-  return new Elysia()
+/**
+ * What to serve at /app, if anything.
+ *
+ * A Bun HTML import when the console is included, and undefined in headless
+ * mode. Passed in rather than imported here so the two entry points differ by
+ * one argument: importing it unconditionally would bundle React into the
+ * headless binary to serve a route it never mounts.
+ */
+
+export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) {
+  const app = new Elysia()
     // Correlation id first, so every later hook and handler logs under it.
     .derive({ as: "global" }, ({ request, set }) => {
       const supplied = sanitiseCorrelationId(request.headers.get("x-correlation-id"));
       const correlationId = supplied ?? crypto.randomUUID();
       set.headers["x-correlation-id"] = correlationId;
-      return { correlationId };
+
+      // enterWith rather than the callback form of withContext: there is no
+      // wrapper function to hang it on now that Elysia owns the server, and
+      // the id has to reach every log line the handler produces. Without it
+      // the header carried an id the logs never mentioned.
+      enterContext({ correlationId });
+
+      // Start time for the request log below. Held on the store rather than a
+      // module variable: two requests overlap constantly, and a shared one
+      // would time whichever finished last.
+      return { correlationId, began: performance.now() };
+    })
+
+    // One line per request, restored as a hook.
+    //
+    // It lived in a hand-rolled Bun.serve fetch wrapper, and moving to
+    // Elysia's own listen() removed the wrapper and the logging with it —
+    // the server ran, served correctly, and said nothing about any request.
+    //
+    // Health probes at debug: an orchestrator hits them every few seconds and
+    // they would otherwise be the only thing anyone ever reads.
+    .onAfterResponse({ as: "global" }, ({ request, set, path, began }) => {
+      const level = path === "/health" || path === "/readyz" ? "debug" : "info";
+      log[level]("request", {
+        method: request.method,
+        path,
+        status: typeof set.status === "number" ? set.status : 200,
+        durationMs: Math.round(performance.now() - began),
+      });
     })
 
     .onError({ as: "global" }, ({ code, error, set, path, request, correlationId }) => {
@@ -195,6 +233,11 @@ export function createApp(registry?: EngineRegistry) {
     .use(projectRoutes)
     .use(eventRoutes)
     .use(chatRoutes)
+    // The console, in the same Elysia app. One origin, so the browser's Eden
+    // client is typed against the very app that answers it and there is no
+    // proxy to keep in step — the console was briefly a second Elysia on
+    // another port, and the two drifted within a day.
+    .use(consolePage === undefined ? noConsolePlugin : consolePlugin(consolePage))
     .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
     .use(registry === undefined ? new Elysia() : messageRoutes(registry))
     .use(ruleRoutes)
@@ -205,57 +248,17 @@ export function createApp(registry?: EngineRegistry) {
     // unauthenticated key-minting endpoint is not something to leave to a
     // reverse proxy's configuration.
     .use(config().adminApiEnabled ? adminRoutes : new Elysia());
+
+  return app;
 }
 
 /** Wrap the app so every request runs inside a logging context. */
-export function createServer(registry?: EngineRegistry) {
-  const app = createApp(registry);
+
+export function createServer(registry?: EngineRegistry, consolePage?: ConsolePage) {
   const cfg = config();
-  // Null in the api image, where the console was never copied in. Resolved
-  // once: whether the files exist cannot change while the process runs.
-  const serveConsole = createStaticHandler();
+  const app = createApp(registry, consolePage);
 
-  return Bun.serve({
-    port: cfg.port,
-    hostname: cfg.host,
-    fetch(request) {
-      const correlationId = sanitiseCorrelationId(request.headers.get("x-correlation-id")) ?? crypto.randomUUID();
-      const began = performance.now();
-      const url = new URL(request.url);
-
-      // The resolved id is written back onto the request before handing it to
-      // the app, so `derive()` adopts it instead of minting a second one.
-      // Without this the log carried one id and the response header another,
-      // which quietly voids the entire point of having a correlation id.
-      const headers = new Headers(request.headers);
-      headers.set("x-correlation-id", correlationId);
-      const identified = new Request(request, { headers });
-
-      // Static assets before the app, and outside it: they are not API routes,
-      // they carry no tenancy, and running them through the auth middleware
-      // would mean the console could not load the page that asks for a key.
-      if (serveConsole !== null && (url.pathname === "/app" || url.pathname.startsWith("/app/"))) {
-        return withContext({ correlationId }, async () => {
-          const asset = await serveConsole(identified);
-          return asset ?? new Response("Not found", { status: 404 });
-        });
-      }
-
-      return withContext({ correlationId }, async () => {
-        const response = await app.handle(identified);
-        // Probes are logged at debug so a one-second orchestrator interval does
-        // not bury the traffic that matters.
-        const level = url.pathname === "/health" || url.pathname === "/readyz" ? "debug" : "info";
-        log[level]("request", {
-          method: request.method,
-          path: url.pathname,
-          status: response.status,
-          durationMs: Math.round(performance.now() - began),
-        });
-        return response;
-      });
-    },
-  });
+  return app.listen({ port: cfg.port, hostname: cfg.host });
 }
 
 /**

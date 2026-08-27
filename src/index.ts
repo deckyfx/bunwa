@@ -7,6 +7,7 @@
  */
 import { config, ConfigError, type Config } from "./config/env";
 import { createServer } from "./api/server";
+import type { ConsolePage } from "./api/types";
 import { MigrationManager } from "./db/migration-manager";
 import { startWorker } from "./delivery/worker";
 import { EngineRegistry } from "./engine/registry";
@@ -18,7 +19,7 @@ import { log } from "./observability/logger";
 /** How long to let in-flight requests finish before closing connections. */
 const SHUTDOWN_DRAIN_MS = 10_000;
 
-async function main(): Promise<void> {
+async function main(consolePage?: ConsolePage): Promise<void> {
   let cfg: Config;
   try {
     cfg = config();
@@ -72,7 +73,7 @@ async function main(): Promise<void> {
   // would ever reach a tenant.
   const stopConsumers = registry.list().map((pool) => startEngineConsumer(pool.engine));
 
-  const server = createServer(registry);
+  const server = createServer(registry, consolePage);
   // In-process for now; moving it out is the same trigger as moving off SQLite.
   // Sweeps that nothing else owns: expired idempotency keys, closed rate-limit
   // windows, and — the one that matters — sends accepted but never
@@ -81,7 +82,7 @@ async function main(): Promise<void> {
   const stopHousekeeping = startHousekeeping();
 
   const stopWorker = startWorker({ allowInsecure: cfg.allowInsecureWebhookTargets });
-  log.info("bunwa started", { ...cfg.describe(), url: server.url.toString() });
+  log.info("bunwa started", { ...cfg.describe(), url: server.server?.url.toString() });
 
   /** Drain in-flight requests before exiting, so a deploy drops nothing. */
   // Idempotent: two signals in quick succession must not run this twice and
@@ -134,4 +135,4 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-await main();
+export { main };

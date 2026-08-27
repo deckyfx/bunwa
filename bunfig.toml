@@ -1,6 +1,13 @@
 [test]
-# The control plane only. The dashboard is a separate subproject with its own
-# runner and its own happy-dom preload; scanned from here its component tests
-# run without a document and fail. `bun test src` does not help — the argument
-# is a filter, and it matches dashboard/src too.
-root = "./src"
+# One runner for everything now that the console lives in src/console.
+#
+# The preload installs a DOM before any test file imports React, which has to
+# happen at preload time rather than inside a test: React reads `document` at
+# module scope, so a DOM registered later is registered too late.
+preload = ["./happydom.ts"]
+
+[serve.static]
+# bun-plugin-tailwind resolves `<link rel="stylesheet" href="tailwindcss" />`
+# in the console's HTML. No tailwind.config.js: v4 reads the classes it finds
+# and the plugin handles the rest.
+plugins = ["bun-plugin-tailwind"]

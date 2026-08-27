@@ -1,0 +1,13 @@
+@import "tailwindcss";
+
+/*
+ * The console's own tokens.
+ *
+ * Deliberately few. This is an operator surface, not a marketing page: the
+ * things worth distinguishing at a glance are device state and message
+ * direction, and everything else should stay quiet enough that those stand out.
+ */
+:root {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: light dark;
+}

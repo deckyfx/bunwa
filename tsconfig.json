@@ -1,7 +1,11 @@
 {
   "compilerOptions": {
     // Environment setup & latest features
-    "lib": ["ESNext"],
+      // DOM because the console lives in src/console and runs in a browser. One
+  // tsconfig now that the dashboard is not a separate subproject — the server
+  // does not use these types, and a second config to express that was more
+  // upkeep than the separation was worth.
+  "lib": ["ESNext", "DOM", "DOM.Iterable"],
     "target": "ESNext",
     "module": "Preserve",
     "moduleDetection": "force",
