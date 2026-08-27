@@ -12,7 +12,7 @@ import { LIMITS } from "../../ops/rate-limit";
 import { DeviceStore } from "../../stores/device-store";
 import { problem } from "../server";
 import type { EngineRegistry } from "../../engine/registry";
-import { EngineError } from "../../engine/types";
+import { EngineError, persistedKind } from "../../engine/types";
 import { currentCorrelationId, log } from "../../observability/logger";
 import { UnavailableError } from "../../stores/errors";
 
@@ -85,29 +85,33 @@ export function deviceRoutes(registry: EngineRegistry) {
           // a 503 telling them to retry, for a fault retrying cannot fix.
           const assigned = await DeviceStore.countByPool();
 
+          // No engine named here. The route used to ask for "gowa" and fall
+          // back to "fake", which made adding an engine an edit to an API
+          // route and left a Baileys-only deployment unable to pair at all.
+          // Preference is registration order, decided in the composition root.
+          //
           // Only EngineError means "no pool with room". Anything else is a
-          // fault in choosing, not an absence of capacity, and must not be
-          // answered by quietly trying a different engine kind.
+          // fault in choosing rather than an absence of capacity, and must not
+          // be answered with a 503 telling the caller to retry.
           let pool;
           try {
-            pool = registry.choosePool("gowa", assigned);
+            pool = registry.chooseAny(assigned);
           } catch (err) {
             if (!(err instanceof EngineError)) throw err;
-            try {
-              pool = registry.choosePool("fake", assigned);
-            } catch (fallbackErr) {
-              if (!(fallbackErr instanceof EngineError)) throw fallbackErr;
-              log.error("no engine pool has capacity; cannot start pairing");
-              // 503 with Retry-After, not 404: the device exists and the
-              // request is valid — the capacity to pair it does not, and a
-              // caller should retry rather than treat it as a bad request.
-              throw new UnavailableError("no engine has capacity to pair this device right now");
-            }
+            log.error("no engine pool has capacity; cannot start pairing");
+            // 503 with Retry-After, not 404: the device exists and the request
+            // is valid — the capacity to pair it does not, and a caller should
+            // retry rather than treat it as a bad request.
+            throw new UnavailableError("no engine has capacity to pair this device right now");
           }
           await pool.engine.provision(result.device.id);
           // Recorded after provision succeeds, so a device is never counted
           // against a pool that failed to take it.
-          await DeviceStore.assignPool(result.device.id, pool.id, pool.kind === "native" ? "native" : "gowa", result.device.id);
+          // The pool's own kind, not a translation of it. The ternary here
+          // mapped everything that was not "native" onto "gowa", so a Baileys
+          // pool would have recorded its devices as gowa ones — and the row is
+          // what a later migration or support question reads.
+          await DeviceStore.assignPool(result.device.id, pool.id, persistedKind(pool.kind), result.device.id);
           const session = await pool.engine.startPairing(result.device.id, body.pairingMethod ?? "qr");
           return {
             outcome: result.outcome,

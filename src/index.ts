@@ -36,8 +36,14 @@ async function main(): Promise<void> {
   // an unattended schema change is not something a deploy should decide.
   await MigrationManager.init();
 
-  // One gowa pool for now. Capacity is bounded because a process holding every
-  // device is the blast radius ADR-0003 exists to avoid.
+  // Registration order is preference order: the pairing route asks the registry
+  // for capacity without naming an engine, so what a deployment registers, and
+  // in what sequence, is the whole of the choice. gowa first while it is the
+  // proven one; ADR-0002 keeps it registered even after Baileys works, because
+  // two engines is the failover.
+  //
+  // Capacity is bounded because a process holding every device is the blast
+  // radius ADR-0003 exists to avoid.
   const registry = new EngineRegistry();
   if (cfg.gowaBaseUrl !== null) {
     registry.register({
@@ -46,6 +52,13 @@ async function main(): Promise<void> {
       capacity: cfg.enginePoolCapacity,
       engine: new GowaAdapter({ baseUrl: cfg.gowaBaseUrl }),
     });
+  }
+
+  if (registry.list().length === 0) {
+    // Said once, loudly. A server with no engine answers /health and every
+    // read, then fails only when someone tries to pair — which reads as a
+    // pairing bug rather than a deployment that was never given an engine.
+    log.warn("no engine is configured; pairing will be refused (set GOWA_BASE_URL)");
   }
 
   // Engine events reach the control plane only through this. Without it a

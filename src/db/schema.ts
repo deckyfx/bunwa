@@ -135,7 +135,19 @@ export const devices = sqliteTable(
     msisdn: text("msisdn").notNull(),
     jid: text("jid"),
     pushName: text("push_name"),
-    engineKind: text("engine_kind", { enum: ["gowa", "native"] }).notNull().default("gowa"),
+    /**
+     * Which engine holds this device. Mirrors EngineKind, including "fake".
+     *
+     * "fake" is here because the alternative was worse: the pairing route
+     * mapped every non-native kind onto "gowa", so a device held by the fake
+     * engine recorded a row saying gowa had it. That row is what a migration
+     * or a support question reads later, and it was lying. SQLite stores this
+     * as free text — Drizzle's enum is a TypeScript guard only — so admitting
+     * the value costs nothing at the database level.
+     */
+    engineKind: text("engine_kind", { enum: ["gowa", "baileys", "native", "fake"] })
+      .notNull()
+      .default("gowa"),
     enginePoolId: text("engine_pool_id"),
     /** The id *inside* that engine, which is not ours and may be reassigned. */
     engineDeviceId: text("engine_device_id"),
