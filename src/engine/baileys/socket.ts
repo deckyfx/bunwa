@@ -12,12 +12,19 @@
  * noticed in review.
  */
 import makeWASocket, {
+  BufferJSON,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  initAuthCreds,
   makeCacheableSignalKeyStore,
-  useMultiFileAuthState,
+  proto,
+  type AuthenticationCreds,
+  type SignalDataTypeMap,
+  type SignalKeyStore,
   type WASocket,
 } from "@whiskeysockets/baileys";
+
+import { AuthStateStore } from "../../stores/auth-state-store";
 import { log } from "../../observability/logger";
 
 /**
@@ -129,21 +136,111 @@ export function classifyDisconnect(statusCode: number | undefined): {
   }
 }
 
-/** Where a device's credentials live. One directory per device. */
+/**
+ * Build Baileys' auth state on top of the encrypted store.
+ *
+ * Replaces `useMultiFileAuthState`, which writes one plaintext file per key
+ * and puts `<msisdn>@s.whatsapp.net` in the filenames — so an OTP sender's
+ * recipient list becomes a directory listing ([13](../../../docs/13-owning-the-data.md)).
+ *
+ * `BufferJSON` rather than plain JSON, and not as a style choice: credentials
+ * are full of Buffers, and `JSON.stringify` turns them into
+ * `{type:"Buffer",data:[…]}` objects Baileys will not accept back. The device
+ * would save and load without complaint, then fail cryptographically somewhere
+ * far from here. Verified before relying on it.
+ */
+async function loadAuthState(deviceId: string): Promise<{
+  state: { creds: AuthenticationCreds; keys: SignalKeyStore };
+  saveCreds: () => Promise<void>;
+}> {
+  const stored = await AuthStateStore.loadCreds(deviceId);
+  const creds: AuthenticationCreds =
+    stored === null
+      ? initAuthCreds()
+      : (JSON.parse(stored.toString("utf8"), BufferJSON.reviver) as AuthenticationCreds);
+
+  const keys: SignalKeyStore = {
+    async get<T extends keyof SignalDataTypeMap>(type: T, ids: string[]) {
+      const found = await AuthStateStore.loadKeys(deviceId, type, ids);
+      const out: { [id: string]: SignalDataTypeMap[T] } = {};
+
+      for (const [id, bytes] of found) {
+        let value: unknown = JSON.parse(bytes.toString("utf8"), BufferJSON.reviver);
+        // Baileys' own store does exactly this. An app-state-sync-key handed
+        // back as a plain object rather than the protobuf type fails later,
+        // during app state sync, with an error that names neither this
+        // function nor the key.
+        if (type === "app-state-sync-key" && value !== null) {
+          value = proto.Message.AppStateSyncKeyData.fromObject(value as Record<string, unknown>);
+        }
+        out[id] = value as SignalDataTypeMap[T];
+      }
+      return out;
+    },
+
+    async set(data) {
+      const entries: { keyType: string; id: string; value: Buffer | null }[] = [];
+
+      for (const [keyType, byId] of Object.entries(data)) {
+        for (const [id, value] of Object.entries(byId ?? {})) {
+          entries.push({
+            keyType,
+            id,
+            // null and undefined both mean delete — that is how a consumed
+            // pre-key is expired, and dropping the distinction would leave
+            // spent keys behind for ever.
+            value:
+              value === null || value === undefined
+                ? null
+                : Buffer.from(JSON.stringify(value, BufferJSON.replacer), "utf8"),
+          });
+        }
+      }
+
+      await AuthStateStore.saveKeys(deviceId, entries);
+    },
+
+    async clear() {
+      await AuthStateStore.forget(deviceId);
+    },
+  };
+
+  return {
+    state: { creds, keys },
+    saveCreds: async () => {
+      await AuthStateStore.saveCreds(
+        deviceId,
+        Buffer.from(JSON.stringify(creds, BufferJSON.replacer), "utf8"),
+      );
+    },
+  };
+}
+
+/**
+ * The auth state, exposed for tests.
+ *
+ * Serialisation is the part of this module most likely to be silently wrong,
+ * and driving it through a real socket would need a WhatsApp connection to
+ * find out. Named for what it is rather than dressed up as public API.
+ */
+export const loadAuthStateForTests = loadAuthState;
+
+/** Which device this socket is for. Credentials come from the database. */
 export interface SocketOptions {
   deviceId: string;
-  authDir: string;
 }
 
 /**
  * Open a socket for one device.
  *
- * Credentials are read from and written to `authDir`, which the caller owns:
- * losing that directory means the customer re-pairs, so who holds it and how
- * it is backed up is a control-plane decision rather than this module's.
+ * Credentials come from the encrypted store, so they are captured by the same
+ * `VACUUM INTO` snapshot as everything else and a restore is internally
+ * consistent. The previous version kept them in a directory beside the
+ * database, where a backup could catch the two at different moments — and a
+ * backup whose credentials do not match its rows is not a restore point.
  */
 export async function openSocket(options: SocketOptions): Promise<SocketHandle> {
-  const { state, saveCreds } = await useMultiFileAuthState(options.authDir);
+  const { state, saveCreds } = await loadAuthState(options.deviceId);
   const { version } = await fetchLatestBaileysVersion();
 
   const socket: WASocket = makeWASocket({
