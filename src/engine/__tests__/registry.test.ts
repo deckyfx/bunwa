@@ -44,3 +44,45 @@ describe("EngineRegistry", () => {
     expect(() => new EngineRegistry().get("nope")).toThrow(EngineError);
   });
 });
+
+describe("choosing without naming an engine", () => {
+  const noneAssigned = new Map<string, number>();
+
+  test("registration order is the preference order", () => {
+    // The composition root decides which engine a deployment prefers by the
+    // order it registers them. The pairing route names none.
+    const registry = new EngineRegistry();
+    registry.register({ id: "gowa-1", kind: "gowa", capacity: 2, engine: new FakeEngine() });
+    registry.register({ id: "baileys-1", kind: "baileys", capacity: 2, engine: new FakeEngine() });
+
+    expect(registry.chooseAny(noneAssigned).id).toBe("gowa-1");
+  });
+
+  test("a full first choice falls through to the next kind", () => {
+    const registry = new EngineRegistry();
+    registry.register({ id: "gowa-1", kind: "gowa", capacity: 1, engine: new FakeEngine() });
+    registry.register({ id: "baileys-1", kind: "baileys", capacity: 1, engine: new FakeEngine() });
+
+    expect(registry.chooseAny(new Map([["gowa-1", 1]])).id).toBe("baileys-1");
+  });
+
+  test("a Baileys-only deployment can pair", () => {
+    // The case the hardcoded choosePool("gowa", …) made impossible: an engine
+    // was registered, had room, and pairing was refused anyway.
+    const registry = new EngineRegistry();
+    registry.register({ id: "baileys-1", kind: "baileys", capacity: 5, engine: new FakeEngine() });
+
+    expect(registry.chooseAny(noneAssigned).id).toBe("baileys-1");
+  });
+
+  test("no room anywhere is an EngineError, not a silent choice", () => {
+    const registry = new EngineRegistry();
+    registry.register({ id: "gowa-1", kind: "gowa", capacity: 1, engine: new FakeEngine() });
+
+    expect(() => registry.chooseAny(new Map([["gowa-1", 1]]))).toThrow(EngineError);
+  });
+
+  test("an empty registry refuses rather than returning undefined", () => {
+    expect(() => new EngineRegistry().chooseAny(noneAssigned)).toThrow(EngineError);
+  });
+});

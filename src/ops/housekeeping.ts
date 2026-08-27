@@ -22,6 +22,7 @@ import { MessageStore, ACK_TIMEOUT_MS } from "../stores/message-store";
 import { EVENT_SCHEMA_VERSION } from "../events/schema";
 import { sweep as sweepRateLimits } from "./rate-limit";
 import { sweepTickets } from "../stores/stream-ticket-store";
+import { ChatStore } from "../stores/chat-store";
 import { log } from "../observability/logger";
 
 /** The tenant identity an event envelope must carry, resolved from one join. */
@@ -36,6 +37,7 @@ export interface HousekeepingResult {
   rateLimitRowsRemoved: number;
   messagesMarkedUndelivered: number;
   streamTicketsRemoved: number;
+  chatMessagesRemoved: number;
 }
 
 /**
@@ -152,7 +154,7 @@ export async function runHousekeeping(
   // allSettled, not all: these jobs are independent, and Promise.all would
   // discard a successful undelivered sweep because an unrelated idempotency
   // sweep threw. The one that matters is the one whose result would be lost.
-  const jobs = ["idempotency", "rateLimits", "unacked", "streamTickets"] as const;
+  const jobs = ["idempotency", "rateLimits", "unacked", "streamTickets", "chatHistory"] as const;
   const settled = await Promise.allSettled([
     IdempotencyStore.sweep(database, now),
     sweepRateLimits(3_600_000, now, database),
@@ -162,17 +164,34 @@ export async function runHousekeeping(
     // per page load, and wired the moment the store existed: a sweep with no
     // caller is the thing stage 2 spent three commits removing.
     sweepTickets(now, database),
+    // Chat history is the only unbounded table in the system: every other one
+    // is either fixed per tenant or already swept. Wired in the same commit as
+    // the table, because stage 2 shipped three sweeps with no caller and a
+    // fourth would be the same mistake with far more rows behind it.
+    ChatStore.sweepOlderThan(new Date(now.getTime() - CHAT_RETENTION_MS), database),
   ]);
 
-  const [idempotencyKeysRemoved, rateLimitRowsRemoved, messagesMarkedUndelivered, streamTicketsRemoved] = settled.map(
+  const [
+    idempotencyKeysRemoved,
+    rateLimitRowsRemoved,
+    messagesMarkedUndelivered,
+    streamTicketsRemoved,
+    chatMessagesRemoved,
+  ] = settled.map(
     (outcome, i) => {
       if (outcome.status === "fulfilled") return outcome.value;
       log.error("housekeeping job failed", outcome.reason, { job: jobs[i] });
       return 0;
     },
-  ) as [number, number, number, number];
+  ) as [number, number, number, number, number];
 
-  return { idempotencyKeysRemoved, rateLimitRowsRemoved, messagesMarkedUndelivered, streamTicketsRemoved };
+  return {
+    idempotencyKeysRemoved,
+    rateLimitRowsRemoved,
+    messagesMarkedUndelivered,
+    streamTicketsRemoved,
+    chatMessagesRemoved,
+  };
 }
 
 /**
@@ -182,6 +201,17 @@ export async function runHousekeeping(
  * is a cliff rather than a ceiling.
  */
 const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * How long conversation history is kept.
+ *
+ * Ninety days: long enough to answer "what did we send that customer", short
+ * enough that the table does not become the largest thing in the backup. This
+ * is a policy rather than a technical limit, and it is the sort of number a
+ * deployment will want to change — it becomes configuration the first time
+ * someone asks, not before.
+ */
+const CHAT_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 
 /** How often to run. Frequent enough that an undelivered OTP is noticed quickly. */
 export const HOUSEKEEPING_INTERVAL_MS = 30_000;

@@ -8,6 +8,8 @@
  * and malformed is an error.
  */
 
+import { keyFromSecret } from "../crypto/secret-box";
+
 /** Runtime mode. Controls logging format and migration strictness. */
 export type NodeEnv = "development" | "test" | "production";
 
@@ -128,6 +130,20 @@ export class Config {
   /** Devices per engine pool. Bounds the blast radius of one pool failing. */
   readonly enginePoolCapacity: number;
 
+  /**
+   * Key for encrypting WhatsApp credentials at rest, or null if none is set.
+   *
+   * Required by the engine that stores credentials rather than by production
+   * as such — a gowa-only deployment never holds them, because gowa does.
+   * Null is therefore permitted anywhere BAILEYS_ENABLED is off, and
+   * AuthStateStore still refuses to write without it, so no configuration puts
+   * account-takeover material in the clear.
+   */
+  readonly credentialEncryptionKey: string | null;
+
+  /** Whether to register the in-process Baileys engine. Opt-in; see ADR-0009. */
+  readonly baileysEnabled: boolean;
+
   constructor(source: Record<string, string | undefined> = Bun.env) {
     this.nodeEnv = oneOf(source, "NODE_ENV", NODE_ENVS, "development");
     this.port = integer(source, "PORT", 3000, 1, 65535);
@@ -153,6 +169,51 @@ export class Config {
     const gowa = source["GOWA_BASE_URL"];
     this.gowaBaseUrl = gowa === undefined || gowa.trim() === "" ? null : gowa.trim();
     this.enginePoolCapacity = integer(source, "ENGINE_POOL_CAPACITY", 25, 1, 500);
+
+    // WhatsApp credentials are encrypted at rest; this is the key.
+    //
+    // Read here, enforced below against the engine that needs it. An earlier
+    // version demanded it of every production deployment and said so in three
+    // places; the enforcement changed and two of the comments did not, which
+    // is how an operator ends up following a policy the code stopped having.
+    const credentialKey = source["CREDENTIAL_ENCRYPTION_KEY"];
+    const suppliedKey = credentialKey === undefined || credentialKey.trim() === "" ? null : credentialKey.trim();
+
+    if (suppliedKey !== null) {
+      try {
+        // Validated at startup, not at first write. A malformed key discovered
+        // when a device pairs is discovered in front of a customer.
+        keyFromSecret(suppliedKey);
+      } catch (err) {
+        throw new ConfigError(`CREDENTIAL_ENCRYPTION_KEY is not usable: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    this.credentialEncryptionKey = suppliedKey;
+
+    // Whether to run WhatsApp in this process rather than proxying gowa.
+    //
+    // Off by default. The adapter passes its conformance suite against a stub,
+    // which proves it satisfies the contract and not that Baileys behaves as
+    // the stub does — that needs a real device. Until then a deployment opts
+    // in deliberately rather than being upgraded into it.
+    this.baileysEnabled = boolean(source, "BAILEYS_ENABLED", false);
+
+    // Required by the engine that stores credentials, not by production as
+    // such. The first version demanded it of every production deployment and
+    // CI caught the flaw: a gowa-only container never holds WhatsApp
+    // credentials — gowa does — so the key would have been a barrier
+    // protecting nothing, and the failure was a container that refused to
+    // start rather than a warning anyone could act on.
+    //
+    // The engine that does store them still cannot start without it, and
+    // AuthStateStore refuses to write without it whatever the mode, so there
+    // is no path that puts account-takeover material in the clear.
+    if (this.baileysEnabled && suppliedKey === null) {
+      throw new ConfigError(
+        "BAILEYS_ENABLED requires CREDENTIAL_ENCRYPTION_KEY: this engine keeps WhatsApp credentials in the database and will not write them in the clear. Generate one with `openssl rand -hex 32`.",
+      );
+    }
     if (this.allowInsecureWebhookTargets && this.isProduction) {
       throw new ConfigError("ALLOW_INSECURE_WEBHOOK_TARGETS must not be true in production");
     }

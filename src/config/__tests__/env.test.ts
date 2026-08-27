@@ -11,6 +11,21 @@ import { Config, redactUrl } from "../env";
 
 const base: Record<string, string> = {};
 
+/**
+ * A production environment that is valid apart from whatever a test is
+ * probing.
+ *
+ * Production requires a credential encryption key, so every test that builds
+ * one has to supply it or it fails for a reason it is not about. Kept as a
+ * fixture rather than repeated: the next required production secret should
+ * mean editing one line, not hunting four call sites.
+ */
+const prodBase: Record<string, string> = {
+  ...base,
+  NODE_ENV: "production",
+  CREDENTIAL_ENCRYPTION_KEY: "a".repeat(64),
+};
+
 describe("Config", () => {
   test("applies documented defaults when values are absent", () => {
     const c = new Config(base);
@@ -68,11 +83,11 @@ describe("Config", () => {
 
   test("accepts booleans case-insensitively", () => {
     expect(new Config({ ...base, MIGRATE_STRICT: "TRUE" }).migrateStrict).toBe(true);
-    expect(new Config({ ...base, NODE_ENV: "production", MIGRATE_STRICT: "false" }).migrateStrict).toBe(false);
+    expect(new Config({ ...prodBase, MIGRATE_STRICT: "false" }).migrateStrict).toBe(false);
   });
 
   test("production defaults differ from development", () => {
-    const prod = new Config({ ...base, NODE_ENV: "production" });
+    const prod = new Config({ ...prodBase });
     expect(prod.logLevel).toBe("info");
     // Production must never auto-apply a migration.
     expect(prod.migrateStrict).toBe(true);
@@ -89,7 +104,7 @@ describe("Config", () => {
 
   test("refuses to start with insecure webhook targets enabled in production", () => {
     expect(
-      () => new Config({ ...base, NODE_ENV: "production", ALLOW_INSECURE_WEBHOOK_TARGETS: "true" }),
+      () => new Config({ ...prodBase, ALLOW_INSECURE_WEBHOOK_TARGETS: "true" }),
     ).toThrow("must not be true in production");
   });
 
@@ -109,5 +124,55 @@ describe("redactUrl", () => {
 
   test("never echoes an unparseable value, which may itself be a secret", () => {
     expect(redactUrl("not a url")).toBe("<unparseable>");
+  });
+});
+
+describe("the credential encryption key", () => {
+  test("a gowa-only production deployment does not need one", () => {
+    // It never holds WhatsApp credentials — gowa does. Demanding the key here
+    // was a barrier protecting nothing, and CI found it by refusing to start
+    // the api image.
+    expect(
+      new Config({ NODE_ENV: "production", DATABASE_PATH: "/tmp/x.sqlite" }).credentialEncryptionKey,
+    ).toBeNull();
+  });
+
+  test("the engine that stores credentials refuses to start without one", () => {
+    // The failure this prevents is silent: devices pair, messages send, and
+    // account-takeover material sits in the database in the clear.
+    expect(
+      () => new Config({ NODE_ENV: "production", DATABASE_PATH: "/tmp/x.sqlite", BAILEYS_ENABLED: "true" }),
+    ).toThrow(/BAILEYS_ENABLED requires CREDENTIAL_ENCRYPTION_KEY/);
+  });
+
+  test("with a key, that engine starts", () => {
+    expect(
+      new Config({
+        NODE_ENV: "production",
+        DATABASE_PATH: "/tmp/x.sqlite",
+        BAILEYS_ENABLED: "true",
+        CREDENTIAL_ENCRYPTION_KEY: "a".repeat(64),
+      }).baileysEnabled,
+    ).toBe(true);
+  });
+
+  test("development runs without one", () => {
+    // A fresh clone should start without ceremony. The stores refuse to write
+    // credentials when the key is null rather than writing them unencrypted.
+    expect(new Config({ NODE_ENV: "development" }).credentialEncryptionKey).toBeNull();
+  });
+
+  test("a malformed key fails at boot, not at first pairing", () => {
+    // Discovered when a device pairs means discovered in front of a customer.
+    expect(() =>
+      new Config({ NODE_ENV: "development", CREDENTIAL_ENCRYPTION_KEY: "hunter2" }),
+    ).toThrow(/not usable/);
+  });
+
+  test("a valid key is accepted in both forms", () => {
+    expect(
+      new Config({ NODE_ENV: "development", CREDENTIAL_ENCRYPTION_KEY: "a".repeat(64) })
+        .credentialEncryptionKey,
+    ).toBe("a".repeat(64));
   });
 });

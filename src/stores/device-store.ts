@@ -8,6 +8,7 @@
  * are enforced.
  */
 import { and, count as drizzleCount, eq, or } from "drizzle-orm";
+import type { PersistedEngineKind } from "../engine/types";
 
 import { db, type Database } from "../db";
 import {
@@ -602,7 +603,7 @@ export class DeviceStore {
   static async assignPool(
     deviceId: string,
     poolId: string,
-    engineKind: "gowa" | "native",
+    engineKind: PersistedEngineKind,
     engineDeviceId: string,
     database: Database = db(),
   ): Promise<void> {

@@ -63,6 +63,36 @@ export class EngineRegistry {
   }
 
   /**
+   * Choose a pool for a new device without naming an engine.
+   *
+   * Registration order is the preference order, which puts the choice in the
+   * composition root where the deployment's intent already lives. The pairing
+   * route used to ask for "gowa" by name and fall back to "fake" — so adding
+   * an engine meant editing an API route, and a deployment running only
+   * Baileys could not pair at all.
+   *
+   * Least-loaded within the first kind that has room, so the capacity
+   * behaviour is unchanged; only the naming moved.
+   */
+  chooseAny(assigned: ReadonlyMap<string, number>): EnginePool {
+    const kinds: EngineKind[] = [];
+    for (const pool of this.pools.values()) {
+      if (!kinds.includes(pool.kind)) kinds.push(pool.kind);
+    }
+
+    for (const kind of kinds) {
+      try {
+        return this.choosePool(kind, assigned);
+      } catch (err) {
+        // Only "no room in this kind" is worth trying the next kind for.
+        if (!(err instanceof EngineError)) throw err;
+      }
+    }
+
+    throw new EngineError("no engine pool has capacity for another device", false);
+  }
+
+  /**
    * The pool holding a device, or the only pool if it has no assignment yet.
    *
    * Returns undefined rather than guessing when there are several pools and no

@@ -27,6 +27,9 @@ import { ProjectStore } from "../../stores/project-store";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { mintTicket, ticketCount, TICKET_TTL_MS } from "../../stores/stream-ticket-store";
+import { handleEngineEvent } from "../../engine/consumer";
+import { ChatStore } from "../../stores/chat-store";
+import { DeviceStore } from "../../stores/device-store";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 
 // Captured once, at module load: the process is shared across test
@@ -211,6 +214,44 @@ describe("runHousekeeping", () => {
     const result = await runHousekeeping(database, new Date(TICKET_TTL_MS + 1));
     expect(result.streamTicketsRemoved).toBe(1);
     expect(await ticketCount(environment.id, database)).toBe(0);
+  });
+
+  test("chat history older than retention is swept", async () => {
+    // The only unbounded table in the system, wired in the same commit as the
+    // table itself. Stage 2 shipped three sweeps with no caller; this asserts
+    // the fourth is actually called.
+    const project = await ProjectStore.create({ slug: "chat", displayName: "C" }, database);
+    const environment = await EnvironmentStore.create({ projectId: project.id, slug: "prod" }, database);
+    const device = (
+      await DeviceStore.claim({ environmentId: environment.id, msisdn: "+628555555555", alias: "otp" }, database)
+    ).device;
+
+  // Activated through the engine event the product uses. ChatStore.record
+  // refuses an environment with no active binding, and a fixture that faked
+  // the state would test a situation the system cannot reach.
+  await handleEngineEvent(
+    { type: "device.connected", deviceId: device.id, jid: "628123456789@s.whatsapp.net", pushName: null },
+    database,
+    "fake",
+  );
+
+    const ancient = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
+    await ChatStore.record(
+      {
+        environmentId: environment.id,
+        deviceId: device.id,
+        peerJid: "628999@s.whatsapp.net",
+        direction: "inbound",
+        providerMessageId: "old",
+        kind: "text",
+        body: "long ago",
+        occurredAt: ancient,
+      },
+      database,
+    );
+
+    const result = await runHousekeeping(database);
+    expect(result.chatMessagesRemoved).toBe(1);
   });
 
   test("one failing job does not prevent the others", async () => {

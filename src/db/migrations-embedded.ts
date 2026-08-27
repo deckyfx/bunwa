@@ -10,6 +10,8 @@ import m0000FullSchema from "./migrations/0000_full_schema.sql" with { type: "te
 import m0001RateLimits from "./migrations/0001_rate_limits.sql" with { type: "text" };
 import m0002RateLimitExpiry from "./migrations/0002_rate_limit_expiry.sql" with { type: "text" };
 import m0003StreamTickets from "./migrations/0003_stream_tickets.sql" with { type: "text" };
+import m0004DeviceCredentials from "./migrations/0004_device_credentials.sql" with { type: "text" };
+import m0005ChatHistory from "./migrations/0005_chat_history.sql" with { type: "text" };
 
 /** Migration file name to its raw SQL, exactly as drizzle-kit wrote it. */
 const files: Record<string, string> = {
@@ -17,6 +19,8 @@ const files: Record<string, string> = {
   "0001_rate_limits.sql": m0001RateLimits,
   "0002_rate_limit_expiry.sql": m0002RateLimitExpiry,
   "0003_stream_tickets.sql": m0003StreamTickets,
+  "0004_device_credentials.sql": m0004DeviceCredentials,
+  "0005_chat_history.sql": m0005ChatHistory,
 };
 
 export interface EmbeddedJournalEntry { idx: number; when: number; tag: string; breakpoints: boolean }

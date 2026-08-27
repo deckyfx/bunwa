@@ -16,6 +16,7 @@ import { deviceRoutes } from "./routes/devices";
 import { messageRoutes } from "./routes/messages";
 import { ruleRoutes } from "./routes/rules";
 import { eventRoutes } from "./routes/events";
+import { chatRoutes } from "./routes/chat";
 import { createStaticHandler } from "./static";
 import { projectRoutes } from "./routes/project";
 import type { EngineRegistry } from "../engine/registry";
@@ -193,6 +194,7 @@ export function createApp(registry?: EngineRegistry) {
     // readiness checks must never be able to end up behind a plugin's auth.
     .use(projectRoutes)
     .use(eventRoutes)
+    .use(chatRoutes)
     .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
     .use(registry === undefined ? new Elysia() : messageRoutes(registry))
     .use(ruleRoutes)

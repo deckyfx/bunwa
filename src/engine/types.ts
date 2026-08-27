@@ -12,7 +12,34 @@
  * tenancy and holds no sockets.
  */
 
-export type EngineKind = "gowa" | "native" | "fake";
+/**
+ * Which implementation backs a pool.
+ *
+ * "baileys" is the engine stage 4 exists to add: bunwa speaking WhatsApp
+ * directly rather than proxying gowa. "native" predates it and meant the same
+ * intention before the library was chosen; it stays because deployed rows may
+ * carry it, and ADR-0002 keeps gowa permanently as the failover rather than
+ * removing it once Baileys works.
+ */
+export type EngineKind = "gowa" | "baileys" | "native" | "fake";
+
+/**
+ * The kind as stored on a device row.
+ *
+ * Identical to EngineKind today, and written out rather than aliased to it on
+ * purpose: the persisted set is a data format that outlives any one build, so
+ * widening it is a migration question while widening EngineKind is not. As an
+ * alias, a new engine kind would cross this boundary silently; spelled out,
+ * persistedKind fails to compile until someone decides what to store. The pairing route previously
+ * collapsed everything that was not "native" into "gowa" at this boundary,
+ * which recorded the wrong engine against every device a fake pool held.
+ */
+export type PersistedEngineKind = "gowa" | "baileys" | "native" | "fake";
+
+/** The kind to record for a pool. Explicit so the mapping has one home. */
+export function persistedKind(kind: EngineKind): PersistedEngineKind {
+  return kind;
+}
 
 /** How a device is being paired. */
 export type PairingMethod = "qr" | "code";
@@ -108,8 +135,16 @@ export interface InboundMessage {
 
 export interface InboundMedia {
   kind: "image" | "document" | "audio" | "video";
-  /** A URL bunwa can fetch. Adapters re-serve engine-local paths behind one. */
-  url: string;
+  /**
+   * A URL bunwa can fetch, or null when the engine holds the bytes itself.
+   *
+   * gowa re-serves engine-local paths behind a URL because it is a separate
+   * process. An in-process engine has no such URL until something downloads
+   * the media, so null means "this is an image and we have not fetched it",
+   * which is a true statement. A placeholder URL would be a false one, and the
+   * console would render a broken link rather than an honest pending state.
+   */
+  url: string | null;
   mimeType: string | null;
   filename: string | null;
   caption: string | null;

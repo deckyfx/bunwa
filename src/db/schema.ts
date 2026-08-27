@@ -14,7 +14,7 @@ import { relations, sql } from "drizzle-orm";
 
 /** Anything that survives a JSON round trip. Used for stored bodies. */
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
-import { foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import { blob, foreignKey, index, integer, primaryKey, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 
 /** Shared audit columns. Every table carries them; none is nullable. */
 const timestamps = {
@@ -135,7 +135,19 @@ export const devices = sqliteTable(
     msisdn: text("msisdn").notNull(),
     jid: text("jid"),
     pushName: text("push_name"),
-    engineKind: text("engine_kind", { enum: ["gowa", "native"] }).notNull().default("gowa"),
+    /**
+     * Which engine holds this device. Mirrors EngineKind, including "fake".
+     *
+     * "fake" is here because the alternative was worse: the pairing route
+     * mapped every non-native kind onto "gowa", so a device held by the fake
+     * engine recorded a row saying gowa had it. That row is what a migration
+     * or a support question reads later, and it was lying. SQLite stores this
+     * as free text — Drizzle's enum is a TypeScript guard only — so admitting
+     * the value costs nothing at the database level.
+     */
+    engineKind: text("engine_kind", { enum: ["gowa", "baileys", "native", "fake"] })
+      .notNull()
+      .default("gowa"),
     enginePoolId: text("engine_pool_id"),
     /** The id *inside* that engine, which is not ours and may be reassigned. */
     engineDeviceId: text("engine_device_id"),
@@ -488,6 +500,193 @@ export const rules = sqliteTable(
  * lives for a minute, but a database dump lives longer than that, and there is
  * no reason to leave a usable credential in it.
  */
+/**
+ * A device's WhatsApp credentials, encrypted.
+ *
+ * One row per device, rewritten whenever Baileys reports creds.update — which
+ * is often. Holds the noise key, signed identity key and adv secret: anyone
+ * who reads it owns the account, which is why it is sealed rather than stored
+ * ([13](../../docs/13-owning-the-data.md)).
+ *
+ * In the same database as everything else on purpose. Baileys writes these to
+ * a directory by default, so a VACUUM INTO snapshot and the credentials it
+ * needs could be captured at different moments — and a backup whose
+ * credentials do not match its rows is not a restore point.
+ */
+export const deviceCredentials = sqliteTable("device_credentials", {
+  deviceId: text("device_id")
+    .primaryKey()
+    .references(() => devices.id, { onDelete: "cascade" }),
+  ciphertext: blob("ciphertext", { mode: "buffer" }).notNull(),
+  iv: blob("iv", { mode: "buffer" }).notNull(),
+  updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+    .notNull()
+    .$defaultFn(() => new Date()),
+});
+
+/**
+ * Signal protocol keys, encrypted, keyed by a hash of the id.
+ *
+ * Thousands per device and churning constantly: pre-keys are consumed and
+ * regenerated, and a session appears for every contact messaged.
+ *
+ * `key_hash` rather than the id itself because session ids are
+ * `<msisdn>@s.whatsapp.net`. Baileys' own store puts that in a filename, so an
+ * OTP sender accumulates one file per recipient and the contact list is a
+ * directory listing. Baileys only ever looks keys up by an id it already
+ * holds — its contract is get(type, ids[]) with no enumeration — so the id
+ * never needs to be recoverable and the number is never written down.
+ */
+export const deviceSignalKeys = sqliteTable(
+  "device_signal_keys",
+  {
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    keyType: text("key_type").notNull(),
+    keyHash: text("key_hash").notNull(),
+    ciphertext: blob("ciphertext", { mode: "buffer" }).notNull(),
+    iv: blob("iv", { mode: "buffer" }).notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [
+    primaryKey({ columns: [t.deviceId, t.keyType, t.keyHash] }),
+    // Purge and logout delete every key for a device, and that must not be a
+    // scan of a table with thousands of rows per device in it.
+    index("device_signal_keys_device_idx").on(t.deviceId),
+  ],
+);
+
+/**
+ * A conversation with one peer, on one device.
+ *
+ * Distinct from `outbound_messages`, which records what a tenant asked us to
+ * send and is part of the delivery contract. A thread is what the account
+ * actually saw, in both directions.
+ *
+ * Scoped by device rather than by environment: a device is owned by exactly
+ * one project, and every read joins through it. Putting environment here too
+ * would let the two disagree, and the version that is wrong would be the one
+ * the query trusts.
+ */
+export const chatThreads = sqliteTable(
+  "chat_threads",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    /**
+     * The environment that owns this conversation.
+     *
+     * Not derivable from the device. Two projects may legitimately bind the
+     * same phone number — that is what the consent flow is for — so scoping a
+     * thread through devices matched every environment bound to it. Verified
+     * before this column existed: a second project with an active binding read
+     * the first one's messages verbatim.
+     */
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    /** The peer's JID. A phone number, so it never reaches a log. */
+    peerJid: text("peer_jid").notNull(),
+    displayName: text("display_name"),
+    lastMessageAt: integer("last_message_at", { mode: "timestamp_ms" }),
+    unreadCount: integer("unread_count").notNull().default(0),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [
+    // Environment first: one conversation per project per peer per device, so
+    // two projects sharing a number each keep their own history.
+    uniqueIndex("chat_threads_env_device_peer_idx").on(t.environmentId, t.deviceId, t.peerJid),
+    // The console lists threads newest first, per environment.
+    index("chat_threads_recent_idx").on(t.environmentId, t.lastMessageAt),
+  ],
+);
+
+/**
+ * One message, inbound or outbound.
+ *
+ * The first unbounded table in the system. Everything else is either fixed per
+ * tenant or swept; this grows for ever unless retention runs, and a disk
+ * filling is an outage 02 already names. The sweep ships in the same commit as
+ * the table for that reason.
+ */
+export const chatMessages = sqliteTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    threadId: text("thread_id")
+      .notNull()
+      .references(() => chatThreads.id, { onDelete: "cascade" }),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    /** Denormalised from the thread so retention and audits need no join. */
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
+    direction: text("direction", { enum: ["inbound", "outbound"] }).notNull(),
+    /**
+     * The engine's id for the message.
+     *
+     * How an ack is correlated back, and how a re-delivered inbound message is
+     * recognised as one we already have — WhatsApp resends, and a duplicate
+     * row would show the customer the same message twice.
+     */
+    providerMessageId: text("provider_message_id"),
+    kind: text("kind", { enum: ["text", "image", "video", "audio", "document", "unsupported"] })
+      .notNull()
+      .default("text"),
+    body: text("body"),
+    mediaId: text("media_id").references(() => chatMedia.id, { onDelete: "set null" }),
+    /** Outbound only. Inbound messages arrive already delivered. */
+    status: text("status", { enum: ["pending", "sent", "delivered", "read", "failed"] }),
+    occurredAt: integer("occurred_at", { mode: "timestamp_ms" }).notNull(),
+  },
+  (t) => [
+    index("chat_messages_thread_idx").on(t.threadId, t.occurredAt),
+    // Retention deletes by age across every thread, so it must not scan.
+    index("chat_messages_age_idx").on(t.occurredAt),
+    // Deduplicating a resent inbound message needs this to be a lookup.
+    // Scoped to the environment: the same inbound message is recorded once
+    // per project bound to the device, exactly as events fan out, so a global
+    // unique on the provider id would let the first project silence the rest.
+    uniqueIndex("chat_messages_provider_idx").on(t.environmentId, t.deviceId, t.providerMessageId),
+  ],
+);
+
+/**
+ * Media, on disk, referenced by row.
+ *
+ * Not a blob column: images and video would bloat every VACUUM INTO snapshot
+ * with bytes that never change, and the backup is already the slowest thing
+ * this system does.
+ */
+export const chatMedia = sqliteTable(
+  "chat_media",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    deviceId: text("device_id")
+      .notNull()
+      .references(() => devices.id, { onDelete: "cascade" }),
+    mimeType: text("mime_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    /** Content hash, so the same file stored twice is stored once. */
+    sha256: text("sha256").notNull(),
+    /** Relative to the media root. Never absolute — the root moves between deployments. */
+    storagePath: text("storage_path").notNull(),
+    createdAt: integer("created_at", { mode: "timestamp_ms" })
+      .notNull()
+      .$defaultFn(() => new Date()),
+  },
+  (t) => [index("chat_media_device_idx").on(t.deviceId), index("chat_media_sha_idx").on(t.sha256)],
+);
+
 export const streamTickets = sqliteTable(
   "stream_tickets",
   {

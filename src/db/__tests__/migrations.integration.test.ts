@@ -198,6 +198,16 @@ describe("a released migration is immutable", () => {
       hash: "3a4cb63e1f8c6bb678caefd7e6855e1c49873a3f6398dd81fd81d826684dcd90",
       when: 1787637210655,
     },
+    {
+      tag: "0004_device_credentials",
+      hash: "cf300cc262d126dd82831ea3d93efb157972648b29c42cc8a6f4a38407419f99",
+      when: 1787799909561,
+    },
+    {
+      tag: "0005_chat_history",
+      hash: "7bd1e8872619f6d30ba11547b6bacc73e3c8649b6bd11ede288db30fc37cbe3d",
+      when: 1787805371959,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
@@ -242,6 +252,9 @@ describe("a released migration is immutable", () => {
       "0001_rate_limits": ["rate_limits"],
       "0002_rate_limit_expiry": [], // alters rate_limits, creates nothing
       "0003_stream_tickets": ["stream_tickets"],
+      // The index goes with its table, so only tables need listing here.
+      "0004_device_credentials": ["device_credentials", "device_signal_keys"],
+      "0005_chat_history": ["chat_messages", "chat_threads", "chat_media"],
     };
     for (const migration of built.slice(1)) {
       const tables = CREATED_AFTER_BASELINE[migration.tag];

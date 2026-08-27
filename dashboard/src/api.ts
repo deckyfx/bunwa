@@ -115,7 +115,35 @@ async function call<T>(path: string, key: string, init: RequestInit = {}): Promi
     throw new ApiError(title, response.status, detail);
   }
 
+  // 204 has no body, and response.json() on an empty one rejects. Both
+  // logoutDevice and markChatRead return 204, so without this they reported
+  // failure on success: the device list never refreshed and the unread badge
+  // silently came back on the next load.
+  if (response.status === 204) return null as T;
+
   return (await response.json()) as T;
+}
+
+/** A conversation, as the console lists it. */
+export interface ChatThread {
+  id: string;
+  deviceId: string;
+  alias: string;
+  peerJid: string;
+  displayName: string | null;
+  lastMessageAt: string | null;
+  unreadCount: number;
+}
+
+/** One message in a conversation. */
+export interface ChatMessage {
+  id: string;
+  direction: "inbound" | "outbound";
+  kind: string;
+  body: string | null;
+  mediaId: string | null;
+  status: string | null;
+  occurredAt: string;
 }
 
 export const api = {
@@ -125,6 +153,29 @@ export const api = {
     call<Delivery[]>(`/v1/deliveries?limit=${String(limit)}`, key),
   replay: (key: string, id: string) =>
     call<unknown>(`/v1/deliveries/${encodeURIComponent(id)}/replay`, key, { method: "POST" }),
+  logoutDevice: (key: string, ref: string) =>
+    call<null>(`/v1/devices/${encodeURIComponent(ref)}/logout`, key, { method: "POST" }),
+  repairDevice: (key: string, ref: string) =>
+    call<{ pairing: { method: string; qr?: string; pairCode?: string; expiresAt: string } }>(
+      `/v1/devices/${encodeURIComponent(ref)}/repair`,
+      key,
+      { method: "POST" },
+    ),
+  chats: (key: string) => call<ChatThread[]>("/v1/chats", key),
+  chatMessages: (key: string, threadId: string) =>
+    call<ChatMessage[]>(`/v1/chats/${encodeURIComponent(threadId)}/messages`, key),
+  markChatRead: (key: string, threadId: string) =>
+    call<null>(`/v1/chats/${encodeURIComponent(threadId)}/read`, key, { method: "POST" }),
+  reply: (key: string, threadId: string, text: string) =>
+    call<{ id: string | null; status: string }>(
+      `/v1/chats/${encodeURIComponent(threadId)}/messages`,
+      key,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text }),
+      },
+    ),
   claim: (key: string, msisdn: string, alias: string) =>
     call<ClaimResult>("/v1/devices/claim", key, {
       method: "POST",

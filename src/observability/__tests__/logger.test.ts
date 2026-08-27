@@ -31,7 +31,15 @@ function capture(fn: () => void): string[] {
   return lines;
 }
 
-const ENV = { NODE_ENV: "production", DATABASE_PATH: ":memory:", LOG_LEVEL: "debug" };
+// Production, because that is the mode with JSON output — and production now
+// requires a credential encryption key, so this supplies one. Without it every
+// test here fails inside config() rather than on anything about logging.
+const ENV = {
+  NODE_ENV: "production",
+  DATABASE_PATH: ":memory:",
+  LOG_LEVEL: "debug",
+  CREDENTIAL_ENCRYPTION_KEY: "a".repeat(64),
+};
 
 // Captured once, at module load: the process is shared across test
 // files, so deleting these keys strips whatever the runner supplied
