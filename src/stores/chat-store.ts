@@ -11,10 +11,18 @@
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 
 import { db, type Database } from "../db";
-import { chatMessages, chatThreads, devices, virtualDevices } from "../db/schema";
+import { chatMessages, chatThreads, virtualDevices } from "../db/schema";
 import { withTransaction } from "../db/transaction";
 
 export interface RecordedMessage {
+  /**
+   * The project's environment, not derivable from the device.
+   *
+   * Two projects may bind the same phone number, so a thread scoped through
+   * the device is visible to both. Measured before this parameter existed: a
+   * second project with an active binding read the first one's messages.
+   */
+  environmentId: string;
   deviceId: string;
   peerJid: string;
   direction: "inbound" | "outbound";
@@ -48,6 +56,7 @@ export const ChatStore = {
           .from(chatMessages)
           .where(
             and(
+              eq(chatMessages.environmentId, input.environmentId),
               eq(chatMessages.deviceId, input.deviceId),
               eq(chatMessages.providerMessageId, input.providerMessageId),
             ),
@@ -59,6 +68,7 @@ export const ChatStore = {
       const [thread] = await tx
         .insert(chatThreads)
         .values({
+          environmentId: input.environmentId,
           deviceId: input.deviceId,
           peerJid: input.peerJid,
           displayName: input.displayName ?? null,
@@ -66,7 +76,7 @@ export const ChatStore = {
           unreadCount: input.direction === "inbound" ? 1 : 0,
         })
         .onConflictDoUpdate({
-          target: [chatThreads.deviceId, chatThreads.peerJid],
+          target: [chatThreads.environmentId, chatThreads.deviceId, chatThreads.peerJid],
           set: {
             lastMessageAt: input.occurredAt,
             // Counted in SQL rather than read-then-written: two inbound
@@ -88,6 +98,7 @@ export const ChatStore = {
         .values({
           threadId: thread!.id,
           deviceId: input.deviceId,
+          environmentId: input.environmentId,
           direction: input.direction,
           providerMessageId: input.providerMessageId,
           kind: input.kind,
@@ -113,6 +124,8 @@ export const ChatStore = {
       .select({
         id: chatThreads.id,
         deviceId: chatThreads.deviceId,
+        // Nullable because the join is for display only: a binding that has
+        // been revoked leaves the history intact and the alias unknown.
         alias: virtualDevices.alias,
         peerJid: chatThreads.peerJid,
         displayName: chatThreads.displayName,
@@ -120,9 +133,14 @@ export const ChatStore = {
         unreadCount: chatThreads.unreadCount,
       })
       .from(chatThreads)
-      .innerJoin(devices, eq(chatThreads.deviceId, devices.id))
-      .innerJoin(virtualDevices, eq(virtualDevices.deviceId, devices.id))
-      .where(eq(virtualDevices.environmentId, environmentId))
+      // Joined only for the alias shown in the console. The scope comes from
+      // the thread's own environment_id, so a second project bound to the same
+      // device cannot match.
+      .leftJoin(virtualDevices, and(
+        eq(virtualDevices.deviceId, chatThreads.deviceId),
+        eq(virtualDevices.environmentId, chatThreads.environmentId),
+      ))
+      .where(eq(chatThreads.environmentId, environmentId))
       .orderBy(desc(chatThreads.lastMessageAt))
       .limit(limit);
   },
@@ -140,9 +158,7 @@ export const ChatStore = {
         occurredAt: chatMessages.occurredAt,
       })
       .from(chatMessages)
-      .innerJoin(chatThreads, eq(chatMessages.threadId, chatThreads.id))
-      .innerJoin(virtualDevices, eq(virtualDevices.deviceId, chatThreads.deviceId))
-      .where(and(eq(chatMessages.threadId, threadId), eq(virtualDevices.environmentId, environmentId)))
+      .where(and(eq(chatMessages.threadId, threadId), eq(chatMessages.environmentId, environmentId)))
       .orderBy(chatMessages.occurredAt)
       .limit(limit);
   },
@@ -160,14 +176,14 @@ export const ChatStore = {
     const [row] = await database
       .select({ id: chatThreads.id })
       .from(chatThreads)
-      .innerJoin(virtualDevices, eq(virtualDevices.deviceId, chatThreads.deviceId))
-      .where(and(eq(chatThreads.id, threadId), eq(virtualDevices.environmentId, environmentId)))
+      .where(and(eq(chatThreads.id, threadId), eq(chatThreads.environmentId, environmentId)))
       .limit(1);
     return row !== undefined;
   },
 
   /** Update an outbound message's status when an ack arrives. */
   async markStatus(
+    environmentId: string,
     deviceId: string,
     providerMessageId: string,
     status: "sent" | "delivered" | "read" | "failed",
@@ -177,7 +193,11 @@ export const ChatStore = {
       .update(chatMessages)
       .set({ status })
       .where(
-        and(eq(chatMessages.deviceId, deviceId), eq(chatMessages.providerMessageId, providerMessageId)),
+        and(
+          eq(chatMessages.environmentId, environmentId),
+          eq(chatMessages.deviceId, deviceId),
+          eq(chatMessages.providerMessageId, providerMessageId),
+        ),
       );
   },
 

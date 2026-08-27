@@ -228,6 +228,7 @@ describe("runHousekeeping", () => {
     const ancient = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000);
     await ChatStore.record(
       {
+        environmentId: environment.id,
         deviceId: device.id,
         peerJid: "628999@s.whatsapp.net",
         direction: "inbound",

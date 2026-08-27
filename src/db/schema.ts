@@ -575,6 +575,18 @@ export const chatThreads = sqliteTable(
   "chat_threads",
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    /**
+     * The environment that owns this conversation.
+     *
+     * Not derivable from the device. Two projects may legitimately bind the
+     * same phone number — that is what the consent flow is for — so scoping a
+     * thread through devices matched every environment bound to it. Verified
+     * before this column existed: a second project with an active binding read
+     * the first one's messages verbatim.
+     */
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
     deviceId: text("device_id")
       .notNull()
       .references(() => devices.id, { onDelete: "cascade" }),
@@ -588,9 +600,11 @@ export const chatThreads = sqliteTable(
       .$defaultFn(() => new Date()),
   },
   (t) => [
-    uniqueIndex("chat_threads_device_peer_idx").on(t.deviceId, t.peerJid),
-    // The console lists threads newest first, per device.
-    index("chat_threads_recent_idx").on(t.deviceId, t.lastMessageAt),
+    // Environment first: one conversation per project per peer per device, so
+    // two projects sharing a number each keep their own history.
+    uniqueIndex("chat_threads_env_device_peer_idx").on(t.environmentId, t.deviceId, t.peerJid),
+    // The console lists threads newest first, per environment.
+    index("chat_threads_recent_idx").on(t.environmentId, t.lastMessageAt),
   ],
 );
 
@@ -612,6 +626,10 @@ export const chatMessages = sqliteTable(
     deviceId: text("device_id")
       .notNull()
       .references(() => devices.id, { onDelete: "cascade" }),
+    /** Denormalised from the thread so retention and audits need no join. */
+    environmentId: text("environment_id")
+      .notNull()
+      .references(() => environments.id, { onDelete: "cascade" }),
     direction: text("direction", { enum: ["inbound", "outbound"] }).notNull(),
     /**
      * The engine's id for the message.
@@ -635,7 +653,10 @@ export const chatMessages = sqliteTable(
     // Retention deletes by age across every thread, so it must not scan.
     index("chat_messages_age_idx").on(t.occurredAt),
     // Deduplicating a resent inbound message needs this to be a lookup.
-    uniqueIndex("chat_messages_provider_idx").on(t.deviceId, t.providerMessageId),
+    // Scoped to the environment: the same inbound message is recorded once
+    // per project bound to the device, exactly as events fan out, so a global
+    // unique on the provider id would let the first project silence the rest.
+    uniqueIndex("chat_messages_provider_idx").on(t.environmentId, t.deviceId, t.providerMessageId),
   ],
 );
 

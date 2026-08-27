@@ -64,6 +64,7 @@ beforeEach(async () => {
 
   await ChatStore.record(
     {
+      environmentId: env.id,
       deviceId: device.id,
       peerJid: "628999@s.whatsapp.net",
       direction: "inbound",

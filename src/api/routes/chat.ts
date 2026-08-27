@@ -87,6 +87,7 @@ export const chatRoutes = new Elysia({ prefix: "/v1" })
       // claims "sent" before anything left the process is the lie the whole
       // ack-based delivery story exists to avoid.
       const recorded = await ChatStore.record({
+        environmentId: auth.environmentId,
         deviceId: thread.deviceId,
         peerJid: thread.peerJid,
         direction: "outbound",

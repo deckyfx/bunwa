@@ -7,6 +7,7 @@
  * show the customer the same thing twice.
  */
 import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { sql } from "drizzle-orm";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -65,6 +66,7 @@ afterEach(() => {
 });
 
 const inbound = (over: Partial<Parameters<typeof ChatStore.record>[0]> = {}) => ({
+  environmentId,
   deviceId,
   peerJid: "628999@s.whatsapp.net",
   direction: "inbound" as const,
@@ -122,7 +124,12 @@ describe("one tenant cannot see another's conversations", () => {
   test("threads are scoped to the environment", async () => {
     await ChatStore.record(inbound(), database);
     await ChatStore.record(
-      inbound({ deviceId: otherDeviceId, peerJid: "628777@s.whatsapp.net", providerMessageId: "wa-2" }),
+      inbound({
+        environmentId: otherEnvironmentId,
+        deviceId: otherDeviceId,
+        peerJid: "628777@s.whatsapp.net",
+        providerMessageId: "wa-2",
+      }),
       database,
     );
 
@@ -155,6 +162,97 @@ describe("one tenant cannot see another's conversations", () => {
 
     expect(await ChatStore.markRead(environmentId, thread!.id, database)).toBe(true);
     expect((await ChatStore.threadsForEnvironment(environmentId, 50, database))[0]!.unreadCount).toBe(0);
+  });
+});
+
+describe("two projects sharing one phone number", () => {
+  // The case the tests above could not catch, and a review said so: they used
+  // different devices, so the assertions held whether or not scoping worked.
+  //
+  // The consent flow exists precisely so two projects can bind one number.
+  // Chat rows key on the global devices.id, so scoping a thread through the
+  // device matched every environment bound to it. Measured before the fix: the
+  // second project read the first one's message body verbatim.
+  test("the second project cannot read the first one's conversation", async () => {
+    const shared = (
+      await DeviceStore.claim({ environmentId, msisdn: "+628777777777", alias: "shared" }, database)
+    ).device;
+
+    // Bind the other environment to the same device and make it active. How it
+    // got there is the consent flow's business; what an active second binding
+    // can see is this test's.
+    await DeviceStore.claim(
+      { environmentId: otherEnvironmentId, msisdn: "+628777777777", alias: "shared-too" },
+      database,
+    );
+    database.run(
+      sql`UPDATE virtual_devices SET status = 'active' WHERE environment_id = ${otherEnvironmentId}`,
+    );
+
+    await ChatStore.record(
+      {
+        environmentId,
+        deviceId: shared.id,
+        peerJid: "628999@s.whatsapp.net",
+        direction: "inbound",
+        providerMessageId: "shared-1",
+        kind: "text",
+        body: "FIRST PROJECT ONLY",
+        occurredAt: new Date(5_000),
+      },
+      database,
+    );
+
+    const theirs = await ChatStore.threadsForEnvironment(otherEnvironmentId, 50, database);
+    expect(theirs, "the other project saw a conversation on a shared device").toEqual([]);
+
+    // And it cannot reach the messages by knowing the thread id either.
+    const mine = await ChatStore.threadsForEnvironment(environmentId, 50, database);
+    const thread = mine.find((candidate) => candidate.peerJid === "628999@s.whatsapp.net");
+    expect(thread).toBeDefined();
+    expect(
+      await ChatStore.messagesInThread(otherEnvironmentId, thread!.id, 200, database),
+      "the other project read the messages directly",
+    ).toEqual([]);
+  });
+
+  test("each project keeps its own history on the same device", async () => {
+    // Not isolation for its own sake: both projects legitimately use the
+    // number, so both must be able to hold a conversation with the same peer
+    // without seeing each other's.
+    const shared = (
+      await DeviceStore.claim({ environmentId, msisdn: "+628777777777", alias: "shared" }, database)
+    ).device;
+
+    for (const [env, body] of [
+      [environmentId, "mine"],
+      [otherEnvironmentId, "theirs"],
+    ] as const) {
+      await ChatStore.record(
+        {
+          environmentId: env,
+          deviceId: shared.id,
+          peerJid: "628999@s.whatsapp.net",
+          direction: "inbound",
+          providerMessageId: `msg-${body}`,
+          kind: "text",
+          body,
+          occurredAt: new Date(5_000),
+        },
+        database,
+      );
+    }
+
+    const mine = await ChatStore.threadsForEnvironment(environmentId, 50, database);
+    const theirs = await ChatStore.threadsForEnvironment(otherEnvironmentId, 50, database);
+    expect(mine).toHaveLength(1);
+    expect(theirs).toHaveLength(1);
+    expect(mine[0]!.id).not.toBe(theirs[0]!.id);
+
+    expect((await ChatStore.messagesInThread(environmentId, mine[0]!.id, 200, database))[0]!.body).toBe("mine");
+    expect((await ChatStore.messagesInThread(otherEnvironmentId, theirs[0]!.id, 200, database))[0]!.body).toBe(
+      "theirs",
+    );
   });
 });
 

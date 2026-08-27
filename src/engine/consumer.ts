@@ -183,20 +183,34 @@ async function recordInbound(
     return;
   }
 
+  // Once per active binding, exactly as events fan out.
+  //
+  // A device can carry bindings for several projects — that is what the
+  // consent flow allows — and each keeps its own history. Recording once
+  // against the device instead let any project bound to the number read every
+  // other project's conversation; measured before this changed.
+  const bindings = await database
+    .select({ environmentId: virtualDevices.environmentId })
+    .from(virtualDevices)
+    .where(and(eq(virtualDevices.deviceId, event.deviceId), eq(virtualDevices.status, "active")));
+
   try {
-    await ChatStore.record(
-      {
-        deviceId: event.deviceId,
-        peerJid: peer,
-        direction: message.isFromMe ? "outbound" : "inbound",
-        providerMessageId: message.id,
-        kind: message.media === null ? "text" : "unsupported",
-        body: message.body,
-        occurredAt: message.timestamp,
-        displayName: message.pushName,
-      },
-      database,
-    );
+    for (const binding of bindings) {
+      await ChatStore.record(
+        {
+          environmentId: binding.environmentId,
+          deviceId: event.deviceId,
+          peerJid: peer,
+          direction: message.isFromMe ? "outbound" : "inbound",
+          providerMessageId: message.id,
+          kind: message.media === null ? "text" : "unsupported",
+          body: message.body,
+          occurredAt: message.timestamp,
+          displayName: message.pushName,
+        },
+        database,
+      );
+    }
   } catch (err) {
     // Never fatal to the event loop. A history write that fails must not stop
     // the rules, the fan-out, or the next message.
