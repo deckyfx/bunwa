@@ -112,12 +112,34 @@ jobs:
         # deployment property: the unit test proves the config object refuses,
         # this proves the image does.
         run: |
-          if docker run --rm -e NODE_ENV=production -e BAILEYS_ENABLED=true bunwa:api \
-               bun run src/index.ts 2>/dev/null; then
+          # The message is asserted, not just the exit status. Treating any
+          # non-zero exit as success would pass on an unrelated startup
+          # failure — a missing database, a bad image — while the guard never
+          # ran, which is a check that can succeed for the wrong reason.
+          #
+          # timeout, because the failure mode if the guard is gone is a server
+          # that starts and serves happily until the job is killed.
+          set +e
+          output=$(timeout 20s docker run --rm \
+            -e NODE_ENV=production \
+            -e BAILEYS_ENABLED=true \
+            bunwa:api bun run src/index.ts 2>&1)
+          status=$?
+          set -e
+
+          if [ "$status" -eq 0 ]; then
             echo "::error::the image started with baileys enabled and no encryption key"
+            printf '%s\n' "$output"
             exit 1
           fi
-          echo "refused, as it should"
+
+          if ! printf '%s' "$output" | grep -Fq "BAILEYS_ENABLED requires CREDENTIAL_ENCRYPTION_KEY"; then
+            echo "::error::the image failed, but not for the reason this step exists to check"
+            printf '%s\n' "$output"
+            exit 1
+          fi
+
+          echo "refused, with the right reason"
 
       - name: The api image carries no console
         # The whole mechanism behind two tags from one binary. If assets ever

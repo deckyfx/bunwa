@@ -131,11 +131,13 @@ export class Config {
   readonly enginePoolCapacity: number;
 
   /**
-   * Key for encrypting WhatsApp credentials at rest, or null outside production.
+   * Key for encrypting WhatsApp credentials at rest, or null if none is set.
    *
-   * Null is permitted in development so a fresh clone runs without ceremony;
-   * the stores refuse to write credentials when it is null rather than writing
-   * them unencrypted.
+   * Required by the engine that stores credentials rather than by production
+   * as such — a gowa-only deployment never holds them, because gowa does.
+   * Null is therefore permitted anywhere BAILEYS_ENABLED is off, and
+   * AuthStateStore still refuses to write without it, so no configuration puts
+   * account-takeover material in the clear.
    */
   readonly credentialEncryptionKey: string | null;
 
@@ -170,11 +172,10 @@ export class Config {
 
     // WhatsApp credentials are encrypted at rest; this is the key.
     //
-    // Production refuses to start without it rather than falling back to
-    // plaintext. An optional secret is one that is absent in the deployment
-    // that matters, and the failure would be silent — devices would pair,
-    // messages would send, and the account-takeover material would simply be
-    // sitting in the database in the clear.
+    // Read here, enforced below against the engine that needs it. An earlier
+    // version demanded it of every production deployment and said so in three
+    // places; the enforcement changed and two of the comments did not, which
+    // is how an operator ends up following a policy the code stopped having.
     const credentialKey = source["CREDENTIAL_ENCRYPTION_KEY"];
     const suppliedKey = credentialKey === undefined || credentialKey.trim() === "" ? null : credentialKey.trim();
 
