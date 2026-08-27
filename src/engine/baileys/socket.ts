@@ -21,6 +21,7 @@ import makeWASocket, {
   type AuthenticationCreds,
   type SignalDataTypeMap,
   type SignalKeyStore,
+  type WAMessage,
   type WASocket,
 } from "@whiskeysockets/baileys";
 
@@ -53,6 +54,26 @@ export type DisconnectKind =
   | "transient"
   | "bad_session";
 
+/**
+ * An inbound message, flattened.
+ *
+ * Baileys hands over a protobuf with a dozen possible content shapes nested
+ * inside it. Flattening here rather than in the adapter is the point of the
+ * port: the adapter deals in `kind` and `body`, so a change to how Baileys
+ * nests a caption is one edit in this file.
+ */
+export interface SocketMessage {
+  id: string;
+  chatJid: string | null;
+  senderJid: string | null;
+  pushName: string | null;
+  fromMe: boolean;
+  timestamp: Date;
+  kind: "text" | "image" | "video" | "audio" | "document" | "unsupported";
+  body: string | null;
+  mimeType: string | null;
+}
+
 /** What the adapter sees. No Baileys types cross this line. */
 export interface SocketEvent {
   kind:
@@ -61,7 +82,9 @@ export interface SocketEvent {
     | "connecting"
     | "connected"
     | "disconnected"
-    | "credentials_updated";
+    | "credentials_updated"
+    | "message"
+    | "ack";
   /** The QR payload, for `qr`. */
   qr?: string;
   /** The pairing code, for `pair_code`. */
@@ -72,6 +95,29 @@ export interface SocketEvent {
   reason?: DisconnectKind;
   /** Whether reconnecting could plausibly work, for `disconnected`. */
   recoverable?: boolean;
+  /** The message, for `message`. */
+  message?: SocketMessage;
+  /** The provider id and new state, for `ack`. */
+  ackFor?: string;
+  ackStatus?: "delivered" | "read";
+}
+
+/**
+ * Media to send.
+ *
+ * A URL is preferred and passed straight through: Baileys streams it, so a
+ * 50MB video never sits in this process's heap. Bytes are accepted because the
+ * API allows base64, but they are the slower path by construction.
+ */
+export interface OutboundMedia {
+  kind: "image" | "video" | "audio" | "document";
+  url?: string;
+  bytes?: Buffer;
+  mimeType?: string;
+  caption?: string;
+  fileName?: string;
+  /** Audio only. A voice note renders as one in WhatsApp; a file does not. */
+  voiceNote?: boolean;
 }
 
 export interface SocketHandle {
@@ -81,6 +127,8 @@ export interface SocketHandle {
   requestPairingCode(msisdn: string): Promise<string>;
   /** Send plain text. Returns the provider's message id. */
   sendText(toJid: string, body: string): Promise<string>;
+  /** Send media. Returns the provider's message id. */
+  sendMedia(toJid: string, media: OutboundMedia): Promise<string>;
   /** Unlink from the phone. The credentials become void. */
   logout(): Promise<void>;
   /** Stop, without unlinking. Safe to call twice. */
@@ -98,6 +146,73 @@ export interface SocketHandle {
 function statusCodeOf(error: unknown): number | undefined {
   const output = (error as { output?: { statusCode?: unknown } } | null | undefined)?.output;
   return typeof output?.statusCode === "number" ? output.statusCode : undefined;
+}
+
+/**
+ * Flatten one Baileys message into the shape the adapter uses.
+ *
+ * WhatsApp nests content a dozen ways and wraps some of it again in
+ * `ephemeralMessage` or `viewOnceMessage`. Unwrapping here keeps that
+ * knowledge in the one file allowed to hold it.
+ *
+ * Anything unrecognised becomes `unsupported` with a null body rather than
+ * being dropped: a message the customer can see on their phone and cannot see
+ * in the console is a support ticket, and "we received something we could not
+ * render" is a better answer than silence.
+ */
+function flattenMessage(raw: WAMessage): SocketMessage | null {
+  const id = raw.key.id;
+  if (id === null || id === undefined) return null;
+
+  // Unwrap the containers before looking at content, or every ephemeral
+  // message reads as unsupported.
+  let content = raw.message ?? null;
+  content = content?.ephemeralMessage?.message ?? content;
+  content = content?.viewOnceMessage?.message ?? content;
+  content = content?.viewOnceMessageV2?.message ?? content;
+
+  const timestamp = new Date(Number(raw.messageTimestamp ?? 0) * 1000);
+
+  let kind: SocketMessage["kind"] = "unsupported";
+  let body: string | null = null;
+  let mimeType: string | null = null;
+
+  if (content?.conversation !== undefined && content.conversation !== null) {
+    kind = "text";
+    body = content.conversation;
+  } else if (content?.extendedTextMessage?.text != null) {
+    // Links with previews arrive as extendedText, so this is also how a URL
+    // send comes back.
+    kind = "text";
+    body = content.extendedTextMessage.text;
+  } else if (content?.imageMessage != null) {
+    kind = "image";
+    body = content.imageMessage.caption ?? null;
+    mimeType = content.imageMessage.mimetype ?? null;
+  } else if (content?.videoMessage != null) {
+    kind = "video";
+    body = content.videoMessage.caption ?? null;
+    mimeType = content.videoMessage.mimetype ?? null;
+  } else if (content?.audioMessage != null) {
+    kind = "audio";
+    mimeType = content.audioMessage.mimetype ?? null;
+  } else if (content?.documentMessage != null) {
+    kind = "document";
+    body = content.documentMessage.fileName ?? null;
+    mimeType = content.documentMessage.mimetype ?? null;
+  }
+
+  return {
+    id,
+    chatJid: raw.key.remoteJid ?? null,
+    senderJid: raw.key.participant ?? raw.key.remoteJid ?? null,
+    pushName: raw.pushName ?? null,
+    fromMe: raw.key.fromMe === true,
+    timestamp,
+    kind,
+    body,
+    mimeType,
+  };
 }
 
 /**
@@ -225,6 +340,27 @@ async function loadAuthState(deviceId: string): Promise<{
  */
 export const loadAuthStateForTests = loadAuthState;
 
+/**
+ * A logger Baileys will actually accept.
+ *
+ * It calls `trace`, `debug`, `info`, `warn`, `error` and `child` on whatever
+ * it is handed. The first version of this supplied only `level` and `child`,
+ * and Baileys failed to load its tctoken index with "logger?.trace is not a
+ * function" — visible only because a test happened to print its output. Its
+ * own logs go nowhere by design: they are verbose, and they contain pairing
+ * material.
+ */
+const SILENT_LOGGER = {
+  level: "silent",
+  trace: () => undefined,
+  debug: () => undefined,
+  info: () => undefined,
+  warn: () => undefined,
+  error: () => undefined,
+  fatal: () => undefined,
+  child: () => SILENT_LOGGER,
+} as never;
+
 /** Which device this socket is for. Credentials come from the database. */
 export interface SocketOptions {
   deviceId: string;
@@ -245,14 +381,13 @@ export async function openSocket(options: SocketOptions): Promise<SocketHandle> 
 
   const socket: WASocket = makeWASocket({
     version,
+    // Same reason as the key store: Baileys logs pairing material at info.
+    logger: SILENT_LOGGER,
     auth: {
       creds: state.creds,
       // Cached, because the signal key store is read constantly during a
       // session and every miss is a disk read.
-      keys: makeCacheableSignalKeyStore(state.keys, {
-        level: "silent",
-        child: () => ({ level: "silent" }) as never,
-      } as never),
+      keys: makeCacheableSignalKeyStore(state.keys, SILENT_LOGGER),
     },
     // Never true: printing a QR to stdout puts a takeover credential in the
     // process logs.
@@ -275,6 +410,30 @@ export async function openSocket(options: SocketOptions): Promise<SocketHandle> 
   socket.ev.on("creds.update", () => {
     void saveCreds();
     emit({ kind: "credentials_updated" });
+  });
+
+  socket.ev.on("messages.upsert", ({ messages, type }) => {
+    // "notify" is a live message. "append" is history being backfilled, which
+    // would replay a customer's entire past into the console as if it had just
+    // arrived.
+    if (type !== "notify") return;
+    for (const raw of messages) {
+      const flat = flattenMessage(raw);
+      if (flat !== null) emit({ kind: "message", message: flat });
+    }
+  });
+
+  socket.ev.on("messages.update", (updates) => {
+    for (const update of updates) {
+      const id = update.key.id;
+      const status = update.update.status;
+      if (id === null || id === undefined || status === null || status === undefined) continue;
+
+      // Baileys reports status as an ascending enum; only the two that mean
+      // something to a caller are surfaced. DELIVERY_ACK is 3, READ is 4.
+      if (status >= 4) emit({ kind: "ack", ackFor: id, ackStatus: "read" });
+      else if (status === 3) emit({ kind: "ack", ackFor: id, ackStatus: "delivered" });
+    }
   });
 
   socket.ev.on("connection.update", (update) => {
@@ -325,6 +484,35 @@ export async function openSocket(options: SocketOptions): Promise<SocketHandle> 
         // control plane's whole delivery story rests on acks rather than on
         // send acceptance (docs/12).
         throw new Error("baileys accepted the message without returning an id");
+      }
+      return id;
+    },
+
+    async sendMedia(toJid: string, media: OutboundMedia): Promise<string> {
+      // Either a stream Baileys fetches itself, or bytes we already hold.
+      // Passing the URL through matters: buffering a video here to hand
+      // Baileys the same bytes doubles peak memory for no benefit.
+      const source = media.url !== undefined ? { url: media.url } : media.bytes;
+      if (source === undefined) throw new Error("media needs either a url or bytes");
+
+      const content =
+        media.kind === "image"
+          ? { image: source, caption: media.caption }
+          : media.kind === "video"
+            ? { video: source, caption: media.caption }
+            : media.kind === "audio"
+              ? { audio: source, mimetype: media.mimeType ?? "audio/ogg; codecs=opus", ptt: media.voiceNote === true }
+              : {
+                  document: source,
+                  mimetype: media.mimeType ?? "application/octet-stream",
+                  fileName: media.fileName ?? "file",
+                  caption: media.caption,
+                };
+
+      const sent = await socket.sendMessage(toJid, content as never);
+      const id = sent?.key.id;
+      if (id === undefined || id === null) {
+        throw new Error("baileys accepted the media without returning an id");
       }
       return id;
     },
