@@ -37,6 +37,10 @@ export function Chats({ apiKey, revision }: Props) {
   const threadsGeneration = useRef(0);
   const messagesGeneration = useRef(0);
 
+  /** What is selected right now, readable from a closure created earlier. */
+  const selectedRef = useRef<string | null>(null);
+  selectedRef.current = selected;
+
   const loadThreads = useCallback(async () => {
     const mine = ++threadsGeneration.current;
     try {
@@ -97,16 +101,29 @@ export function Chats({ apiKey, revision }: Props) {
     e.preventDefault();
     if (selected === null || draft.trim() === "") return;
 
+    // Captured, then checked against what is selected when the call resolves.
+    //
+    // This closure holds the thread from the render that created it. Switching
+    // conversations while a reply is in flight left the reload fetching the
+    // previous thread — and because loadMessages bumps the generation on every
+    // call, that late fetch could win against the one the switch started and
+    // paint the old conversation under the new selection. Which is the
+    // reply-into-the-wrong-conversation hazard the comment in `open` describes,
+    // arriving by a different route after I closed the first one.
+    const threadId = selected;
+
     setSending(true);
     setError(null);
     try {
-      await api.reply(apiKey, selected, draft);
+      await api.reply(apiKey, threadId, draft);
+      if (selectedRef.current !== threadId) return;
       setDraft("");
-      await loadMessages(selected);
+      await loadMessages(threadId);
     } catch (err) {
+      if (selectedRef.current !== threadId) return;
       setError(err instanceof ApiError ? err.message : "could not send");
     } finally {
-      setSending(false);
+      if (selectedRef.current === threadId) setSending(false);
     }
   }
 

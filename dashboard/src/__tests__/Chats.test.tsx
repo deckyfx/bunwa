@@ -123,3 +123,49 @@ describe("conversations", () => {
     expect((screen.getByRole("button", { name: "send" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
+
+describe("switching conversation while a reply is in flight", () => {
+  test("the reply does not repaint the panel with the old thread", async () => {
+    // The hazard the `open` guard describes, arriving by another route: send
+    // closes over the thread from its own render, and loadMessages bumps the
+    // generation unconditionally, so a late reload could win against the one
+    // the switch started and paint the old conversation under the new
+    // selection.
+    const threads: ChatThread[] = [
+      { ...thread, id: "t1", displayName: "Ana", unreadCount: 0 },
+      { ...thread, id: "t2", displayName: "Bo", unreadCount: 0 },
+    ];
+    (api as { chats: typeof api.chats }).chats = async () => threads;
+    (api as { chatMessages: typeof api.chatMessages }).chatMessages = async (_k, id) => [
+      { ...inbound, id: `m-${id}`, body: id === "t1" ? "ANA MESSAGE" : "BO MESSAGE" },
+    ];
+
+    let release: (() => void) | undefined;
+    (api as { reply: typeof api.reply }).reply = () =>
+      new Promise((resolve) => {
+        release = () => resolve({ id: "m9", status: "pending" });
+      });
+
+    render(<Chats apiKey="k" revision={0} />);
+    await waitFor(() => expect(screen.getByText("Ana")).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: /Ana/ }));
+    await waitFor(() => expect(screen.getByText("ANA MESSAGE")).toBeDefined());
+
+    fireEvent.change(screen.getByLabelText("Reply"), { target: { value: "to ana" } });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    // Switch before the reply resolves.
+    fireEvent.click(screen.getByRole("button", { name: /Bo/ }));
+    await waitFor(() => expect(screen.getByText("BO MESSAGE")).toBeDefined());
+
+    release?.();
+    await Bun.sleep(60);
+
+    expect(screen.getByText("BO MESSAGE")).toBeDefined();
+    expect(
+      screen.queryByText("ANA MESSAGE"),
+      "the finished reply repainted the panel with the previous conversation",
+    ).toBeNull();
+  });
+});
