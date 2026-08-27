@@ -10,6 +10,18 @@
  */
 import type { OutboundMedia, SocketEvent, SocketHandle, SocketMessage } from "../socket";
 
+/**
+ * A SocketHandle that never dials WhatsApp.
+ *
+ * Exists because the first conformance run against the real port connected to
+ * WhatsApp, attempted registration and reconnect-looped — from a unit test.
+ * Tests drive this instead, deciding exactly which events arrive and when.
+ *
+ * Deliberately dumb: it emits what it is told and records what it was asked to
+ * send. Anything cleverer would start testing the stub rather than the
+ * adapter, and a stub that diverges from the real socket is worse than none
+ * because the suite still reports green.
+ */
 export class StubSocket implements SocketHandle {
   readonly sent: { to: string; body: string }[] = [];
   readonly sentMedia: { to: string; kind: string }[] = [];

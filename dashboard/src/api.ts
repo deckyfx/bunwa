@@ -115,6 +115,12 @@ async function call<T>(path: string, key: string, init: RequestInit = {}): Promi
     throw new ApiError(title, response.status, detail);
   }
 
+  // 204 has no body, and response.json() on an empty one rejects. Both
+  // logoutDevice and markChatRead return 204, so without this they reported
+  // failure on success: the device list never refreshed and the unread badge
+  // silently came back on the next load.
+  if (response.status === 204) return null as T;
+
   return (await response.json()) as T;
 }
 

@@ -17,6 +17,13 @@ import { join } from "node:path";
 const PORT = "src/engine/baileys/socket.ts";
 const LIBRARY = "@whiskeysockets/baileys";
 
+/** Every way a file could reach the library. */
+const IMPORT_FORMS = [
+  new RegExp(String.raw`from\s*["']` + LIBRARY),
+  new RegExp(String.raw`require\s*\(\s*["']` + LIBRARY),
+  new RegExp(String.raw`import\s*\(\s*["']` + LIBRARY),
+];
+
 function sourceFiles(dir: string): string[] {
   const out: string[] = [];
   for (const entry of readdirSync(dir)) {
@@ -37,7 +44,12 @@ describe("only the port module knows about Baileys", () => {
         // Matches the import, not a mention: the ADR and several comments name
         // the package deliberately, and failing on those would train everyone
         // to stop writing the reason down.
-        return new RegExp(`from\\s+["']${LIBRARY}`).test(text) || text.includes(`require("${LIBRARY}`);
+        //
+        // Three forms, because any of them bypasses the guard equally well and
+        // the first version caught only the first: a static import, a
+        // require(), and a dynamic import(). Both quote styles, and whitespace
+        // where a formatter might put it.
+        return IMPORT_FORMS.some((pattern) => pattern.test(text));
       });
 
     expect(offenders, `these files import ${LIBRARY} directly`).toEqual([]);
@@ -52,9 +64,10 @@ describe("only the port module knows about Baileys", () => {
   test("the dashboard does not reach the library either", () => {
     // A separate subproject with its own dependencies, so its imports resolve
     // independently and would not be caught by the sweep above.
-    const offenders = sourceFiles("dashboard/src").filter((f) =>
-      new RegExp(`from\\s+["']${LIBRARY}`).test(readFileSync(f, "utf8")),
-    );
+    const offenders = sourceFiles("dashboard/src").filter((f) => {
+      const text = readFileSync(f, "utf8");
+      return IMPORT_FORMS.some((pattern) => pattern.test(text));
+    });
     expect(offenders).toEqual([]);
   });
 });

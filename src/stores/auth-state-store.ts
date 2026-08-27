@@ -11,7 +11,7 @@
  * neither is something to hold in the clear in a multi-tenant database
  * ([13](../../docs/13-owning-the-data.md)).
  */
-import { and, eq, inArray } from "drizzle-orm";
+import { and, count, eq, inArray } from "drizzle-orm";
 
 import { db, type Database } from "../db";
 import { withTransaction } from "../db/transaction";
@@ -176,16 +176,25 @@ export const AuthStateStore = {
    * ever read.
    */
   async forget(deviceId: string, database: Database = db()): Promise<void> {
-    await database.delete(deviceSignalKeys).where(eq(deviceSignalKeys.deviceId, deviceId));
-    await database.delete(deviceCredentials).where(eq(deviceCredentials.deviceId, deviceId));
+    // Both or neither. saveKeys already uses a transaction to avoid a
+    // half-applied state; two bare deletes here could leave a device holding
+    // credentials whose keys are gone, which is the same fault in the other
+    // direction and fails as decryption errors rather than as a storage one.
+    await withTransaction(database, async (tx) => {
+      await tx.delete(deviceSignalKeys).where(eq(deviceSignalKeys.deviceId, deviceId));
+      await tx.delete(deviceCredentials).where(eq(deviceCredentials.deviceId, deviceId));
+    });
   },
 
   /** How many key rows a device holds. For tests and for /metrics. */
   async keyCount(deviceId: string, database: Database = db()): Promise<number> {
-    const rows = await database
-      .select({ keyHash: deviceSignalKeys.keyHash })
+    // Counted in SQL. This module's own documentation says thousands of rows
+    // per device, and loading every one to take a length is a poor thing for
+    // /metrics to do on an interval.
+    const [row] = await database
+      .select({ total: count() })
       .from(deviceSignalKeys)
       .where(eq(deviceSignalKeys.deviceId, deviceId));
-    return rows.length;
+    return Number(row?.total ?? 0);
   },
 };

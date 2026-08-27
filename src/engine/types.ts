@@ -133,8 +133,16 @@ export interface InboundMessage {
 
 export interface InboundMedia {
   kind: "image" | "document" | "audio" | "video";
-  /** A URL bunwa can fetch. Adapters re-serve engine-local paths behind one. */
-  url: string;
+  /**
+   * A URL bunwa can fetch, or null when the engine holds the bytes itself.
+   *
+   * gowa re-serves engine-local paths behind a URL because it is a separate
+   * process. An in-process engine has no such URL until something downloads
+   * the media, so null means "this is an image and we have not fetched it",
+   * which is a true statement. A placeholder URL would be a false one, and the
+   * console would render a broken link rather than an honest pending state.
+   */
+  url: string | null;
   mimeType: string | null;
   filename: string | null;
   caption: string | null;

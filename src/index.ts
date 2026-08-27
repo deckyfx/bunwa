@@ -72,7 +72,7 @@ async function main(): Promise<void> {
     // Said once, loudly. A server with no engine answers /health and every
     // read, then fails only when someone tries to pair — which reads as a
     // pairing bug rather than a deployment that was never given an engine.
-    log.warn("no engine is configured; pairing will be refused (set GOWA_BASE_URL)");
+    log.warn("no engine is configured; pairing will be refused (set GOWA_BASE_URL, or BAILEYS_ENABLED with CREDENTIAL_ENCRYPTION_KEY)");
   }
 
   // Engine events reach the control plane only through this. Without it a

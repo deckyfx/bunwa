@@ -124,6 +124,14 @@ export class BaileysAdapter implements DeviceEngine {
     return Promise.resolve();
   }
 
+  /**
+   * Open a socket and wait for the first QR.
+   *
+   * Waits rather than returning immediately: the caller needs something to put
+   * in front of a customer, and a session with no QR would leave the console
+   * polling for one. The QR is read from the session rather than the event
+   * queue so a subscriber cannot consume it first.
+   */
   async startPairing(deviceId: string, method: PairingMethod): Promise<PairingSession> {
     await this.provision(deviceId);
     const session = this.sessions.get(deviceId)!;
@@ -174,6 +182,14 @@ export class BaileysAdapter implements DeviceEngine {
     return { method: "code", pairCode: code, expiresAt: new Date(Date.now() + QR_TTL_MS) };
   }
 
+  /**
+   * Unlink from WhatsApp, keeping the slot.
+   *
+   * The binding and its consent survive, so re-pairing needs no fresh
+   * confirmation from the phone holder. The identity is cleared because
+   * reporting a jid for a logged-out device tells the control plane it still
+   * knows who this is.
+   */
   async logout(deviceId: string): Promise<void> {
     const session = this.sessions.get(deviceId);
     if (session === undefined) return;
@@ -235,6 +251,15 @@ export class BaileysAdapter implements DeviceEngine {
     };
   }
 
+  /**
+   * Send, and report acceptance rather than delivery.
+   *
+   * A disconnected device is a retryable failure — usually a moment from
+   * reconnecting — while a missing recipient is not, because requeueing a
+   * malformed request for ever drains nothing. The returned time is when the
+   * socket took it, not when it arrived: acceptance meant nothing for 203
+   * measured seconds (docs/12), so callers wait for an ack.
+   */
   async send(deviceId: string, action: SendAction): Promise<SendResult> {
     const session = this.sessions.get(deviceId);
     const handle = session?.handle;
@@ -280,6 +305,13 @@ export class BaileysAdapter implements DeviceEngine {
     return handle.sendMedia(action.to, media);
   }
 
+  /**
+   * Every device's events, as one stream.
+   *
+   * One stream rather than one per device because the control plane consumes
+   * them centrally and a per-device iterator would make it manage
+   * subscriptions it has no reason to know about.
+   */
   subscribe(): AsyncIterable<EngineEvent> {
     return {
       [Symbol.asyncIterator]: async function* (this: BaileysAdapter) {
@@ -294,6 +326,12 @@ export class BaileysAdapter implements DeviceEngine {
     };
   }
 
+  /**
+   * Stop every socket without unlinking any of them.
+   *
+   * Shutdown must not log devices out: credentials survive a restart, and
+   * ending them here would make every customer re-pair after a deploy.
+   */
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
@@ -405,7 +443,21 @@ export class BaileysAdapter implements DeviceEngine {
                   isFromMe: m.fromMe,
                   timestamp: m.timestamp,
                   body: m.body,
-                  media: null,
+                  // The kind and type are known from the envelope; the bytes
+                  // are not fetched yet. Reporting null here recorded every
+                  // inbound image, video and document as plain text and lost
+                  // its MIME type entirely.
+                  media:
+                    m.kind === "text" || m.kind === "unsupported"
+                      ? null
+                      : {
+                          kind: m.kind,
+                          url: null,
+                          mimeType: m.mimeType,
+                          filename: m.kind === "document" ? m.body : null,
+                          caption: m.kind === "document" ? null : m.body,
+                          sizeBytes: null,
+                        },
                 },
               });
             }
@@ -472,7 +524,13 @@ export class BaileysAdapter implements DeviceEngine {
     session.reconnectTimer = setTimeout(() => {
       session.reconnectTimer = null;
       void this.connect(deviceId).catch((err: unknown) => {
+        // Routed back through the policy rather than only logged. The timer
+        // has already cleared itself, so a failed open ended the retries
+        // permanently and left the device disconnected with nothing scheduled
+        // — the one case where retrying is obviously right.
         log.warn("reconnect failed", { deviceId, error: String(err) });
+        const current = this.sessions.get(deviceId);
+        if (current !== undefined) this.onDisconnected(deviceId, current, "transient", true);
       });
     }, delay);
   }

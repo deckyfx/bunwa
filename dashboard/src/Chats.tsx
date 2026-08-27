@@ -27,32 +27,37 @@ export function Chats({ apiKey, revision }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
 
-  // Only the newest load may commit, for the same reason as elsewhere in this
-  // console: events arrive in bursts, so several loads can be in flight and
-  // the last to resolve is not necessarily the last requested.
-  const generation = useRef(0);
+  // One counter each, not one shared.
+  //
+  // Only the newest load may commit — events arrive in bursts, so several can
+  // be in flight and the last to resolve is not the last requested. Sharing a
+  // counter between the two made them cancel each other: a revision bump ran
+  // loadThreads then loadMessages, the second increment invalidated the first,
+  // and the conversation list could never refresh while a thread was open.
+  const threadsGeneration = useRef(0);
+  const messagesGeneration = useRef(0);
 
   const loadThreads = useCallback(async () => {
-    const mine = ++generation.current;
+    const mine = ++threadsGeneration.current;
     try {
       const listed = await api.chats(apiKey);
-      if (generation.current !== mine) return;
+      if (threadsGeneration.current !== mine) return;
       setThreads(listed);
     } catch (err) {
-      if (generation.current !== mine) return;
+      if (threadsGeneration.current !== mine) return;
       setError(err instanceof ApiError ? err.message : "could not load conversations");
     }
   }, [apiKey]);
 
   const loadMessages = useCallback(
     async (threadId: string) => {
-      const mine = ++generation.current;
+      const mine = ++messagesGeneration.current;
       try {
         const listed = await api.chatMessages(apiKey, threadId);
-        if (generation.current !== mine) return;
+        if (messagesGeneration.current !== mine) return;
         setMessages(listed);
       } catch (err) {
-        if (generation.current !== mine) return;
+        if (messagesGeneration.current !== mine) return;
         setError(err instanceof ApiError ? err.message : "could not load this conversation");
       }
     },

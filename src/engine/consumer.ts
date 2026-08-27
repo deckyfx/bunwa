@@ -203,7 +203,10 @@ async function recordInbound(
           peerJid: peer,
           direction: message.isFromMe ? "outbound" : "inbound",
           providerMessageId: message.id,
-          kind: message.media === null ? "text" : "unsupported",
+          // The engine's own classification, not a guess. Collapsing every
+          // media message to "unsupported" threw away the one thing the
+          // envelope reliably tells us.
+          kind: message.media?.kind ?? "text",
           body: message.body,
           occurredAt: message.timestamp,
           displayName: message.pushName,
