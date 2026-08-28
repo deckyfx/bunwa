@@ -48,13 +48,28 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
    * Authenticated, unlike the setup screen's copy: setup answers before a
    * credential exists and closes once one does, so without this the instance
    * name could only ever be chosen during first run and never corrected.
+   *
+   * Behind `manage:instance`, not merely behind a key. These are not this
+   * tenant's settings — there is one instance name and one server timezone,
+   * shared by every project on the deployment — so "authenticated" was the
+   * wrong bar. Any key with `manage:devices` could read them, and the handler
+   * below could change them for everyone.
    */
-  .get("/settings", () => SettingsStore.all())
+  .get("/settings", ({ auth, path }) => {
+    requireScope(auth, "manage:instance", path);
+    return SettingsStore.all();
+  })
 
   .put(
     "/settings",
     ({ body, path, auth }) => {
-      requireScope(auth, "manage:devices", path);
+      // `manage:instance`, not `manage:devices`. This writes values that are
+      // one per process: the instance name reaches WhatsApp through the
+      // Baileys handshake and is what every other project's number is listed
+      // under, and setServerTimezone below mutates the zone every rendered
+      // timestamp uses, logs included. A tenant holding an ordinary project
+      // key was able to do both to every other tenant on the deployment.
+      requireScope(auth, "manage:instance", path);
 
       for (const [key, value] of Object.entries(body)) {
         if (value === undefined || value.trim() === "") continue;

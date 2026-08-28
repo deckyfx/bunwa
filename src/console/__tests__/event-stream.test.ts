@@ -12,8 +12,33 @@ import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
 import { cleanup, render, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 
-let whoamiResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
-let ticketResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
+// `import type` survives mock.module: the mock replaces the runtime module and
+// the types still come from the real one, so these fixtures are checked against
+// the routes they stand in for.
+import type { client } from "../lib/api";
+
+type Api = ReturnType<typeof client>;
+
+/**
+ * The two payloads this test stands in for, derived rather than described.
+ *
+ * Both resolvers were typed `unknown`, so a route could change shape and every
+ * assertion here would keep passing while the hook read fields the server had
+ * stopped sending. Deriving them means a contract change fails at compile time
+ * instead — which is the whole reason the console uses Eden at all, and it was
+ * switched off in the tests written to prove the hook survives a real server.
+ *
+ * Only the payload is derived, not Eden's whole envelope: the hook destructures
+ * `{ data, error }` and touches neither `status` nor `headers` nor the raw
+ * `response`, so reconstructing those in every fixture would pin nothing.
+ */
+type Identity = NonNullable<Awaited<ReturnType<Api["v1"]["whoami"]["get"]>>["data"]>;
+type Ticket = NonNullable<Awaited<ReturnType<Api["v1"]["events"]["ticket"]["post"]>>["data"]>;
+
+type Reply<T> = { data: T | null; error: { status?: number; value?: unknown } | null };
+
+let whoamiResolver: () => Promise<Reply<Identity>> = () => Promise.resolve({ data: null, error: null });
+let ticketResolver: () => Promise<Reply<Ticket>> = () => Promise.resolve({ data: null, error: null });
 let ticketCalls = 0;
 
 void mock.module("../lib/api", () => ({
@@ -53,12 +78,36 @@ class FakeEventSource {
   close(): void {}
   onerror: (() => void) | null = null;
 }
-(globalThis as { EventSource?: unknown }).EventSource = FakeEventSource;
+/**
+ * The slice of EventSource the hook actually uses.
+ *
+ * Narrower than the DOM interface on purpose, and typed rather than `unknown`:
+ * assigning through `unknown` would accept a stand-in missing `close`, and the
+ * test would then prove the hook works against something no browser provides.
+ * Anything the hook starts using has to be added here before it compiles.
+ */
+type StreamConstructor = new (url: string) => {
+  addEventListener(): void;
+  close(): void;
+  onerror: (() => void) | null;
+};
+
+// One cast, and it is the bridge rather than the contract. The DOM lib types
+// the global as the full EventSource interface, which the stand-in
+// deliberately does not implement — happy-dom provides no EventSource at all,
+// and building the whole interface to test three methods would be pinning the
+// stand-in rather than the hook. `StreamConstructor` above stays exact, so
+// what the hook is allowed to touch is still checked; only the assignment to
+// the global is forced.
+(globalThis as unknown as { EventSource: StreamConstructor }).EventSource = FakeEventSource;
 
 /** Mount the hook. Its return value is rendered so a state change is visible. */
 const Probe = () => createElement("output", null, useEventStream());
 
-const IDENTITY = {
+/** Far enough ahead that nothing under test treats a ticket as already stale. */
+const EXPIRES_AT = new Date(Date.now() + 60_000).toISOString();
+
+const IDENTITY: Identity = {
   projectId: "p1",
   environmentId: "e1",
   projectSlug: "default",
@@ -173,7 +222,7 @@ describe("the stream itself", () => {
   });
 
   test("opens once the identity is there", async () => {
-    ticketResolver = () => Promise.resolve({ data: { ticket: "t1" }, error: null });
+    ticketResolver = () => Promise.resolve({ data: { ticket: "t1", expiresAt: EXPIRES_AT }, error: null });
     useSession.setState({ apiKey: "bw_live", identity: IDENTITY });
 
     render(createElement(Probe));

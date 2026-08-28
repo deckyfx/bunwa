@@ -24,11 +24,10 @@ export class ConfigError extends Error {
   override readonly name = "ConfigError";
 }
 
-/** Read an optional variable, applying a default only when it is truly absent. */
-/** How often the log file rolls over. */
 /** Below this an operator-chosen key is guessable rather than secret. */
 export const MIN_API_KEY_LENGTH = 32;
 
+/** How often the log file rolls over. */
 export const LOG_ROTATIONS = ["hourly", "daily", "weekly", "never"] as const;
 export type LogRotation = (typeof LOG_ROTATIONS)[number];
 
@@ -69,6 +68,7 @@ export function isUsableTimezone(zone: string): boolean {
   }
 }
 
+/** Read an optional variable, applying a default only when it is truly absent. */
 function optional(source: Record<string, string | undefined>, key: string, fallback: string): string {
   const raw = source[key];
   if (raw === undefined) return fallback;

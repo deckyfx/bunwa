@@ -8,7 +8,7 @@
  * deployment overrides is the failure the precedence rule exists to prevent.
  */
 import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 let statusResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
 let submitResolver: (body: unknown, init: unknown) => Promise<unknown> = () =>
@@ -84,7 +84,19 @@ describe("before the server has answered", () => {
     // screen to an instance that is already configured.
     statusResolver = () => new Promise(() => undefined);
     render(<SetupPage />);
+
+    // Flushed first, and this is the difference between a test and a
+    // coincidence. Asserting straight after render passes because React has
+    // not run the effect yet — it would pass just as well if the component did
+    // render the form a tick later, which is the bug this is meant to catch.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // The absence, and then the presence. "No form" alone is also true of a
+    // component that rendered nothing at all, or threw.
     expect(screen.queryByLabelText("Instance name")).toBeNull();
+    expect(screen.getByText("checking this instance…")).toBeDefined();
   });
 });
 

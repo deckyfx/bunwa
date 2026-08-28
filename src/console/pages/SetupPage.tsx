@@ -116,6 +116,15 @@ export function SetupPage() {
     );
   }
 
+  // Driven by what the server says about each key rather than by which key it
+  // is. No environment variable currently backs the instance name — only
+  // SERVER_TIMEZONE does — so this is false today. It is written this way
+  // because both routes refuse *any* environment-sourced key in one generic
+  // loop, and a screen that special-cases the zone would silently stop
+  // matching the rule the moment a second variable is added: the operator
+  // would type a value, submit, and be refused by the server with no warning
+  // the field was never theirs to set.
+  const nameLocked = settings.instanceName.source === "environment";
   const timezoneLocked = settings.serverTimezone.source === "environment";
   const preview = previewName(instanceName);
 
@@ -134,7 +143,10 @@ export function SetupPage() {
         className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
-          void submit(token, { instanceName, serverTimezone: timezoneLocked ? undefined : timezone });
+          void submit(token, {
+            instanceName: nameLocked ? undefined : instanceName,
+            serverTimezone: timezoneLocked ? undefined : timezone,
+          });
         }}
       >
         <Field
@@ -153,22 +165,29 @@ export function SetupPage() {
           value={instanceName}
           onChange={setInstanceName}
           placeholder="grande-pos"
+          disabled={nameLocked}
           action={
-            <button
-              type="button"
-              onClick={() => {
-                setInstanceName(suggestInstanceName());
-              }}
-              className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline dark:text-sky-400"
-            >
-              <Wand2 aria-hidden size={12} />
-              suggest
-            </button>
+            // No suggest button on a locked field: offering to fill in a value
+            // that cannot be submitted is worse than offering nothing.
+            nameLocked ? undefined : (
+              <button
+                type="button"
+                onClick={() => {
+                  setInstanceName(suggestInstanceName());
+                }}
+                className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline dark:text-sky-400"
+              >
+                <Wand2 aria-hidden size={12} />
+                suggest
+              </button>
+            )
           }
           hint={
-            preview === ""
-              ? "Shown in WhatsApp under Linked Devices. Letters and digits only."
-              : `WhatsApp will show this as "Google Chrome (${preview})". Pairing by code always shows Ubuntu instead — WhatsApp will not complete that handshake otherwise.`
+            nameLocked
+              ? "Set in the environment, which takes precedence over anything set here."
+              : preview === ""
+                ? "Shown in WhatsApp under Linked Devices. Letters and digits only."
+                : `WhatsApp will show this as "Google Chrome (${preview})". Pairing by code always shows Ubuntu instead — WhatsApp will not complete that handshake otherwise.`
           }
         />
 

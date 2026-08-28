@@ -43,7 +43,13 @@ function suffix(): string {
 export function suggestInstanceName(hostname = typeof window === "undefined" ? "" : window.location.hostname): string {
   const host = hostname.toLowerCase();
 
-  if (!ANONYMOUS.has(host) && !/^\d+(\.\d+){3}$/.test(host)) {
+  // IPv6 as well as IPv4. `window.location.hostname` returns a v6 literal
+  // without the brackets the URL carries, so "[::1]" arrives as "::1" and the
+  // v4 test above does not match it — the first label of "::1" split on "." is
+  // the whole string, which normalises to nothing useful and would have been
+  // offered as an instance name. Any colon settles it: a hostname cannot
+  // contain one, so this needs no v6 grammar to be right.
+  if (!ANONYMOUS.has(host) && !/^\d+(\.\d+){3}$/.test(host) && !host.includes(":")) {
     // The first label only: "wa.grande.example.com" is a deployment called
     // "wa" at a company whose name is on every other install too, and the
     // whole string does not fit in the 24 characters WhatsApp will show.

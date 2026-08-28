@@ -14,6 +14,26 @@ export const ALL_SCOPES = [
   "manage:devices",
   "manage:webhook",
   "manage:rules",
+  /**
+   * The instance itself, not a tenant's slice of it.
+   *
+   * Every other scope here bounds what a key may do *within its own
+   * environment*. This one does not: the settings it guards are the name
+   * WhatsApp shows this deployment under Linked Devices and the timezone the
+   * server renders every timestamp in, both of which are one per process and
+   * shared by every project on it.
+   *
+   * It exists because those settings were reachable with `manage:devices` — a
+   * scope an ordinary project key is expected to hold — which let any tenant
+   * rename the instance for all the others and change the zone the logs are
+   * written in. Separating it means granting it is a deliberate act rather
+   * than a side effect of being able to claim a number.
+   *
+   * It is in ALL_SCOPES because the console's own key is minted with the full
+   * set and is the thing that has to reach these screens. A key minted for a
+   * tenant should not be given this one.
+   */
+  "manage:instance",
 ] as const;
 
 export type Scope = (typeof ALL_SCOPES)[number];

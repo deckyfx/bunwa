@@ -207,6 +207,19 @@ reviews:
         401, 403, 440, 500 and 411 must never be retried, and 515 must always
         be, because it is how pairing completes.
 
+    - path: "src/stores/settings-store.ts"
+      instructions: >-
+        Do not ask for an environment or project parameter on these methods,
+        and do not report the absence of one as a cross-tenant leak. The rule
+        for src/stores/** is right about every other file in that directory and
+        wrong about this one: `settings` holds instance-wide values — the name
+        WhatsApp shows this deployment under Linked Devices, and the timezone
+        the server renders timestamps in — keyed on `key` alone, one row per
+        setting per database. There is exactly one instance per database, so an
+        environment id here could only be decorative, the same reasoning as
+        src/stores/auth-state-store.ts. The tenant boundary that does matter
+        for settings is on the routes that expose them, not in this file.
+
     - path: "src/console/**"
       instructions: >-
         The React console, served at /app by the same Elysia app that answers

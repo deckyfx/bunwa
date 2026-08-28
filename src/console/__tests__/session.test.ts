@@ -8,6 +8,52 @@
  */
 import { describe, expect, test, beforeEach, mock } from "bun:test";
 
+// `import type` survives mock.module: the mock replaces the runtime module,
+// the types still come from the real one. That is what makes the fixtures
+// below check against the actual route.
+import type { client } from "../lib/api";
+
+type Api = ReturnType<typeof client>;
+
+/**
+ * What `GET /v1/whoami` actually resolves to, derived rather than described.
+ *
+ * These fixtures were typed `unknown`, which meant a route could change shape
+ * and every test here would keep passing while the store read fields the
+ * server had stopped sending — the exact drift Eden was adopted to make
+ * impossible, reintroduced in the tests that are supposed to prove the store
+ * handles the real thing.
+ *
+ * Only the payload is derived. Eden's envelope also carries `status`,
+ * `headers` and the raw `response`, none of which the store touches — it
+ * destructures `{ data, error }` and nothing else — so reconstructing all of
+ * it in every fixture would be ceremony that pins nothing. The half that
+ * drifts is the half that is pinned.
+ */
+type Whoami = NonNullable<Awaited<ReturnType<Api["v1"]["whoami"]["get"]>>["data"]>;
+type WhoamiResponse = { data: Whoami | null; error: { status?: number } | null };
+
+/**
+ * A complete whoami payload, with only what a test cares about spelled out.
+ *
+ * A factory rather than literals at each site because the route returns eight
+ * fields and the tests care about two. Typing these properly immediately found
+ * that the literals had been missing five of them — projectSlug, projectName,
+ * environmentSlug, environmentKind and serverTimezone — since the day those
+ * were added, which is the drift the derived type exists to surface.
+ */
+const whoami = (over: Partial<Whoami> = {}): Whoami => ({
+  projectId: "p1",
+  projectSlug: "grande",
+  projectName: "Grande",
+  environmentId: "e1",
+  environmentSlug: "production",
+  environmentKind: "production",
+  scopes: [],
+  serverTimezone: "UTC",
+  ...over,
+});
+
 /**
  * The Eden client is replaced at the module level.
  *
@@ -15,7 +61,7 @@ import { describe, expect, test, beforeEach, mock } from "bun:test";
  * swaps the module in the registry before the store imports it, which is the
  * only way to intercept a call the store makes directly.
  */
-let whoamiResolver: () => Promise<unknown> = () =>
+let whoamiResolver: () => Promise<WhoamiResponse> = () =>
   Promise.resolve({ data: null, error: { status: 401 } });
 
 void mock.module("../lib/api", () => ({
@@ -27,7 +73,7 @@ const { useSession } = await import("../store/session");
 
 const RESET = { apiKey: "", identity: null, error: null, busy: false, revision: 0 };
 
-const stubWhoami = (resolver: () => Promise<unknown>) => {
+const stubWhoami = (resolver: () => Promise<WhoamiResponse>) => {
   whoamiResolver = resolver;
 };
 
@@ -43,7 +89,7 @@ beforeEach(() => {
 describe("connecting", () => {
   test("a good key produces an identity", async () => {
     stubWhoami(() =>
-      Promise.resolve({ data: { projectId: "p1", environmentId: "e1", scopes: [] }, error: null }),
+      Promise.resolve({ data: whoami(), error: null }),
     );
 
     await useSession.getState().connect("bw_test_key");
@@ -94,7 +140,7 @@ describe("connecting", () => {
 
   test("an empty key clears everything it authorised", async () => {
     stubWhoami(() =>
-      Promise.resolve({ data: { projectId: "p1", environmentId: "e1", scopes: [] }, error: null }),
+      Promise.resolve({ data: whoami(), error: null }),
     );
     await useSession.getState().connect("bw_test_key");
     expect(useSession.getState().identity).not.toBeNull();
@@ -112,7 +158,7 @@ describe("a response that arrives after the key changed", () => {
   test("cannot restore the previous project", async () => {
     // The component version of this needed a generation counter, a ref and an
     // unmount cleanup, each added after a separate review. One check here.
-    let releaseFirst: ((v: unknown) => void) | undefined;
+    let releaseFirst: ((v: WhoamiResponse) => void) | undefined;
     let call = 0;
 
     stubWhoami(() => {
@@ -123,7 +169,7 @@ describe("a response that arrives after the key changed", () => {
         });
       }
       return Promise.resolve({
-        data: { projectId: "SECOND", environmentId: "e2", scopes: [] },
+        data: whoami({ projectId: "SECOND", environmentId: "e2" }),
         error: null,
       });
     });
@@ -131,7 +177,7 @@ describe("a response that arrives after the key changed", () => {
     const first = useSession.getState().connect("key-a");
     await useSession.getState().connect("key-b");
 
-    releaseFirst?.({ data: { projectId: "FIRST", environmentId: "e1", scopes: [] }, error: null });
+    releaseFirst?.({ data: whoami({ projectId: "FIRST" }), error: null });
     await first;
 
     expect(

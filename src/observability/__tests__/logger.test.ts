@@ -269,8 +269,17 @@ describe("a looping cause chain", () => {
 
 describe("the file sink", () => {
   let dir: string;
+  // Captured so afterEach can put the environment back. Without this the block
+  // left LOG_DIR pointing at a directory it had just deleted and pinned
+  // SERVER_TIMEZONE for the rest of the process — every later test that read
+  // config inherited both, and the sink logged "disabled after a write error:
+  // ENOTDIR" from tests that had nothing to do with files.
+  let priorLogDir: string | undefined;
+  let priorTimezone: string | undefined;
 
   beforeEach(() => {
+    priorLogDir = Bun.env["LOG_DIR"];
+    priorTimezone = Bun.env["SERVER_TIMEZONE"];
     dir = mkdtempSync(join(tmpdir(), "bunwa-logger-"));
     Bun.env["LOG_DIR"] = dir;
     Bun.env["SERVER_TIMEZONE"] = "Asia/Jakarta";
@@ -279,8 +288,19 @@ describe("the file sink", () => {
   });
 
   afterEach(() => {
+    // Deleted, not set to "": an empty value is a value, and the config reader
+    // distinguishes absent from blank.
+    if (priorLogDir === undefined) delete Bun.env["LOG_DIR"];
+    else Bun.env["LOG_DIR"] = priorLogDir;
+    if (priorTimezone === undefined) delete Bun.env["SERVER_TIMEZONE"];
+    else Bun.env["SERVER_TIMEZONE"] = priorTimezone;
+
     rmSync(dir, { recursive: true, force: true });
+    // The sink first, then the config it was built from: resetting config
+    // while the sink still holds a handle to the deleted directory is what
+    // produced the write error above.
     resetFileSink();
+    resetConfig();
   });
 
   /** Everything written to the log directory during this test, as lines. */

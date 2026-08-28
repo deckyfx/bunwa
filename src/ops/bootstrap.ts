@@ -12,7 +12,7 @@
  * offer to mint another. When it is not, the setup screen mints one and shows
  * it once.
  */
-import { and, eq } from "drizzle-orm";
+import { and, eq, gt, isNull, or } from "drizzle-orm";
 
 import { apiKeys, environments, projects } from "../db/schema";
 import { ALL_SCOPES } from "../auth/scopes";
@@ -132,12 +132,28 @@ async function registerEnvKey(database: Database, environmentId: string, present
  * Deliberately "any key at all", not "a key we created": an operator who added
  * one through the admin API has configured this instance just as much as the
  * setup screen would have.
+ *
+ * **Usable** is the load-bearing word, and it was not enforced. The row was
+ * counted whatever its state, so revoking the only key — or letting it expire —
+ * left this reporting a configured instance with nothing that can authenticate.
+ * The console then shows a key form, every key is refused, and the setup screen
+ * that exists to mint a replacement refuses to appear because setup is closed.
+ * That is an instance locked out of itself by the one path meant to prevent it.
  */
 async function hasAnyKey(database: Database, environmentId: string): Promise<boolean> {
+  const now = new Date();
   const [row] = await database
     .select({ id: apiKeys.id })
     .from(apiKeys)
-    .where(eq(apiKeys.environmentId, environmentId))
+    .where(
+      and(
+        eq(apiKeys.environmentId, environmentId),
+        isNull(apiKeys.revokedAt),
+        // Null expiry means it does not expire, which is the common case and
+        // must not be read as "expired at the epoch".
+        or(isNull(apiKeys.expiresAt), gt(apiKeys.expiresAt, now)),
+      ),
+    )
     .limit(1);
   return row !== undefined;
 }
