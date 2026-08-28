@@ -134,7 +134,7 @@ beforeEach(() => {
     error: null,
     mintedKey: null,
   });
-  useSession.setState({ apiKey: "", identity: null, error: null, busy: false, revision: 0 });
+  useSession.setState({ apiKey: "", identity: null, error: null, busy: false, revision: 0, hydrated: true });
 });
 
 afterEach(cleanup);
@@ -460,5 +460,82 @@ describe("what each kind of key is offered", () => {
     expect(sectionsFor(OPERATOR).map((s) => s.id)).toContain("projects");
     expect(sectionsFor(PROJECT).map((s) => s.id)).not.toContain("projects");
     expect(sectionsFor(PROJECT).map((s) => s.id)).not.toContain("settings");
+  });
+});
+
+describe("reopening a tab that has a key", () => {
+  /** A stored key that has not been checked yet — the state on first render. */
+  const withStoredKey = () => {
+    useSession.setState({ apiKey: "bw_live_default_stored", hydrated: false });
+    statusResolver = () =>
+      Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
+  };
+
+  test("says it is checking rather than showing an empty key field", async () => {
+    // The flash: the sign-in form rendered while the answer was still in
+    // flight, so reopening a tab looked like having been signed out.
+    withStoredKey();
+    whoamiResolver = () => new Promise(() => undefined);
+
+    render(<App />);
+
+    expect(await screen.findByText(/Checking access key/)).toBeDefined();
+    expect(screen.queryByLabelText("API key"), "and no form to mislead").toBeNull();
+  });
+
+  test("distinguishes the two questions it is waiting on", async () => {
+    // Before the status call answers, the instance itself is unknown — which
+    // is a different wait, and a different sentence.
+    statusResolver = () => new Promise(() => undefined);
+    useSession.setState({ apiKey: "bw_live_default_stored", hydrated: false });
+
+    render(<App />);
+
+    expect(await screen.findByText(/Checking this instance/)).toBeDefined();
+  });
+
+  test("shows the console once the key turns out to be good", async () => {
+    withStoredKey();
+    whoamiResolver = () =>
+      Promise.resolve({
+        data: {
+          projectId: "p",
+          environmentId: "e",
+          projectSlug: "acme",
+          projectName: "Acme",
+          environmentSlug: "production",
+          environmentKind: "live",
+          scopes: ["send:text"],
+          serverTimezone: "UTC",
+        },
+        error: null,
+      });
+
+    render(<App />);
+
+    expect(await screen.findByRole("navigation", { name: "Sections" })).toBeDefined();
+  });
+
+  test("shows the form once the key turns out to be bad", async () => {
+    // The wait must end. A checking state that never resolves is worse than
+    // the flash it replaced.
+    withStoredKey();
+    whoamiResolver = () => Promise.resolve({ data: null, error: { status: 401 } });
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("API key")).toBeDefined();
+    expect(screen.queryByText(/Checking access key/)).toBeNull();
+  });
+
+  test("no stored key means no wait at all", async () => {
+    // Nothing to check, so the form is the right first thing to show.
+    statusResolver = () =>
+      Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
+    useSession.setState({ apiKey: "", hydrated: true });
+
+    render(<App />);
+
+    expect(await screen.findByLabelText("API key")).toBeDefined();
   });
 });

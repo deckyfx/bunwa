@@ -36,6 +36,15 @@ interface SessionState {
   busy: boolean;
   /** Bumped by the event stream. Screens watch it to know something changed. */
   revision: number;
+  /**
+   * Whether the restored key has been checked yet.
+   *
+   * Distinct from `busy`, which is false both before a check starts and after
+   * it finishes. The shell needs "not yet asked" to be different from "asked
+   * and refused", or it renders the sign-in form during the gap and the
+   * operator sees an empty key field flash past on every reload.
+   */
+  hydrated: boolean;
 
   connect: (key: string) => Promise<void>;
   disconnect: () => void;
@@ -101,6 +110,8 @@ export const useSession = create<SessionState>((set, get) => ({
   error: null,
   busy: false,
   revision: 0,
+  // Nothing stored is nothing to check, so that case is already settled.
+  hydrated: readStoredKey() === "",
 
   connect: async (key: string) => {
     const trimmed = key.trim();
@@ -113,7 +124,7 @@ export const useSession = create<SessionState>((set, get) => ({
       } catch {
         /* nothing to clean up */
       }
-      set({ apiKey: "", identity: null, error: null, busy: false });
+      set({ apiKey: "", identity: null, error: null, busy: false, hydrated: true });
       return;
     }
 
@@ -153,8 +164,15 @@ export const useSession = create<SessionState>((set, get) => ({
    */
   hydrate: async () => {
     const stored = get().apiKey;
-    if (stored === "" || get().identity !== null) return;
+    if (stored === "" || get().identity !== null) {
+      set({ hydrated: true });
+      return;
+    }
+
     await get().connect(stored);
+    // Whatever the answer, the question has now been asked — including when it
+    // was refused, which is precisely when the form should appear.
+    set({ hydrated: true });
   },
 
   /**
@@ -190,7 +208,7 @@ export const useSession = create<SessionState>((set, get) => ({
     } catch {
       /* nothing to clean up */
     }
-    set({ apiKey: "", identity: null, error: null, busy: false });
+    set({ apiKey: "", identity: null, error: null, busy: false, hydrated: true });
   },
 
   bumpRevision: () => {

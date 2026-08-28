@@ -56,7 +56,7 @@ function Section({ id }: { id: SectionId }) {
 }
 
 export function App() {
-  const { apiKey, identity, error, busy, connect, hydrate, forget, disconnect } = useSession();
+  const { apiKey, identity, error, busy, hydrated, connect, hydrate, forget, disconnect } = useSession();
   const configured = useSetup((s) => s.configured);
   const mintedKey = useSetup((s) => s.mintedKey);
   const refreshSetup = useSetup((s) => s.refresh);
@@ -104,6 +104,20 @@ export function App() {
 
 
   const signedIn = identity !== null;
+
+  /*
+   * Whether the console still has a question outstanding about itself.
+   *
+   * Two of them: whether this instance has been set up at all, and whether the
+   * key restored from storage is any good. Neither is answered on the first
+   * render, and the sign-in form was shown in the meantime — so reopening a
+   * tab flashed an empty key field before the console appeared, which reads as
+   * having been signed out.
+   *
+   * A brief wait is the honest thing to show, because a brief wait is what is
+   * happening.
+   */
+  const checking = !signedIn && (configured === null || (apiKey !== "" && !hydrated));
 
   /*
    * An address naming a section this key cannot use goes somewhere it can.
@@ -242,9 +256,18 @@ export function App() {
                 was created, destroying the one and only render of a credential
                 that cannot be shown again. The screen stays until the operator
                 dismisses it themselves. */}
-            {(configured === false || mintedKey !== null) && <SetupPage />}
+            {checking && (
+              <Card id="checking" title="bunwa" icon={KeyRound}>
+                <p className="flex items-center gap-2 text-sm text-slate-500">
+                  <LoaderCircle aria-hidden size={14} className="animate-spin" />
+                  {configured === null ? "Checking this instance…" : "Checking access key…"}
+                </p>
+              </Card>
+            )}
 
-            {configured !== false && mintedKey === null && (
+            {!checking && (configured === false || mintedKey !== null) && <SetupPage />}
+
+            {!checking && configured !== false && mintedKey === null && (
               <Card id="connect" title="Connect" icon={KeyRound}>
                 <form
                   className="flex flex-col gap-3"
