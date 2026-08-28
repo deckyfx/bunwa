@@ -10,7 +10,10 @@ import { Elysia, t } from "elysia";
 import { requireApiKey, requireScope } from "../../auth/middleware";
 import { DeliveryStore } from "../../stores/delivery-store";
 import { WebhookStore } from "../../stores/webhook-store";
-import { serverTimezone } from "../../time/format";
+import { serverTimezone, setServerTimezone } from "../../time/format";
+import { SettingsStore, type SettingKey } from "../../stores/settings-store";
+import { ValidationError } from "../../stores/errors";
+import { log } from "../../observability/logger";
 
 export const projectRoutes = new Elysia({ prefix: "/v1" })
   .use(requireApiKey)
@@ -31,6 +34,48 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
     // file must not be silently seven hours out.
     serverTimezone: serverTimezone(),
   }))
+
+  /**
+   * Instance settings, and where each value comes from.
+   *
+   * Authenticated, unlike the setup screen's copy: setup answers before a
+   * credential exists and closes once one does, so without this the instance
+   * name could only ever be chosen during first run and never corrected.
+   */
+  .get("/settings", () => SettingsStore.all())
+
+  .put(
+    "/settings",
+    ({ body, path, auth }) => {
+      requireScope(auth, "manage:devices", path);
+
+      for (const [key, value] of Object.entries(body)) {
+        if (value === undefined || value.trim() === "") continue;
+        const setting = key as SettingKey;
+
+        if (SettingsStore.resolve(setting).source === "environment") {
+          // Refused rather than ignored: silently dropping it leaves the
+          // console showing a value the deployment overrides, which is the
+          // failure the precedence rule exists to prevent.
+          throw new ValidationError(`${setting} is set in the environment and cannot be changed here`, setting);
+        }
+
+        const applied = SettingsStore.set(setting, value);
+        // Rendering reads a cached zone, so a write that did not update it
+        // would take effect only after a restart.
+        if (setting === "serverTimezone") setServerTimezone(applied);
+        log.info("setting changed", { setting, value: applied });
+      }
+
+      return SettingsStore.all();
+    },
+    {
+      body: t.Object({
+        instanceName: t.Optional(t.String({ maxLength: 200 })),
+        serverTimezone: t.Optional(t.String({ maxLength: 100 })),
+      }),
+    },
+  )
 
   /** Where this environment's events are delivered. The secret is never returned. */
   .get("/webhook", async ({ auth }) => WebhookStore.describe(auth.projectId, auth.environmentId))

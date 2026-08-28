@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { createApp } from "../server";
 import { createDatabase, resetDatabase } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
+import { apiKeys } from "../../db/schema";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 import { clearSetupToken, issueSetupToken, SETUP_TOKEN_HEADER } from "../routes/setup";
@@ -176,14 +177,16 @@ describe("a key supplied by the environment", () => {
 
   test("registering it twice does not create a second row", async () => {
     // Every restart calls this. A row per boot would fill the table and make
-    // revocation meaningless.
+    // revocation meaningless — and a test that only checked the key still
+    // authenticates would pass with a thousand duplicates behind it.
     const key = `env-${"k".repeat(40)}`;
     await setupEnv({ API_KEY: key });
     await ensureBootstrap();
     await ensureBootstrap();
+    await ensureBootstrap();
 
-    const res = await app.handle(new Request("http://localhost/v1/whoami", { headers: { "x-api-key": key } }));
-    expect(res.status).toBe(200);
+    const rows = createDatabase(join(dir, "t.sqlite")).select().from(apiKeys).all();
+    expect(rows).toHaveLength(1);
   });
 
   test("a near-miss key is still rejected", async () => {
@@ -204,6 +207,48 @@ describe("a key supplied by the environment", () => {
     // exists to prevent.
     await setupEnv({ SERVER_TIMEZONE: "UTC" });
     const res = await finish({ serverTimezone: "Europe/London" });
+    expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe("settings after setup", () => {
+  test("can still be changed, which the setup screen alone cannot do", async () => {
+    // The setup token is spent the moment it is used, so without an
+    // authenticated route the instance name could only ever be chosen during
+    // the first minute of the instance's life.
+    const minted = await finish({ instanceName: "first" });
+    const { apiKey } = (await minted.json()) as { apiKey: string };
+
+    const res = await app.handle(
+      new Request("http://localhost/v1/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-api-key": apiKey },
+        body: JSON.stringify({ instanceName: "Second Name" }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ instanceName: { value: "Second-Name", source: "database" } });
+  });
+
+  test("need a credential", async () => {
+    const res = await app.handle(new Request("http://localhost/v1/settings"));
+    expect(res.status).toBe(401);
+  });
+
+  test("still refuse a value the environment owns", async () => {
+    await setupEnv({ SERVER_TIMEZONE: "UTC" });
+    const minted = await finish({ instanceName: "first" });
+    const { apiKey } = (await minted.json()) as { apiKey: string };
+
+    const res = await app.handle(
+      new Request("http://localhost/v1/settings", {
+        method: "PUT",
+        headers: { "content-type": "application/json", "x-api-key": apiKey },
+        body: JSON.stringify({ serverTimezone: "Europe/London" }),
+      }),
+    );
+
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 });

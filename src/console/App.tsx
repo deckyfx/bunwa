@@ -9,11 +9,14 @@ import { useEffect, useState } from "react";
 import { LoaderCircle, Wifi, WifiOff } from "lucide-react";
 
 import { ChatsPage } from "./pages/ChatsPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { SetupPage } from "./pages/SetupPage";
 import { ClaimPage } from "./pages/ClaimPage";
 import { DeliveriesPage } from "./pages/DeliveriesPage";
 import { DevicesPage } from "./pages/DevicesPage";
 import { useEventStream } from "./hooks/useEventStream";
 import { useSession } from "./store/session";
+import { useSetup } from "./store/setup";
 
 /**
  * The event stream's state as a shape.
@@ -32,8 +35,16 @@ function StreamIcon({ state }: { state: ReturnType<typeof useEventStream> }) {
 
 export function App() {
   const { apiKey, identity, error, busy, connect, hydrate } = useSession();
+  const configured = useSetup((s) => s.configured);
+  const refreshSetup = useSetup((s) => s.refresh);
   const [draft, setDraft] = useState(apiKey);
   const stream = useEventStream();
+
+  // Asked before anything else, because "this instance has no key" and "your
+  // key is wrong" need different screens and look identical from here.
+  useEffect(() => {
+    void refreshSetup();
+  }, [refreshSetup]);
 
   // Prove the restored key once, on mount.
   //
@@ -75,6 +86,12 @@ export function App() {
         </span>
       </header>
 
+      {/* A fresh instance gets the setup screen instead of a key form nothing
+          could satisfy: there is no key to type, and no way to obtain one
+          without this. */}
+      {configured === false && <SetupPage />}
+
+      {configured !== false && (
       <form
         className="flex flex-wrap items-end gap-2"
         onSubmit={(e) => {
@@ -105,6 +122,7 @@ export function App() {
           {busy ? "checking…" : "connect"}
         </button>
       </form>
+      )}
 
       {error !== null && (
         <p role="alert" className="text-sm text-rose-700 dark:text-rose-400">
@@ -114,6 +132,7 @@ export function App() {
 
       {identity !== null && (
         <>
+          <SettingsPage />
           <ClaimPage />
           <DevicesPage />
           <ChatsPage />
