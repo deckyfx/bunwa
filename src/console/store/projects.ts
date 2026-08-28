@@ -11,6 +11,7 @@ import { create } from "zustand";
 
 import { client, type RowOf } from "../lib/api";
 import { useSession } from "./session";
+import { blankOnKeyChange } from "./tenant";
 
 type Api = ReturnType<typeof client>;
 type Admin = Api["admin"]["v1"];
@@ -156,6 +157,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   createKey: async (projectId, environmentId, label, scopes) => {
     set({ busy: true, error: null });
 
+    // The credential this mint was authorised by, captured before the request.
+    // A minted key is the one piece of state here that is somebody else's
+    // secret, and project state was not cleared on sign-out — so a slow mint
+    // could put its "copy this now" dialog in front of whoever signed in next.
+    const mintedUnder = useSession.getState().apiKey;
+
     const { data, error } = await api()
       .admin.v1.projects({ projectId })
       .environments({ environmentId })
@@ -167,7 +174,10 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     // project's name. Busy is cleared either way — the request this call
     // started has finished, whoever is looking.
     const current = get();
-    const stillHere = current.openId === projectId && current.keysFor === environmentId;
+    const stillHere =
+      useSession.getState().apiKey === mintedUnder &&
+      current.openId === projectId &&
+      current.keysFor === environmentId;
 
     if (error !== null || data === null) {
       set({ busy: false, ...(stillHere ? { error: messageFrom(error) } : {}) });
@@ -228,4 +238,18 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   dismissKey: () => {
     set({ mintedKey: null });
   },
+}));
+
+// Cleared when the credential changes, like every other store. This one was
+// missed, and it is the store that holds a minted key — so a signed-out
+// operator's project list, and any credential still on screen, were waiting
+// for whoever signed in next.
+blankOnKeyChange(useProjects, () => ({
+  projects: null,
+  openId: null,
+  environments: null,
+  keys: null,
+  keysFor: null,
+  error: null,
+  mintedKey: null,
 }));

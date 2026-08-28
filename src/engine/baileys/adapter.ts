@@ -520,6 +520,19 @@ export class BaileysAdapter implements DeviceEngine {
         const session = this.sessions.get(deviceId);
         if (session === undefined) return;
 
+        // Every event, not just `disconnected`.
+        //
+        // A closed socket keeps draining its queue, so a replaced handle can
+        // still deliver a `qr` that overwrites `session.lastQr` — handing the
+        // caller a code for a socket that is gone — or `connected`, `message`
+        // and `ack` events attributed to the socket that replaced it. The
+        // guard was written for the disconnect path only, which fixed the case
+        // that had been found and left the rest reachable.
+        //
+        // `handle === null` means no live socket to be stale against, which is
+        // the window between drop and reconnect; those events are dropped too.
+        if (session.handle !== handle) return;
+
         switch (event.kind) {
           case "qr":
             if (event.qr !== undefined) {
@@ -605,9 +618,7 @@ export class BaileysAdapter implements DeviceEngine {
             break;
 
           case "disconnected":
-            // `handle`, so a socket that has already been replaced cannot
-            // speak for the one that replaced it. See onDisconnected.
-            this.onDisconnected(deviceId, session, event.reason ?? "transient", event.recoverable === true, handle);
+            this.onDisconnected(deviceId, session, event.reason ?? "transient", event.recoverable === true);
             break;
 
           case "connecting":
@@ -633,18 +644,16 @@ export class BaileysAdapter implements DeviceEngine {
     session: Session,
     reason: DisconnectKind | string,
     recoverable: boolean,
-    from?: SocketHandle,
   ): void {
-    // A closed socket still drains its queue, so the one `dropSocket` just
-    // replaced can deliver its own `disconnected` after `connect` has stored
-    // the replacement. Without this guard that late event cleared the *new*
-    // socket's handle and intent and scheduled a "resume" reconnect over it —
-    // which is precisely the QR-to-code replacement path, broken by the thing
-    // that makes it work.
+    // Staleness is filtered in `pump` now, for every event kind rather than
+    // this one alone.
     //
-    // Optional because the reconnect path below calls this with no handle of
-    // its own; there is no live socket to be stale in that case.
-    if (from !== undefined && session.handle !== null && session.handle !== from) return;
+    // The intent is captured before it is cleared. Clearing it first meant the
+    // reconnect below called connect() with no intent, which defaults to
+    // "resume" — and resume is only safe for a device that is already linked.
+    // A recoverable drop midway through QR pairing therefore came back with
+    // the wrong identity and could not finish pairing.
+    const reconnectIntent = session.intent ?? "resume";
 
     session.connected = false;
     session.handle = null;
@@ -678,7 +687,7 @@ export class BaileysAdapter implements DeviceEngine {
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** (session.failures - 1), RECONNECT_MAX_MS);
     session.reconnectTimer = setTimeout(() => {
       session.reconnectTimer = null;
-      void this.connect(deviceId).catch((err: unknown) => {
+      void this.connect(deviceId, reconnectIntent).catch((err: unknown) => {
         // Routed back through the policy rather than only logged. The timer
         // has already cleared itself, so a failed open ended the retries
         // permanently and left the device disconnected with nothing scheduled

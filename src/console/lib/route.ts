@@ -61,6 +61,15 @@ function decodeOrRaw(value: string): string {
   }
 }
 
+/**
+ * Turn a location fragment into a route the console can render.
+ *
+ * Total by construction: anything unrecognised, malformed or half-escaped
+ * lands on `DEFAULT_ROUTE` rather than throwing or rendering nothing. A hash is
+ * the one input a user can type directly into the address bar, and a
+ * hand-edited or stale one should still arrive somewhere usable — which is
+ * also why the decode below cannot be allowed to throw.
+ */
 export function parseRoute(hash: string): Route {
   const raw = hash.replace(/^#/, "");
   if (raw === "") return DEFAULT_ROUTE;
