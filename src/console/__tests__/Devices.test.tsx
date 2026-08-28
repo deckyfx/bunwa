@@ -102,6 +102,14 @@ describe("re-pairing", () => {
     await waitFor(() =>
       expect((screen.getByRole("button", { name: "log out" }) as HTMLButtonElement).disabled).toBe(true),
     );
+    // The button that started the work, too. Asserting only the *other* one
+    // would pass against a guard that disables everything except the action in
+    // progress — which is the one most likely to be double-clicked.
+    //
+    // Found by its busy label: it relabels to "starting…" while working, so
+    // querying for "re-pair" here finds nothing and the assertion would fail
+    // for a reason that has nothing to do with disabling.
+    expect((screen.getByRole("button", { name: "starting…" }) as HTMLButtonElement).disabled).toBe(true);
     release?.();
   });
 });

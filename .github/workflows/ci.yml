@@ -34,22 +34,18 @@ jobs:
           bun-version: "1.4.0"
 
       - name: Install dependencies
-        # Covers the dashboard too: it is a workspace, so one install resolves
-        # both. It was not, and CI failed on a missing `react` — the root
-        # install had no reason to descend into a subproject it did not know
-        # about.
+        # One project now. The console moved into src/console, so there is no
+        # second manifest to resolve and no workspace to descend into — which
+        # is what CI used to fail on, with a missing `react`.
         run: bun install --frozen-lockfile
 
       - name: Typecheck
-        # Runs both projects; see the root package.json script.
         run: bun run typecheck
 
       - name: Test
-        # `bun run test`, not `bun test`. The root bunfig pins the test root to
-        # ./src so the control-plane runner does not try to execute component
-        # tests without a DOM — which means a bare `bun test` here would skip
-        # the dashboard suite entirely and report success for a project it
-        # never ran.
+        # bunfig.toml preloads happydom, which has to happen before any test
+        # file imports React: React reads `document` at module scope, so a DOM
+        # registered later is registered too late.
         run: bun run test
 
       - name: Verify the schema has a migration generated for it
@@ -130,7 +126,7 @@ jobs:
             docker run --rm \
               -e NODE_ENV=production \
               -e BAILEYS_ENABLED=true \
-              bunwa:api bun run src/index.ts 2>&1
+              bunwa:api bun run src/index-headless.ts 2>&1
             printf "__CONTAINER_EXITED_%s__\n" "$?"
           ')
           timed_out=$?
@@ -171,16 +167,19 @@ jobs:
 
           echo "refused, with the right reason"
 
-      - name: The api image carries no console
-        # The whole mechanism behind two tags from one binary. If assets ever
-        # leak into this image, /app starts answering in a deployment that asked
-        # for the API alone.
+      - name: The api image does not mount the console
+        # The mechanism behind two tags changed with the console: there is no
+        # dashboard/dist to look for any more, because the page is bundled from
+        # the HTML import at serve time. What separates the images is which
+        # entry point they run, so that is what this asserts — the headless one
+        # must not import the console page, or React reaches a build whose whole
+        # purpose is to exclude it.
         run: |
-          if docker run --rm bunwa:api test -e /app/dashboard/dist; then
-            echo "::error::bunwa:api contains dashboard assets"
+          if docker run --rm bunwa:api sh -c 'grep -q "console/index.html" /app/src/index-headless.ts'; then
+            echo "::error::the headless entry point imports the console page"
             exit 1
           fi
-          echo "no console in bunwa:api"
+          echo "bunwa:api does not mount the console"
 
       - name: Both images serve, and only one serves the console
         # Built images have been wrong in ways the Dockerfile looked right for:

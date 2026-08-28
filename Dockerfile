@@ -3,22 +3,22 @@
 #   docker build --target api  -t bunwa:api  .
 #   docker build --target full -t bunwa:full .
 #
-# The binary is identical. `full` copies the console in and `api` does not, and
-# the control plane serves /app only when those files exist — so nothing needs a
-# build flag or a runtime switch to tell the images apart.
+# They differ by entry point, not by contents. That is the change this commit
+# range made: the console was a `dashboard/` subproject built to `dashboard/dist`
+# and copied into `full` only, and the build stage that produced it referenced
+# files this repository no longer has — so the image build failed outright.
+#
+# The console now lives in src/console and Bun bundles it from the HTML import
+# at serve time. `full` runs the entry point that imports that page; `api` runs
+# the one that does not, and never pulls React into what it serves. /app answers
+# a 404 naming the build rather than being absent, so an operator who expected
+# the console learns which image they are running.
 
 FROM oven/bun:1.4.0-slim AS deps
 WORKDIR /build
 # Manifests first, so a source-only change does not reinstall.
 COPY package.json bun.lock ./
-COPY dashboard/package.json ./dashboard/
 RUN bun install --frozen-lockfile
-
-FROM deps AS console
-WORKDIR /build
-COPY dashboard ./dashboard
-COPY tsconfig.json ./
-RUN cd dashboard && bun run build
 
 FROM oven/bun:1.4.0-slim AS runtime
 WORKDIR /app
@@ -53,11 +53,17 @@ EXPOSE 3000
 #
 # Verified: without that step both images exit 75 with "pending migrations",
 # which is the guard working and not a packaging fault.
-CMD ["bun", "run", "src/index.ts"]
+#
+# No CMD on the shared stage. It used to run src/index.ts, which only exports
+# main and never calls it, so both images started a process that exited 0
+# immediately and served nothing. Each target names its own executable entry
+# point instead, which makes that failure impossible to reintroduce by editing
+# one line in the wrong place.
 
-# The API alone. No dashboard assets are present, not merely unrouted.
+# The API alone.
 FROM runtime AS api
+CMD ["bun", "run", "src/index-headless.ts"]
 
-# The API plus the console, served at /app by the same binary.
+# The API plus the console, served at /app by the same process.
 FROM runtime AS full
-COPY --from=console --chown=bunwa:bunwa /build/dashboard/dist ./dashboard/dist
+CMD ["bun", "run", "src/index-console.ts"]

@@ -19,13 +19,31 @@ interface Props {
   revision: number;
 }
 
+/**
+ * The conversations screen: a thread list, the open thread, and a composer.
+ *
+ * It exists because bunwa owns the history now — nothing else is holding it —
+ * and it is deliberately plain about delivery. A reply here is *accepted*, not
+ * sent: acceptance meant nothing for 203 measured seconds after a silent
+ * disconnect, so an outbound message shows its status rather than implying it
+ * arrived.
+ */
 export function Chats({ apiKey, revision }: Props) {
   const [threads, setThreads] = useState<ChatThread[] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[] | null>(null);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [sending, setSending] = useState(false);
+  /**
+   * Which thread has a reply in flight, or null.
+   *
+   * A boolean disabled every composer at once, so a reply pending in one
+   * conversation locked the box in the conversation the operator had just
+   * switched to — a screen that will not accept typing, for a request about a
+   * thread no longer on screen. The id answers "is *this* composer waiting?",
+   * which is the question the button is actually asking.
+   */
+  const [sendingThread, setSendingThread] = useState<string | null>(null);
 
   // One counter each, not one shared.
   //
@@ -89,9 +107,9 @@ export function Chats({ apiKey, revision }: Props) {
       // The composer goes with the conversation. A half-typed reply and a
       // "could not send" from the previous thread both survived the switch,
       // so the draft was aimed at whoever was opened next and the error
-      // blamed the wrong conversation. `sending` is cleared by the send
-      // handler's finally block whatever happens, so the composer is usable
-      // in the conversation just opened.
+      // blamed the wrong conversation. The composer is usable immediately in
+      // the thread just opened, because pending state is keyed by thread and
+      // this one has nothing in flight.
       setDraft("");
       setError(null);
     }
@@ -120,7 +138,7 @@ export function Chats({ apiKey, revision }: Props) {
     // arriving by a different route after I closed the first one.
     const threadId = selected;
 
-    setSending(true);
+    setSendingThread(threadId);
     setError(null);
     try {
       await api.reply(apiKey, threadId, draft);
@@ -131,14 +149,11 @@ export function Chats({ apiKey, revision }: Props) {
       if (selectedRef.current !== threadId) return;
       setError(err instanceof ApiError ? err.message : "could not send");
     } finally {
-      // Unconditionally. The guard belongs on what gets *painted*, not on
-      // whether the composer is usable again: switching conversations while a
-      // reply was in flight left `sending` true for ever, and the send button
-      // is disabled on it — so the operator could no longer reply in the
-      // conversation they had just switched to. `sending` describes this
-      // component's composer, which is now pointed somewhere else, rather than
-      // the request that has finished either way.
-      setSending(false);
+      // Cleared only if this thread is still the one waiting. Unconditional
+      // would undo a *newer* send started in another conversation after this
+      // one was switched away from, re-enabling a composer whose own request
+      // is still in flight.
+      setSendingThread((current) => (current === threadId ? null : current));
     }
   }
 
@@ -204,8 +219,8 @@ export function Chats({ apiKey, revision }: Props) {
                   onChange={(e) => setDraft(e.target.value)}
                   placeholder="Type a message"
                 />
-                <button type="submit" disabled={sending || draft.trim() === ""}>
-                  {sending ? "queueing…" : "send"}
+                <button type="submit" disabled={sendingThread === selected || draft.trim() === ""}>
+                  {sendingThread === selected ? "queueing…" : "send"}
                 </button>
               </form>
             </>

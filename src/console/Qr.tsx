@@ -31,7 +31,26 @@ interface Props {
   scale?: number;
 }
 
+/**
+ * Draw a QR code in the browser, from the payload rather than from a URL.
+ *
+ * The rendering is here, and not a server route returning an image, because a
+ * pairing QR *is* the credential: anything that scans it takes over the
+ * account. Turning it into a URL creates a second place it can be fetched
+ * from, logged by, or cached in — so the payload reaches the DOM and stops
+ * there.
+ */
 export function Qr({ payload, scale = 6 }: Props) {
+  // Rejected rather than clamped where it cannot mean anything. A non-finite
+  // or non-positive scale produced an SVG with a NaN or negative side, which
+  // renders as nothing at all — an invisible QR on the one screen whose entire
+  // job is showing one, and no error to say why. Fractional values are floored
+  // instead: they still draw, just blurrily on a device-pixel boundary.
+  const pixels = Number.isFinite(scale) ? Math.floor(scale) : 0;
+  if (pixels < 1) {
+    throw new RangeError(`Qr scale must be a positive number, got ${String(scale)}`);
+  }
+
   let modules: boolean[][];
   try {
     // Type 0 lets the library choose the smallest version that fits. "L" is
@@ -60,7 +79,7 @@ export function Qr({ payload, scale = 6 }: Props) {
   // A quiet zone is part of the spec, not decoration: scanners need the margin
   // to find the code at all.
   const quiet = 4;
-  const side = (size + quiet * 2) * scale;
+  const side = (size + quiet * 2) * pixels;
 
   return (
     <svg
