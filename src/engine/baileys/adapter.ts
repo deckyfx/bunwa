@@ -168,13 +168,10 @@ export class BaileysAdapter implements DeviceEngine {
       );
     }
 
-    const session = this.sessions.get(deviceId)!;
-
-    if (session.handle === null) await this.connect(deviceId, "qr");
-    const handle = this.sessions.get(deviceId)?.handle;
-    if (handle === undefined || handle === null) {
-      throw new EngineError(`could not open a socket for ${deviceId}`, true);
-    }
+    // Called for the socket, not the handle: the QR arrives on the event
+    // stream rather than as a return value, so what matters here is that a
+    // QR-intent socket is open before `firstQr` starts listening.
+    await this.socketFor(deviceId, "qr");
 
     const expiresAt = new Date(Date.now() + QR_TTL_MS);
 
@@ -197,25 +194,7 @@ export class BaileysAdapter implements DeviceEngine {
   async startPairingWithCode(deviceId: string, msisdn: string): Promise<PairingSession> {
     await this.provision(deviceId);
 
-    // "code", so the socket presents Ubuntu. WhatsApp will not complete this
-    // handshake against the identity a QR socket carries, so a socket opened
-    // for anything else is closed and reopened rather than reused.
-    //
-    // This used to connect only when there was no socket at all, and left a
-    // comment saying the caller must not reuse a QR one. That put a
-    // correctness rule on every caller, out of reach of the type system, to
-    // avoid four lines here — and the failure it invites is a pairing code
-    // that is issued, looks fine, and never works.
-    const existing = this.sessions.get(deviceId);
-    if (existing?.handle !== null && existing?.intent !== "code") {
-      await this.dropSocket(deviceId);
-    }
-    if (this.sessions.get(deviceId)?.handle === null) await this.connect(deviceId, "code");
-
-    const handle = this.sessions.get(deviceId)?.handle;
-    if (handle === undefined || handle === null) {
-      throw new EngineError(`could not open a socket for ${deviceId}`, true);
-    }
+    const handle = await this.socketFor(deviceId, "code");
 
     const code = await handle.requestPairingCode(msisdn);
     return { method: "code", pairCode: code, expiresAt: new Date(Date.now() + QR_TTL_MS) };
@@ -450,6 +429,33 @@ export class BaileysAdapter implements DeviceEngine {
   private emit(event: EngineEvent): void {
     this.pending.push(event);
     for (const wake of [...this.wakers]) wake();
+  }
+
+  /**
+   * A socket opened for this intent, replacing one opened for another.
+   *
+   * The identity presented during the handshake depends on why the socket was
+   * opened — a code pairing has to say Ubuntu or WhatsApp will not complete it
+   * — so a socket opened for anything else cannot serve. Reusing one produces
+   * a pairing code that is issued, looks correct, and never works.
+   *
+   * Both pairing entry points go through here because the first version of
+   * this rule lived inline in `startPairingWithCode` and the QR path was left
+   * reusing whatever socket it found. One fix, one place, both directions:
+   * a rule written twice is a rule that will be corrected once.
+   */
+  private async socketFor(deviceId: string, intent: PairingIntent): Promise<SocketHandle> {
+    const existing = this.sessions.get(deviceId);
+    if (existing?.handle !== null && existing?.intent !== intent) {
+      await this.dropSocket(deviceId);
+    }
+    if (this.sessions.get(deviceId)?.handle === null) await this.connect(deviceId, intent);
+
+    const handle = this.sessions.get(deviceId)?.handle;
+    if (handle === undefined || handle === null) {
+      throw new EngineError(`could not open a socket for ${deviceId}`, true);
+    }
+    return handle;
   }
 
   /**

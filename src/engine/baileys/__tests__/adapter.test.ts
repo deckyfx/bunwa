@@ -156,4 +156,33 @@ describe("pairing by code", () => {
 
     await engine.close();
   }, 20_000);
+
+  test("a QR pairing replaces a socket opened for a code pairing", async () => {
+    // The identity presented at the handshake depends on why the socket was
+    // opened, so neither direction may reuse the other's. The rule was written
+    // for the code path first and the QR path was left reusing whatever it
+    // found — this pins the direction that was missing.
+    const intents: string[] = [];
+    const sockets: StubSocket[] = [];
+    const engine = new BaileysAdapter({
+      openSocket: ({ intent }) => {
+        intents.push(intent ?? "resume");
+        const socket = new StubSocket();
+        sockets.push(socket);
+        return Promise.resolve(socket);
+      },
+    });
+
+    await engine.provision("d1");
+    await engine.startPairingWithCode("d1", "628111222333");
+    await engine.startPairing("d1", "qr");
+
+    expect(intents, "the QR pairing reused the socket opened for the code pairing").toEqual([
+      "code",
+      "qr",
+    ]);
+    expect(sockets[0]?.closed, "the code socket was left open behind the QR one").toBe(true);
+
+    await engine.close();
+  }, 20_000);
 });

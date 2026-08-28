@@ -16,18 +16,20 @@ import { client } from "../lib/api";
 
 const STORAGE_KEY = "bunwa.apiKey";
 
-export interface Identity {
-  projectId: string;
-  environmentId: string;
-  /** What a person calls this tenant. The ids are for machines. */
-  projectSlug: string;
-  projectName: string;
-  environmentSlug: string;
-  environmentKind: string;
-  scopes: string[];
-  /** The zone the server renders timestamps in. See `useServerTimezone`. */
-  serverTimezone: string;
-}
+/**
+ * What the key resolves to, as the server describes it.
+ *
+ * Derived from the `whoami` route rather than written out here. The
+ * hand-written version was wrong twice before — nested objects the server does
+ * not send, and fields that do not exist — and each time the page rendered
+ * "undefined" against a live API rather than failing to compile. Two of these
+ * fields carry real meaning for a reader: the slugs and names are what a
+ * person calls this tenant, where the ids are for machines, and
+ * `serverTimezone` is the zone every rendered timestamp uses (see
+ * `useServerTimezone`).
+ */
+type Api = ReturnType<typeof client>;
+export type Identity = NonNullable<Awaited<ReturnType<Api["v1"]["whoami"]["get"]>>["data"]>;
 
 interface SessionState {
   apiKey: string;
@@ -148,7 +150,7 @@ export const useSession = create<SessionState>((set, get) => ({
       /* the session still works, it just will not survive a refresh */
     }
 
-    set({ identity: data as Identity, busy: false, error: null });
+    set({ identity: data, busy: false, error: null });
   },
 
   disconnect: () => {

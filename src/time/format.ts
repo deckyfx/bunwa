@@ -51,12 +51,26 @@ export function setServerTimezone(zone: string | null): void {
   effectiveZone = zone;
 }
 
-/** The zone every rendered timestamp uses. */
+/**
+ * The zone every rendered timestamp uses.
+ *
+ * One place asks the question so every formatter below gets the same answer.
+ * The in-memory override wins over the configured value, because the setting
+ * can be changed at runtime and a formatter reading config directly would keep
+ * rendering the old zone until a restart — which is the shape of bug where
+ * half the timestamps on a screen move and the other half do not.
+ */
 export function serverTimezone(): string {
   return effectiveZone ?? config().serverTimezone;
 }
 
-/** `2026-08-27 21:15:04` in the server's timezone. */
+/**
+ * `2026-08-27 21:15:04` in the server's timezone.
+ *
+ * The default for anything a person reads next to a log line. Server-side
+ * display is deliberately not the reader's local zone: an operator comparing a
+ * screen against a log file must not be silently seven hours out.
+ */
 export const formatDateTime = (at: Date = new Date()): string => renderDateTime(at, serverTimezone());
 
 /** `21:15:04` — for a console line, where the date is usually today. */

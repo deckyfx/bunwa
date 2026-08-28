@@ -64,6 +64,20 @@ export function App() {
   const stream = useEventStream();
 
   const [draft, setDraft] = useState(apiKey);
+
+  /**
+   * Sign out, and empty the box the key was typed into.
+   *
+   * `disconnect` clears the session; the draft is component state and outlived
+   * it, so the connect form came back pre-filled with the credential that had
+   * just been signed out of — and the reveal control would show it in plain
+   * text to whoever was standing there. Signing out has to mean the key is
+   * gone from the screen as well as from the store.
+   */
+  const signOut = () => {
+    setDraft("");
+    disconnect();
+  };
   // Whether what is in the box came from storage rather than from typing. A
   // prefilled masked field is the case where "is this the right key?" cannot
   // be answered by looking, so the field says where it came from.
@@ -207,7 +221,7 @@ export function App() {
             {signedIn && (
               <button
                 type="button"
-                onClick={disconnect}
+                onClick={signOut}
                 aria-label="Sign out"
                 title="Sign out"
                 className="grid size-8 place-items-center rounded-md text-slate-500 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950 dark:hover:text-rose-400"
@@ -227,7 +241,7 @@ export function App() {
           <Sidebar
             active={route.section}
             onSelect={navigate}
-            onSignOut={disconnect}
+            onSignOut={signOut}
             identity={identity}
             scopes={identity.scopes}
           />
