@@ -18,6 +18,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 let statusResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
 let submitResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
 let whoamiResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
+/** Which admin endpoints the console reached for. Empty is the assertion for a project key. */
+const adminCalls: string[] = [];
 
 void mock.module("../lib/api", () => ({
   client: () => ({
@@ -33,6 +35,30 @@ void mock.module("../lib/api", () => ({
       // invalidate the session, which tore the signed-in shell down mid-test —
       // correct behaviour under a mock that was lying about the server.
       events: { ticket: { post: () => Promise.resolve({ data: { ticket: "t1" }, error: null }) } },
+    },
+    // The operator surface. Present in the mock even for the project-key
+    // tests: the point of those is that the console never calls it, and a
+    // mock that could not answer would hide a call that did.
+    admin: {
+      v1: {
+        projects: Object.assign(
+          (params: { projectId: string }) => ({
+            environments: Object.assign(() => ({ "api-keys": Object.assign(() => ({ delete: () => Promise.resolve({ error: null }) }), { get: () => Promise.resolve({ data: [], error: null }), post: () => Promise.resolve({ data: null, error: null }) }) }), {
+              get: () => {
+                adminCalls.push(`environments:${params.projectId}`);
+                return Promise.resolve({ data: [], error: null });
+              },
+            }),
+          }),
+          {
+            get: () => {
+              adminCalls.push("projects");
+              return Promise.resolve({ data: [], error: null });
+            },
+            post: () => Promise.resolve({ data: null, error: null }),
+          },
+        ),
+      },
     },
   }),
   anonymous: () => ({
@@ -58,6 +84,7 @@ const { App } = await import("../App");
 const { useSetup, resetSetupRequests } = await import("../store/setup");
 const { useSession } = await import("../store/session");
 const { useRoute } = await import("../store/route");
+const { sectionsFor } = await import("../components/Sidebar");
 
 const UNCONFIGURED = {
   data: {
@@ -79,7 +106,12 @@ beforeEach(() => {
   // The address is shared state like any other, and it is shared across test
   // *files*: a fragment left by another file put this one on the wrong
   // section before it had rendered anything.
-  window.location.hash = "";
+  // replaceState, not `location.hash = ""`. Assigning the hash queues a
+  // hashchange, and that event was still in flight when the next test set its
+  // own address — the store's listener then read a hash that had already moved
+  // on and reset the section under it.
+  window.history.replaceState(null, "", "/");
+  adminCalls.length = 0;
   useRoute.setState({ route: { section: "devices", detail: null } });
   statusResolver = () => Promise.resolve(UNCONFIGURED);
   submitResolver = () =>
@@ -324,5 +356,109 @@ describe("the signed-in shell", () => {
     render(<App />);
     await screen.findByLabelText("Setup token");
     expect(screen.getByRole("button", { name: /^Theme:/ })).toBeDefined();
+  });
+});
+
+describe("what each kind of key is offered", () => {
+  const signInWith = (scopes: string[]) => {
+    statusResolver = () =>
+      Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
+    whoamiResolver = () =>
+      Promise.resolve({
+        data: {
+          projectId: "p",
+          environmentId: "e",
+          projectSlug: "acme",
+          projectName: "Acme",
+          environmentSlug: "production",
+          environmentKind: "live",
+          scopes,
+          serverTimezone: "UTC",
+        },
+        error: null,
+      });
+    useSession.setState({ apiKey: "bw_live_acme_key" });
+  };
+
+  const PROJECT = ["send:text", "receive:messages", "manage:devices"];
+  const OPERATOR = [...PROJECT, "manage:instance", "manage:projects"];
+
+  test("an operator is offered Projects", async () => {
+    signInWith(OPERATOR);
+    render(<App />);
+    expect(await screen.findByRole("button", { name: "Projects" })).toBeDefined();
+  });
+
+  test("a project key is not", async () => {
+    // Not the security boundary — the route checks the scope itself — but a
+    // section that answers 403 on every request is an invitation to press a
+    // button that cannot work.
+    signInWith(PROJECT);
+    render(<App />);
+    await screen.findByRole("navigation", { name: "Sections" });
+
+    expect(screen.queryByRole("button", { name: "Projects" })).toBeNull();
+  });
+
+  test("a project key is not offered instance Settings either", async () => {
+    signInWith(PROJECT);
+    render(<App />);
+    await screen.findByRole("navigation", { name: "Sections" });
+
+    expect(screen.queryByRole("button", { name: "Settings" })).toBeNull();
+  });
+
+  test("a project key keeps the sections it can actually use", async () => {
+    signInWith(PROJECT);
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: "Devices" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Conversations" })).toBeDefined();
+  });
+
+  test("an address naming a forbidden section lands somewhere usable", async () => {
+    // A project key following a link an operator sent. Rendering the section
+    // would give an empty page full of 403s instead of the console it has.
+    // The address, not just the store: a followed link sets both, and the
+    // store's listener reads from the address.
+    window.history.replaceState(null, "", "#projects");
+    useRoute.setState({ route: { section: "projects", detail: null } });
+    signInWith(PROJECT);
+
+    render(<App />);
+    await screen.findByRole("navigation", { name: "Sections" });
+
+    await waitFor(() => {
+      expect(useRoute.getState().route.section).not.toBe("projects");
+    });
+    expect(screen.getByRole("button", { name: "Devices" }).getAttribute("aria-current")).toBe("page");
+  });
+
+  test("an operator can reach Projects and stays there", async () => {
+    // Navigated rather than deep-linked. The deep-link case is covered above
+    // for the key that must be redirected; asserting the negative through a
+    // preloaded address here fought happy-dom's history semantics rather than
+    // the code — the guard's own rule is asserted directly below.
+    signInWith(OPERATOR);
+    render(<App />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
+
+    await waitFor(() => {
+      expect(useRoute.getState().route.section).toBe("projects");
+    });
+    // Still there a tick later: the guard runs on every render, and one that
+    // redirected an operator would show up as the section bouncing back.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Projects" }).getAttribute("aria-current")).toBe("page");
+    });
+  });
+
+  test("the rule the guard applies, directly", () => {
+    // A key is redirected only when the section it names is not in its own
+    // list, and an operator's list contains everything.
+    expect(sectionsFor(OPERATOR).map((s) => s.id)).toContain("projects");
+    expect(sectionsFor(PROJECT).map((s) => s.id)).not.toContain("projects");
+    expect(sectionsFor(PROJECT).map((s) => s.id)).not.toContain("settings");
   });
 });

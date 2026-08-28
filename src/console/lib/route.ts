@@ -12,7 +12,7 @@
  * `conversations` in the URL, because an address is read aloud and typed by
  * hand and should say what it means.
  */
-import type { SectionId } from "../components/Sidebar";
+import { SECTIONS as SIDEBAR_SECTIONS, type SectionId } from "../components/Sidebar";
 
 export interface Route {
   section: SectionId;
@@ -24,7 +24,16 @@ export interface Route {
 const TO_URL: Partial<Record<SectionId, string>> = { chats: "conversations" };
 const FROM_URL: Record<string, SectionId> = { conversations: "chats" };
 
-const SECTIONS: SectionId[] = ["devices", "chats", "claim", "deliveries", "settings"];
+/**
+ * Every section that has an address.
+ *
+ * Derived from the sidebar's list rather than repeated here. Repeating it is
+ * what went wrong: `projects` was added to the sidebar and not to this array,
+ * so `#projects` parsed as unknown, fell back to the default, and the section
+ * bounced straight back to devices the moment the hashchange landed. The
+ * screen existed and could not be addressed.
+ */
+const SECTIONS: SectionId[] = SIDEBAR_SECTIONS.map((section) => section.id);
 
 /** Where an address with nothing useful in it goes. */
 export const DEFAULT_ROUTE: Route = { section: "devices", detail: null };

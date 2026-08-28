@@ -55,3 +55,32 @@ export type Scope = (typeof ALL_SCOPES)[number];
 
 /** Whether a string is a scope this build enforces. */
 export const isScope = (value: string): value is Scope => (ALL_SCOPES as readonly string[]).includes(value);
+
+/**
+ * Scopes that bound a key within its own environment.
+ *
+ * The only ones the admin API may grant. A project key is created through that
+ * API, so if it could hand out the instance scopes below, the boundary they
+ * establish would have a door in it: an operator creating a tenant could —
+ * accidentally, by passing a string — issue a credential able to create
+ * further tenants and rename the deployment.
+ */
+export const PROJECT_SCOPES = [
+  "send:text",
+  "send:media",
+  "receive:messages",
+  "manage:devices",
+  "manage:webhook",
+  "manage:rules",
+] as const satisfies readonly Scope[];
+
+/**
+ * Scopes that act on the whole deployment rather than one tenant.
+ *
+ * Granted only by minting an operator key — `bun run key:new`, or the setup
+ * screen — never through an API a tenant's own credential can reach.
+ */
+export const INSTANCE_SCOPES = ["manage:instance", "manage:projects"] as const satisfies readonly Scope[];
+
+/** Whether a scope is one the admin API may put on a project key. */
+export const isProjectScope = (value: string): boolean => (PROJECT_SCOPES as readonly string[]).includes(value);

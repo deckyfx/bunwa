@@ -19,8 +19,9 @@ import { MigrationManager } from "../../db/migration-manager";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 import type { ConsolePage } from "../types";
+import { clearSetupToken, issueSetupToken } from "../routes/setup";
 
-const restoreEnv = captureEnv(FIXTURE_ENV_KEYS);
+const restoreEnv = captureEnv([...FIXTURE_ENV_KEYS, "ADMIN_API_ENABLED"]);
 
 let dir: string;
 
@@ -55,8 +56,8 @@ afterEach(() => {
   resetDatabase();
 });
 
-const get = (app: { handle: (r: Request) => Promise<Response> }, path: string) =>
-  app.handle(new Request(`http://localhost${path}`));
+const get = (app: { handle: (r: Request) => Promise<Response> }, path: string, headers?: Record<string, string>) =>
+  app.handle(new Request(`http://localhost${path}`, headers === undefined ? undefined : { headers }));
 
 describe("the headless build", () => {
   test("says so on the liveness probe", async () => {
@@ -129,5 +130,61 @@ describe("the mode on the request context", () => {
   test("follows the build rather than a default", async () => {
     const probe = createConsoleApp(undefined, FAKE_PAGE).get("/probe", ({ serverMode }) => ({ serverMode }));
     expect(await (await get(probe, "/probe")).json()).toEqual({ serverMode: "console" });
+  });
+});
+
+describe("credentials do not depend on the console being served", () => {
+  test("setup mints a key in headless mode", async () => {
+    // The console is where an operator would normally finish setup, so it is
+    // worth pinning that the headless build is not quietly a build you cannot
+    // get a credential out of. Everything but the screen is the same app.
+    const app = createApp();
+    const token = issueSetupToken();
+
+    const res = await app.handle(
+      new Request("http://localhost/setup", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-setup-token": token },
+        body: JSON.stringify({ instanceName: "headless-box" }),
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    const { apiKey } = (await res.json()) as { apiKey: string };
+
+    const whoami = await get(app, "/v1/whoami", { "x-api-key": apiKey });
+    expect(whoami.status, "and the key it minted authenticates").toBe(200);
+
+    clearSetupToken();
+  });
+
+  test("the admin surface works headless too", async () => {
+    // Projects and their keys are managed over HTTP, so a deployment with no
+    // console is not a deployment with no tenancy.
+    Bun.env["ADMIN_API_ENABLED"] = "true";
+    resetConfig();
+
+    const app = createApp();
+    const token = issueSetupToken();
+    const setup = (await (
+      await app.handle(
+        new Request("http://localhost/setup", {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-setup-token": token },
+          body: JSON.stringify({ instanceName: "headless-box" }),
+        }),
+      )
+    ).json()) as { apiKey: string };
+
+    const res = await app.handle(
+      new Request("http://localhost/admin/v1/projects", {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-api-key": setup.apiKey },
+        body: JSON.stringify({ slug: "acme", displayName: "Acme" }),
+      }),
+    );
+
+    expect(res.status).toBe(201);
+    clearSetupToken();
   });
 });

@@ -15,12 +15,13 @@ import { KeyRound, LoaderCircle, LogIn, LogOut, MessageCircleMore, Wifi, WifiOff
 
 import { Card } from "./components/Card";
 import { Field } from "./components/Field";
-import { Sidebar, type SectionId } from "./components/Sidebar";
+import { Sidebar, sectionsFor, type SectionId } from "./components/Sidebar";
 import { ThemeToggle } from "./components/ThemeToggle";
 import { ChatsPage } from "./pages/ChatsPage";
 import { ClaimPage } from "./pages/ClaimPage";
 import { DeliveriesPage } from "./pages/DeliveriesPage";
 import { DevicesPage } from "./pages/DevicesPage";
+import { ProjectsPage } from "./pages/ProjectsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { useEventStream } from "./hooks/useEventStream";
@@ -50,6 +51,7 @@ function Section({ id }: { id: SectionId }) {
   if (id === "chats") return <ChatsPage />;
   if (id === "claim") return <ClaimPage />;
   if (id === "deliveries") return <DeliveriesPage />;
+  if (id === "projects") return <ProjectsPage />;
   return <SettingsPage />;
 }
 
@@ -102,6 +104,27 @@ export function App() {
 
 
   const signedIn = identity !== null;
+
+  /*
+   * An address naming a section this key cannot use goes somewhere it can.
+   *
+   * The sidebar hides those sections, but the address bar is not the sidebar:
+   * a project key following a link an operator sent, or reloading after its
+   * scopes were narrowed, would otherwise render a screen whose every request
+   * answers 403 — an empty page full of errors instead of the console it does
+   * have access to.
+   *
+   * Replace, not navigate: the address it arrived with is not somewhere to go
+   * back to.
+   */
+  useEffect(() => {
+    if (identity === null) return;
+    const allowed = sectionsFor(identity.scopes);
+    if (allowed.some((section) => section.id === route.section)) return;
+
+    const fallback = allowed[0];
+    if (fallback !== undefined) replace(fallback.id, null);
+  }, [identity, route.section, replace]);
 
   // Canonicalise a bare /app once there is something to look at, so the
   // address in the bar is one that can be copied. Replace rather than push:
@@ -187,7 +210,13 @@ export function App() {
            were squeezed into a 5xl column that left half of any real monitor
            empty. */
         <div className="flex min-h-0 flex-1">
-          <Sidebar active={route.section} onSelect={navigate} onSignOut={disconnect} identity={identity} />
+          <Sidebar
+            active={route.section}
+            onSelect={navigate}
+            onSignOut={disconnect}
+            identity={identity}
+            scopes={identity.scopes}
+          />
 
           <main className="min-w-0 flex-1 p-4">
             {error !== null && (

@@ -19,13 +19,44 @@ import { Elysia, t } from "elysia";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { requireApiKey, requireScope } from "../../auth/middleware";
+import { isProjectScope, PROJECT_SCOPES } from "../../auth/scopes";
 import type { ApiKey } from "../../db/schema";
 import { ValidationError } from "../../stores/errors";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ProjectStore } from "../../stores/project-store";
 import { log } from "../../observability/logger";
+import { config } from "../../config/env";
+import { problem } from "../server";
 
 export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
+  /*
+   * The flag is enforced here rather than by mounting conditionally.
+   *
+   * `.use(enabled ? adminRoutes : new Elysia())` makes the app type a union of
+   * "these routes exist" and "they do not", and Eden then sees neither — the
+   * console's typed client had no `admin` on it at all. That is the same
+   * mistake the device and message routes were fixed for, in the same file,
+   * with a comment explaining it.
+   *
+   * 404 rather than 403: a disabled surface should be indistinguishable from
+   * one that was never built, and it answers before authentication so that
+   * turning the flag off does not turn the endpoint into a credential oracle.
+   */
+  .onRequest(({ request, set }) => {
+    const path = new URL(request.url).pathname;
+    // onRequest, not onBeforeHandle. requireApiKey is a `derive`, and derive
+    // runs before beforeHandle — so a beforeHandle check answered 401 on a
+    // disabled surface instead of 404, which is exactly the credential oracle
+    // this ordering exists to avoid. Caught by the one pre-existing test.
+    if (!path.startsWith("/admin/")) return undefined;
+    if (config().adminApiEnabled) return undefined;
+
+    set.status = 404;
+    return new Response(
+      JSON.stringify(problem(404, "not-found", "Not Found", "the admin API is not enabled on this deployment", path)),
+      { status: 404, headers: { "content-type": "application/problem+json" } },
+    );
+  })
   .use(requireApiKey)
   // Applied to every route in the plugin rather than repeated per handler. The
   // per-handler version is how one gets forgotten, and the one that gets
@@ -74,6 +105,20 @@ export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
   .post(
     "/projects/:projectId/environments/:environmentId/api-keys",
     async ({ params, body, set }) => {
+      // Project scopes only. Without this the boundary manage:projects
+      // establishes has a door in it: an operator creating a tenant could hand
+      // it a credential able to create further tenants and rename the
+      // deployment, by passing a string. Instance scopes are granted by
+      // minting an operator key and by nothing else.
+      const forbidden = body.scopes.filter((scope) => !isProjectScope(scope));
+      if (forbidden.length > 0) {
+        throw new ValidationError(
+          `a project key may only hold project scopes; refused: ${forbidden.join(", ")}. ` +
+            `Allowed: ${PROJECT_SCOPES.join(", ")}.`,
+          "scopes",
+        );
+      }
+
       const { apiKey, plaintext } = await ApiKeyStore.create({
         projectId: params.projectId,
         environmentId: params.environmentId,

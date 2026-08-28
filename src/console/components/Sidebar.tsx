@@ -11,29 +11,56 @@
  * announced as navigation.
  */
 import type { LucideIcon } from "lucide-react";
-import { LogOut, MessagesSquare, PlusCircle, Send, SlidersHorizontal, Smartphone } from "lucide-react";
+import {
+  FolderKanban,
+  LogOut,
+  MessagesSquare,
+  PlusCircle,
+  Send,
+  SlidersHorizontal,
+  Smartphone,
+} from "lucide-react";
 
 import { ThemeToggle } from "./ThemeToggle";
 
-export type SectionId = "claim" | "devices" | "chats" | "deliveries" | "settings";
+export type SectionId = "claim" | "devices" | "chats" | "deliveries" | "projects" | "settings";
 
-export const SECTIONS: Array<{ id: SectionId; label: string; icon: LucideIcon }> = [
+/**
+ * Every section, and the scope that makes it worth showing.
+ *
+ * A section whose scope the key lacks is hidden rather than shown and refused.
+ * Both are honest, but one wastes a click and reports a 403 for something the
+ * operator was invited to press — and this console is now used by two very
+ * different credentials, so the difference is most of the experience for one
+ * of them.
+ *
+ * Hiding is not the security boundary. Every route checks the scope itself;
+ * this only decides what is offered.
+ */
+export const SECTIONS: Array<{ id: SectionId; label: string; icon: LucideIcon; scope?: string }> = [
   { id: "devices", label: "Devices", icon: Smartphone },
   { id: "chats", label: "Conversations", icon: MessagesSquare },
-  { id: "claim", label: "Claim a number", icon: PlusCircle },
+  { id: "claim", label: "Claim a number", icon: PlusCircle, scope: "manage:devices" },
   { id: "deliveries", label: "Deliveries", icon: Send },
-  { id: "settings", label: "Settings", icon: SlidersHorizontal },
+  { id: "projects", label: "Projects", icon: FolderKanban, scope: "manage:projects" },
+  { id: "settings", label: "Settings", icon: SlidersHorizontal, scope: "manage:instance" },
 ];
+
+/** The sections a key holding these scopes should be offered. */
+export const sectionsFor = (scopes: string[]): typeof SECTIONS =>
+  SECTIONS.filter((section) => section.scope === undefined || scopes.includes(section.scope));
 
 export function Sidebar({
   active,
   onSelect,
   onSignOut,
   identity,
+  scopes,
 }: {
   active: SectionId;
   onSelect: (id: SectionId) => void;
   onSignOut: () => void;
+  scopes: string[];
   identity: {
     projectId: string;
     environmentId: string;
@@ -44,7 +71,7 @@ export function Sidebar({
   return (
     <aside className="flex w-56 shrink-0 flex-col justify-between border-r border-slate-200 bg-white/50 dark:border-slate-800 dark:bg-slate-900/30">
       <nav aria-label="Sections" className="flex flex-col gap-0.5 p-2">
-        {SECTIONS.map(({ id, label, icon: Icon }) => (
+        {sectionsFor(scopes).map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"

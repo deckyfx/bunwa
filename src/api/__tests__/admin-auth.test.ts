@@ -147,6 +147,19 @@ describe("with manage:projects", () => {
 });
 
 describe("the flag", () => {
+  test("answers before authentication, not after", async () => {
+    // A disabled surface that answers 401 is a credential oracle: it tells an
+    // unauthenticated caller that the endpoint exists and only the credential
+    // is missing. requireApiKey is a `derive`, which runs before
+    // beforeHandle — so the flag has to be checked earlier still.
+    Bun.env["ADMIN_API_ENABLED"] = "false";
+    resetConfig();
+    const disabled = createApp();
+
+    const res = await disabled.handle(new Request("http://localhost/admin/v1/projects"));
+    expect(res.status).toBe(404);
+  });
+
   test("still removes the surface entirely", async () => {
     // A flag is a deployment decision and a credential check is a different
     // thing; adding one must not have quietly retired the other.
@@ -160,5 +173,71 @@ describe("the flag", () => {
     );
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe("what a project key may be granted", () => {
+  const mintKeyWithScopes = async (scopes: string[]) => {
+    const admin = await keyWith([...ALL_SCOPES], "admin");
+
+    const project = (await (
+      await call(
+        { method: "POST", path: "/admin/v1/projects", body: { slug: "acme", displayName: "Acme" } },
+        { "x-api-key": admin },
+      )
+    ).json()) as { id: string };
+
+    const environment = (await (
+      await call(
+        {
+          method: "POST",
+          path: `/admin/v1/projects/${project.id}/environments`,
+          body: { slug: "production", kind: "live" },
+        },
+        { "x-api-key": admin },
+      )
+    ).json()) as { id: string };
+
+    return call(
+      {
+        method: "POST",
+        path: `/admin/v1/projects/${project.id}/environments/${environment.id}/api-keys`,
+        body: { label: "tenant", scopes },
+      },
+      { "x-api-key": admin },
+    );
+  };
+
+  test("project scopes are allowed", async () => {
+    const res = await mintKeyWithScopes(["send:text", "receive:messages"]);
+    expect(res.status).toBe(201);
+  });
+
+  test("manage:projects is refused", async () => {
+    // The escalation this boundary exists to stop: a tenant credential able to
+    // create further tenants. It would be one string in a request body.
+    const res = await mintKeyWithScopes(["send:text", "manage:projects"]);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(res.status).toBeLessThan(500);
+  });
+
+  test("manage:instance is refused", async () => {
+    // Renaming the deployment and changing the zone every log line is written
+    // in are not a tenant's to do.
+    const res = await mintKeyWithScopes(["manage:instance"]);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+
+  test("an unknown scope is refused rather than stored", async () => {
+    // A typo becomes a scope that no route checks, so the key silently has
+    // less access than the operator believes they granted.
+    const res = await mintKeyWithScopes(["send:txt"]);
+    expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+
+  test("the refusal names what was wrong", async () => {
+    const res = await mintKeyWithScopes(["manage:projects"]);
+    const body = (await res.json()) as { detail?: string };
+    expect(body.detail ?? "").toContain("manage:projects");
   });
 });

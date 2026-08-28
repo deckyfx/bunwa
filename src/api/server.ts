@@ -312,11 +312,11 @@ export function createApp(registry?: EngineRegistry, mode: ServerMode = "headles
     .use(ruleRoutes)
 
 
-    // Mounted only when explicitly enabled. The admin surface has no
-    // authentication yet, so it must not be reachable by default — an
-    // unauthenticated key-minting endpoint is not something to leave to a
-    // reverse proxy's configuration.
-    .use(config().adminApiEnabled ? adminRoutes : new Elysia());
+    // Mounted unconditionally; the plugin enforces the flag itself. A
+    // conditional mount made the app type a union of "these routes exist" and
+    // "they do not", which is how Eden lost every device and message call
+    // once already — and had lost `admin` entirely for the console.
+    .use(adminRoutes);
 
   return app;
 }
