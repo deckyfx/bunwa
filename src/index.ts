@@ -7,11 +7,11 @@
  */
 import { config, ConfigError, type Config } from "./config/env";
 import { createServer } from "./api/server";
+import type { ConsolePage } from "./api/types";
 import { MigrationManager } from "./db/migration-manager";
 import { startWorker } from "./delivery/worker";
 import { EngineRegistry } from "./engine/registry";
 import { BaileysAdapter } from "./engine/baileys/adapter";
-import { GowaAdapter } from "./engine/gowa/adapter";
 import { startEngineConsumer } from "./engine/consumer";
 import { startHousekeeping } from "./ops/housekeeping";
 import { log } from "./observability/logger";
@@ -19,7 +19,17 @@ import { log } from "./observability/logger";
 /** How long to let in-flight requests finish before closing connections. */
 const SHUTDOWN_DRAIN_MS = 10_000;
 
-async function main(): Promise<void> {
+/**
+ * Start the process: validate config, migrate, register the engine, serve, and
+ * then wait for a signal.
+ *
+ * Exported, and takes the console page as an argument rather than importing
+ * it, so the two entry points differ by one argument instead of each owning a
+ * copy of this sequence. `src/index-headless.ts` never imports the page, which
+ * is what keeps React out of what a headless build serves; a runtime switch
+ * would bundle the thing it exists to exclude.
+ */
+async function main(consolePage?: ConsolePage): Promise<void> {
   let cfg: Config;
   try {
     cfg = config();
@@ -37,28 +47,21 @@ async function main(): Promise<void> {
   // an unattended schema change is not something a deploy should decide.
   await MigrationManager.init();
 
-  // Registration order is preference order: the pairing route asks the registry
-  // for capacity without naming an engine, so what a deployment registers, and
-  // in what sequence, is the whole of the choice. gowa first while it is the
-  // proven one; ADR-0002 keeps it registered even after Baileys works, because
-  // two engines is the failover.
+  // Baileys is the engine. gowa was engine #1 through stages 0-4 and is gone:
+  // ADR-0002 kept it as a failover, and that stopped being worth its weight
+  // once the pivot was committed — two engines is insurance only while both
+  // are maintained, and nothing was maintaining the adapter.
   //
-  // Capacity is bounded because a process holding every device is the blast
-  // radius ADR-0003 exists to avoid.
+  // Capacity is bounded because one process holding every device is the blast
+  // radius ADR-0003 exists to avoid. That reasoning changed shape rather than
+  // going away: these sockets share this process, so the bound is on sockets
+  // rather than on containers.
   const registry = new EngineRegistry();
-  if (cfg.gowaBaseUrl !== null) {
-    registry.register({
-      id: "gowa-1",
-      kind: "gowa",
-      capacity: cfg.enginePoolCapacity,
-      engine: new GowaAdapter({ baseUrl: cfg.gowaBaseUrl }),
-    });
-  }
 
   if (cfg.baileysEnabled) {
-    // Registered after gowa, so gowa is preferred while it is the proven one —
-    // registration order is preference order. ADR-0002 keeps both: two working
-    // engines is the failover, and it costs one directory.
+    // The only engine now. Still behind a flag rather than unconditional: it
+    // has never paired a real device, and a deployment should choose that
+    // rather than be upgraded into it.
     registry.register({
       id: "baileys-1",
       kind: "baileys",
@@ -72,7 +75,7 @@ async function main(): Promise<void> {
     // Said once, loudly. A server with no engine answers /health and every
     // read, then fails only when someone tries to pair — which reads as a
     // pairing bug rather than a deployment that was never given an engine.
-    log.warn("no engine is configured; pairing will be refused (set GOWA_BASE_URL, or BAILEYS_ENABLED with CREDENTIAL_ENCRYPTION_KEY)");
+    log.warn("no engine is configured; pairing will be refused (set BAILEYS_ENABLED and CREDENTIAL_ENCRYPTION_KEY)");
   }
 
   // Engine events reach the control plane only through this. Without it a
@@ -80,7 +83,7 @@ async function main(): Promise<void> {
   // would ever reach a tenant.
   const stopConsumers = registry.list().map((pool) => startEngineConsumer(pool.engine));
 
-  const server = createServer(registry);
+  const server = createServer(registry, consolePage);
   // In-process for now; moving it out is the same trigger as moving off SQLite.
   // Sweeps that nothing else owns: expired idempotency keys, closed rate-limit
   // windows, and — the one that matters — sends accepted but never
@@ -89,7 +92,7 @@ async function main(): Promise<void> {
   const stopHousekeeping = startHousekeeping();
 
   const stopWorker = startWorker({ allowInsecure: cfg.allowInsecureWebhookTargets });
-  log.info("bunwa started", { ...cfg.describe(), url: server.url.toString() });
+  log.info("bunwa started", { ...cfg.describe(), url: server.server?.url.toString() });
 
   /** Drain in-flight requests before exiting, so a deploy drops nothing. */
   // Idempotent: two signals in quick succession must not run this twice and
@@ -142,4 +145,4 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
 }
 
-await main();
+export { main };

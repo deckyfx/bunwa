@@ -15,7 +15,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const PORT = "src/engine/baileys/socket.ts";
-const DASHBOARD = "dashboard/src";
+const CONSOLE = "src/console";
 const LIBRARY = "@whiskeysockets/baileys";
 
 /** Every way a file could reach the library. */
@@ -62,9 +62,10 @@ describe("only the port module knows about Baileys", () => {
     expect(readFileSync(PORT, "utf8")).toContain(`from "${LIBRARY}"`);
   });
 
-  test("the dashboard does not reach the library either", () => {
-    // A separate subproject with its own dependencies, so its imports resolve
-    // independently and would not be caught by the sweep above.
+  test("the console does not reach the library either", () => {
+    // Now part of src, so the sweep above already covers it — kept as its own
+    // case because the console is where a well-meaning import would go, and a
+    // named failure says that faster than one buried in a repo-wide list.
     //
     // Asserted rather than skipped when the directory is missing. A skip would
     // read as a pass, so moving the dashboard would silently stop this rule
@@ -72,8 +73,8 @@ describe("only the port module knows about Baileys", () => {
     // prevent, reproduced in the guard itself. The path is relative to the
     // repository root, so a bare readdirSync would throw ENOENT and blame the
     // filesystem rather than the move.
-    expect(existsSync(DASHBOARD), `${DASHBOARD} is gone; this sweep no longer covers it`).toBe(true);
-    const offenders = sourceFiles(DASHBOARD).filter((f) => {
+    expect(existsSync(CONSOLE), `${CONSOLE} is gone; this sweep no longer covers it`).toBe(true);
+    const offenders = sourceFiles(CONSOLE).filter((f) => {
       const text = readFileSync(f, "utf8");
       return IMPORT_FORMS.some((pattern) => pattern.test(text));
     });

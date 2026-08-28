@@ -6,10 +6,10 @@
  * the port's — which is what ADR-0009 is protecting and what lets this be
  * swapped for gowa or a successor without touching anything above it.
  *
- * The interesting difference from `GowaAdapter`: gowa is a separate process
- * holding sockets, so that adapter is an HTTP client. Here the sockets are in
- * this process, so this class owns their lifecycle — connect, reconnect,
- * backoff, and knowing when to stop.
+ * The sockets live in this process, so this class owns their lifecycle —
+ * connect, reconnect, backoff, and knowing when to stop. That is the whole
+ * shape of it: there is no server to ask, and nothing else to blame when a
+ * device is down.
  */
 import {
   EngineError,

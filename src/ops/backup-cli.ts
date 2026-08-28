@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   }
 
   const [command, argument] = Bun.argv.slice(2);
-  const directory = process.env["BACKUP_DIR"] ?? "./data/backups";
+  const directory = Bun.env["BACKUP_DIR"] ?? "./data/backups";
 
   if (command === "list") {
     const backups = await listBackups(directory);

@@ -15,31 +15,15 @@
 /**
  * Which implementation backs a pool.
  *
- * "baileys" is the engine stage 4 exists to add: bunwa speaking WhatsApp
- * directly rather than proxying gowa. "native" predates it and meant the same
- * intention before the library was chosen; it stays because deployed rows may
- * carry it, and ADR-0002 keeps gowa permanently as the failover rather than
- * removing it once Baileys works.
- */
-export type EngineKind = "gowa" | "baileys" | "native" | "fake";
-
-/**
- * The kind as stored on a device row.
+ * Two, because there are two: Baileys speaks WhatsApp, and the fake engine
+ * exists for tests and the conformance suite.
  *
- * Identical to EngineKind today, and written out rather than aliased to it on
- * purpose: the persisted set is a data format that outlives any one build, so
- * widening it is a migration question while widening EngineKind is not. As an
- * alias, a new engine kind would cross this boundary silently; spelled out,
- * persistedKind fails to compile until someone decides what to store. The pairing route previously
- * collapsed everything that was not "native" into "gowa" at this boundary,
- * which recorded the wrong engine against every device a fake pool held.
+ * "gowa" and "native" were here until the pivot. They are gone rather than
+ * kept for compatibility — nothing has ever paired, the devices table is
+ * empty, and a value retained for rows that do not exist is a hedge against
+ * a decision already made.
  */
-export type PersistedEngineKind = "gowa" | "baileys" | "native" | "fake";
-
-/** The kind to record for a pool. Explicit so the mapping has one home. */
-export function persistedKind(kind: EngineKind): PersistedEngineKind {
-  return kind;
-}
+export type EngineKind = "baileys" | "fake";
 
 /** How a device is being paired. */
 export type PairingMethod = "qr" | "code";

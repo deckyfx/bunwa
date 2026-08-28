@@ -120,24 +120,24 @@ export class Config {
    */
   readonly allowInsecureWebhookTargets: boolean;
   /**
-   * Where the colocated gowa engine listens.
+   * Devices per engine pool. Bounds the blast radius of one pool failing.
    *
-   * Null disables the engine entirely, which is the right default for a process
-   * that only serves the admin API or runs migrations — registering a pool that
-   * cannot answer would report every device degraded.
+   * ADR-0003 set this bound when a pool was a separate container, so the
+   * operating system enforced it. The engine runs in this process now, which
+   * makes the bound one on sockets rather than on containers — still worth
+   * having, and no longer the isolation the ADR described.
    */
-  readonly gowaBaseUrl: string | null;
-  /** Devices per engine pool. Bounds the blast radius of one pool failing. */
   readonly enginePoolCapacity: number;
 
   /**
    * Key for encrypting WhatsApp credentials at rest, or null if none is set.
    *
-   * Required by the engine that stores credentials rather than by production
-   * as such — a gowa-only deployment never holds them, because gowa does.
-   * Null is therefore permitted anywhere BAILEYS_ENABLED is off, and
-   * AuthStateStore still refuses to write without it, so no configuration puts
-   * account-takeover material in the clear.
+   * Required by the engine that stores credentials rather than by production as
+   * such: with BAILEYS_ENABLED off nothing in this process holds WhatsApp
+   * credentials, so there is nothing to encrypt. Null is therefore permitted
+   * anywhere that flag is off, and AuthStateStore still refuses to write
+   * without it, so no configuration puts account-takeover material in the
+   * clear.
    */
   readonly credentialEncryptionKey: string | null;
 
@@ -166,8 +166,6 @@ export class Config {
       );
     }
     this.allowInsecureWebhookTargets = boolean(source, "ALLOW_INSECURE_WEBHOOK_TARGETS", false);
-    const gowa = source["GOWA_BASE_URL"];
-    this.gowaBaseUrl = gowa === undefined || gowa.trim() === "" ? null : gowa.trim();
     this.enginePoolCapacity = integer(source, "ENGINE_POOL_CAPACITY", 25, 1, 500);
 
     // WhatsApp credentials are encrypted at rest; this is the key.
@@ -191,7 +189,7 @@ export class Config {
 
     this.credentialEncryptionKey = suppliedKey;
 
-    // Whether to run WhatsApp in this process rather than proxying gowa.
+    // Whether to hold WhatsApp sockets in this process at all.
     //
     // Off by default. The adapter passes its conformance suite against a stub,
     // which proves it satisfies the contract and not that Baileys behaves as
@@ -201,10 +199,11 @@ export class Config {
 
     // Required by the engine that stores credentials, not by production as
     // such. The first version demanded it of every production deployment and
-    // CI caught the flaw: a gowa-only container never holds WhatsApp
-    // credentials — gowa does — so the key would have been a barrier
-    // protecting nothing, and the failure was a container that refused to
-    // start rather than a warning anyone could act on.
+    // CI caught the flaw: back when gowa held the credentials, a container
+    // running without the engine held none of its own, so the key would have
+    // been a barrier protecting nothing — and the failure was a container that
+    // refused to start rather than a warning anyone could act on. The engine
+    // changed; the shape of the mistake is what this comment is keeping.
     //
     // The engine that does store them still cannot start without it, and
     // AuthStateStore refuses to write without it whatever the mode, so there
@@ -252,9 +251,10 @@ export class Config {
       runtimeDir: this.runtimeDir,
       adminApiEnabled: this.adminApiEnabled,
       allowInsecureWebhookTargets: this.allowInsecureWebhookTargets,
-      // Redacted: a base URL may carry basic-auth credentials for the engine,
-      // and describe() is written to the application log at every start.
-      gowa: this.gowaBaseUrl === null ? "(disabled)" : redactUrl(this.gowaBaseUrl),
+      baileysEnabled: this.baileysEnabled,
+      // Never the key itself, only whether one is present. describe() is
+      // written to the application log at every start.
+      credentialEncryptionKey: this.credentialEncryptionKey === null ? "(unset)" : "(set)",
       enginePoolCapacity: this.enginePoolCapacity,
     };
   }

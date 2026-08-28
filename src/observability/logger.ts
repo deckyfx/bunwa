@@ -227,6 +227,24 @@ export function withContext<T>(context: LogContext, fn: () => T): T {
 }
 
 /**
+ * Attach these fields to everything the current request goes on to emit.
+ *
+ * The same mechanism as withContext, without a callback to wrap. Elysia owns
+ * the server, so there is no fetch handler left to put the request inside —
+ * `derive` runs per request and this sets the store for the rest of it.
+ *
+ * Validated identically: this is exported, the id is echoed into log lines and
+ * error bodies, and an unvalidated one is a log-injection vector.
+ */
+export function enterContext(context: LogContext): void {
+  const correlationId = sanitiseCorrelationId(context.correlationId);
+  if (correlationId === undefined) {
+    throw new Error("enterContext requires a correlation id of 1-128 characters from [A-Za-z0-9._:-]");
+  }
+  storage.enterWith({ ...context, correlationId });
+}
+
+/**
  * The correlation id of the current context, if there is one.
  *
  * For code that must put the id somewhere other than a log line — an error
