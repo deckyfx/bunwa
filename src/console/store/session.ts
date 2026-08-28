@@ -45,6 +45,16 @@ const readStoredKey = (): string => {
   }
 };
 
+/**
+ * The console's session: the API key, and what the server says it resolves to.
+ *
+ * A store rather than state in the shell because every screen needs it, and
+ * passing it down meant each one took an `apiKey` prop — which is how a stale
+ * key reached a screen that had already been told to use a different one. A
+ * singleton also outlives any component, so a response landing after an unmount
+ * has somewhere valid to check itself against instead of writing into a tree
+ * that is gone.
+ */
 export const useSession = create<SessionState>((set, get) => ({
   apiKey: readStoredKey(),
   identity: null,

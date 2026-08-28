@@ -55,6 +55,20 @@ interface ChatState {
   send: () => Promise<void>;
 }
 
+/**
+ * Which selection request is the current one.
+ *
+ * The two guards below — same thread, same key — are not enough on their own.
+ * Selecting A, then B, then A again leaves two requests for A outstanding, and
+ * both satisfy every check when they land, so whichever resolves last wins
+ * regardless of which was asked for last. The older one then paints a message
+ * list the newer request has already replaced.
+ *
+ * Module scope rather than store state: nothing renders it, and putting it in
+ * the store would make every in-flight request a re-render.
+ */
+let selectionGeneration = 0;
+
 export const useChats = create<ChatState>((set, get) => ({
   threads: null,
   selectedId: null,
@@ -81,6 +95,7 @@ export const useChats = create<ChatState>((set, get) => ({
   },
 
   select: async (threadId: string) => {
+    const mine = ++selectionGeneration;
     const { apiKey } = useSession.getState();
     // Same early return as loadThreads. Without a credential the request is
     // refused, and the refusal became "could not load this conversation" — an
@@ -92,6 +107,9 @@ export const useChats = create<ChatState>((set, get) => ({
 
     const { data, error } = await client(apiKey).v1.chats({ id: threadId }).messages.get();
 
+    // The newest request for this thread, not merely one for the thread that
+    // happens to be open.
+    if (selectionGeneration !== mine) return;
     // The thread the operator is looking at now, not the one they clicked.
     if (get().selectedId !== threadId) return;
     if (useSession.getState().apiKey !== apiKey) return;

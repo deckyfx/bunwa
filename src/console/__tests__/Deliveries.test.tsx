@@ -105,8 +105,13 @@ describe("a delivery cannot be replayed twice at once", () => {
       { ...delivery("b", "second.event"), state: "dead" as const },
     ];
     (api as { replay: typeof api.replay }).replay = (_key: string, id: string) =>
-      new Promise<unknown>((resolve) => {
-        inFlight.set(id, () => resolve(undefined));
+      // Promise<void>, matching what replay returns. Typed as `unknown` the
+      // stub satisfied the signature by being wider than it, so a replay that
+      // started resolving with a value would have gone unnoticed here.
+      new Promise<void>((resolve) => {
+        inFlight.set(id, () => {
+          resolve();
+        });
       });
 
     try {
