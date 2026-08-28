@@ -14,6 +14,7 @@
  * be able to stop an operator setting one.
  */
 import { useEffect, useMemo, useState } from "react";
+import { LocateFixed } from "lucide-react";
 
 import { renderDateTime } from "../../time/render";
 
@@ -33,6 +34,22 @@ function knownZones(): string[] {
     // Older engine, or a locked-down one. Fall through.
   }
   return ["UTC", "Asia/Jakarta", "Asia/Singapore", "Asia/Tokyo", "Europe/London", "America/New_York"];
+}
+
+/**
+ * The zone this browser is set to.
+ *
+ * Offered rather than applied. It is a good guess — an operator usually runs
+ * the console from somewhere near the deployment — but only a guess: a server
+ * in Jakarta administered from London wants Jakarta, and silently filling in
+ * London would be wrong in a way nobody notices until a timestamp is read.
+ */
+function browserZone(): string | null {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || null;
+  } catch {
+    return null;
+  }
 }
 
 /** Whether the runtime can actually format in this zone. */
@@ -75,12 +92,29 @@ export function TimezoneField({
   }, []);
 
   const valid = value.trim() !== "" && usable(value.trim());
+  const detected = browserZone();
+  const offerDetected = !disabled && detected !== null && detected !== value.trim();
 
   return (
     <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-sm font-medium text-slate-700 dark:text-slate-300">
-        Server timezone
-      </label>
+      <div className="flex items-baseline justify-between gap-2">
+        <label htmlFor={id} className="text-sm font-medium text-slate-700 dark:text-slate-300">
+          Server timezone
+        </label>
+
+        {offerDetected && (
+          <button
+            type="button"
+            onClick={() => {
+              onChange(detected);
+            }}
+            className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline dark:text-sky-400"
+          >
+            <LocateFixed aria-hidden size={12} />
+            use {detected}
+          </button>
+        )}
+      </div>
 
       <input
         id={id}

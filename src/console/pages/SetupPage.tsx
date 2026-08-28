@@ -11,11 +11,12 @@
  */
 import { useEffect, useState } from "react";
 
-import { Check, Copy, LoaderCircle, Rocket, ShieldCheck } from "lucide-react";
+import { Check, Copy, LoaderCircle, Rocket, ShieldCheck, Wand2 } from "lucide-react";
 
 import { Card, Note } from "../components/Card";
 import { Field } from "../components/Field";
 import { TimezoneField } from "../components/TimezoneField";
+import { suggestInstanceName } from "../lib/suggest";
 import { useSetup } from "../store/setup";
 
 /**
@@ -152,6 +153,18 @@ export function SetupPage() {
           value={instanceName}
           onChange={setInstanceName}
           placeholder="grande-pos"
+          action={
+            <button
+              type="button"
+              onClick={() => {
+                setInstanceName(suggestInstanceName());
+              }}
+              className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline dark:text-sky-400"
+            >
+              <Wand2 aria-hidden size={12} />
+              suggest
+            </button>
+          }
           hint={
             preview === ""
               ? "Shown in WhatsApp under Linked Devices. Letters and digits only."

@@ -11,11 +11,12 @@
  */
 import { useEffect, useState } from "react";
 
-import { CircleCheck, LoaderCircle, Save, SlidersHorizontal } from "lucide-react";
+import { CircleCheck, LoaderCircle, Save, SlidersHorizontal, Wand2 } from "lucide-react";
 
 import { Card, Note } from "../components/Card";
 import { Field } from "../components/Field";
 import { TimezoneField } from "../components/TimezoneField";
+import { suggestInstanceName } from "../lib/suggest";
 import { useSettings } from "../store/settings";
 
 export function SettingsPage() {
@@ -63,6 +64,20 @@ export function SettingsPage() {
           value={instanceName}
           onChange={setInstanceName}
           disabled={nameLocked}
+          action={
+            nameLocked ? undefined : (
+              <button
+                type="button"
+                onClick={() => {
+                  setInstanceName(suggestInstanceName());
+                }}
+                className="inline-flex items-center gap-1 text-xs text-sky-700 hover:underline dark:text-sky-400"
+              >
+                <Wand2 aria-hidden size={12} />
+                suggest
+              </button>
+            )
+          }
           hint="Shown in WhatsApp under Linked Devices. It applies the next time a device is paired — an already-linked device keeps the name it was paired under."
         />
 

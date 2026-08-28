@@ -89,3 +89,38 @@ describe("a locked field", () => {
     expect(document.getElementById(described ?? "")?.textContent).toBe("why");
   });
 });
+
+describe("suggestions", () => {
+  test("a field's action sits beside its label without breaking the association", async () => {
+    // The first attempt at this passed an empty label and rendered the heading
+    // separately, which broke every query by label text — and would have
+    // broken the accessible name for anyone not looking at the screen.
+    const { suggestInstanceName } = await import("../lib/suggest");
+    let name = "";
+
+    render(
+      <Field
+        id="n"
+        label="Instance name"
+        value={name}
+        onChange={(next) => {
+          name = next;
+        }}
+        action={
+          <button
+            type="button"
+            onClick={() => {
+              name = suggestInstanceName("grande.example.com");
+            }}
+          >
+            suggest
+          </button>
+        }
+      />,
+    );
+
+    expect(screen.getByLabelText("Instance name")).toBeDefined();
+    fireEvent.click(screen.getByRole("button", { name: "suggest" }));
+    expect(name).toBe("grande");
+  });
+});

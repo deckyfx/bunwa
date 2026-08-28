@@ -5,7 +5,7 @@
  * same way. The tests query by label text, which only works when that
  * association is real rather than visual.
  */
-import { useId, useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Eye, EyeOff } from "lucide-react";
 
 export function Field({
@@ -18,6 +18,7 @@ export function Field({
   disabled = false,
   hint,
   mono = false,
+  action,
 }: {
   id: string;
   label: string;
@@ -31,6 +32,14 @@ export function Field({
   hint?: string;
   /** For values read character by character: keys, ids, timezone names. */
   mono?: boolean;
+  /**
+   * A control belonging to the field, shown beside its label.
+   *
+   * Beside rather than inside, so it is reachable whether the box is empty or
+   * full — an operator who dislikes a suggestion should not have to clear the
+   * field to be offered another.
+   */
+  action?: ReactNode;
 }) {
   /*
    * A masked field must be readable on demand.
@@ -53,9 +62,12 @@ export function Field({
 
   return (
     <div className="flex flex-col gap-1">
-      <label htmlFor={id} className="text-sm font-medium text-slate-700 dark:text-slate-300">
-        {label}
-      </label>
+      <div className="flex items-baseline justify-between gap-2">
+        <label htmlFor={id} className="text-sm font-medium text-slate-700 dark:text-slate-300">
+          {label}
+        </label>
+        {action}
+      </div>
 
       <div className="relative flex items-center">
         <input
