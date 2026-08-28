@@ -71,6 +71,14 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
       // key was able to do both to every other tenant on the deployment.
       requireScope(auth, "manage:instance", path);
 
+      // Everything is checked before anything is written.
+      //
+      // One pass that validated and wrote as it went left a valid instance
+      // name persisted and a rejected timezone unwritten, then answered 400 —
+      // so the caller was told the request failed while half of it had already
+      // taken effect, and the console showed a name it had been told was not
+      // saved.
+      const pending: Array<{ setting: SettingKey; value: string }> = [];
       for (const [key, value] of Object.entries(body)) {
         if (value === undefined || value.trim() === "") continue;
         const setting = key as SettingKey;
@@ -82,6 +90,11 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
           throw new ValidationError(`${setting} is set in the environment and cannot be changed here`, setting);
         }
 
+        // Throws on a bad value, before any write has happened.
+        pending.push({ setting, value: SettingsStore.validate(setting, value) });
+      }
+
+      for (const { setting, value } of pending) {
         const applied = SettingsStore.set(setting, value);
         // Rendering reads a cached zone, so a write that did not update it
         // would take effect only after a restart.

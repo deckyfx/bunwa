@@ -111,7 +111,26 @@ export function SetupPage() {
   if (configured === null || settings === null) {
     return (
       <Card id="setup" title="Set up this instance" icon={Rocket}>
-        <Note>checking this instance…</Note>
+        {/* A failed status check used to sit on "checking this instance…" for
+            ever: the store had set `error`, nothing here read it, and the only
+            way out was reloading the page. This is the screen an operator
+            reaches when nothing else works yet, so a dead end here is a dead
+            end for the whole instance. */}
+        {error === null ? (
+          <Note>checking this instance…</Note>
+        ) : (
+          <div className="flex flex-col items-start gap-3">
+            <Note tone="bad">{error}</Note>
+            <button
+              type="button"
+              onClick={() => void refresh()}
+              disabled={busy}
+              className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
+            >
+              {busy ? "checking…" : "try again"}
+            </button>
+          </div>
+        )}
       </Card>
     );
   }

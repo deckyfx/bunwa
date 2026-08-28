@@ -605,7 +605,9 @@ export class BaileysAdapter implements DeviceEngine {
             break;
 
           case "disconnected":
-            this.onDisconnected(deviceId, session, event.reason ?? "transient", event.recoverable === true);
+            // `handle`, so a socket that has already been replaced cannot
+            // speak for the one that replaced it. See onDisconnected.
+            this.onDisconnected(deviceId, session, event.reason ?? "transient", event.recoverable === true, handle);
             break;
 
           case "connecting":
@@ -626,7 +628,24 @@ export class BaileysAdapter implements DeviceEngine {
    * logged-out or replaced session is how a number gets restricted rather than
    * how it comes back.
    */
-  private onDisconnected(deviceId: string, session: Session, reason: DisconnectKind | string, recoverable: boolean): void {
+  private onDisconnected(
+    deviceId: string,
+    session: Session,
+    reason: DisconnectKind | string,
+    recoverable: boolean,
+    from?: SocketHandle,
+  ): void {
+    // A closed socket still drains its queue, so the one `dropSocket` just
+    // replaced can deliver its own `disconnected` after `connect` has stored
+    // the replacement. Without this guard that late event cleared the *new*
+    // socket's handle and intent and scheduled a "resume" reconnect over it —
+    // which is precisely the QR-to-code replacement path, broken by the thing
+    // that makes it work.
+    //
+    // Optional because the reconnect path below calls this with no handle of
+    // its own; there is no live socket to be stale in that case.
+    if (from !== undefined && session.handle !== null && session.handle !== from) return;
+
     session.connected = false;
     session.handle = null;
     session.intent = null;

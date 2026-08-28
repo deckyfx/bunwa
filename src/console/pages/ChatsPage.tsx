@@ -85,7 +85,14 @@ export function ChatsPage() {
     }
     if (wanted === selectedId) return;
     if (threads === null) return;
-    if (!threads.some((thread) => thread.id === wanted)) return;
+    if (!threads.some((thread) => thread.id === wanted)) {
+      // Cleared, not just ignored. Returning left the previous conversation on
+      // screen under an address naming a different one — and the thread list
+      // has loaded by this point, so the id is known to be absent rather than
+      // merely not arrived yet.
+      clearSelection();
+      return;
+    }
 
     void select(wanted);
   }, [wanted, selectedId, threads, select, clearSelection]);

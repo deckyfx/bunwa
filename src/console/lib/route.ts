@@ -45,17 +45,33 @@ export const DEFAULT_ROUTE: Route = { section: "devices", detail: null };
  * rendering nothing: a hand-edited or stale address should land somewhere
  * usable, not on a blank page.
  */
+/**
+ * Decode, or keep the raw text.
+ *
+ * `decodeURIComponent` throws `URIError` on an incomplete escape, so a hash
+ * like `#devices/%E0%A4%A` made `parseRoute` throw — which the docstring above
+ * says it does not do. The store's caller happened to catch it and land on the
+ * default, so the stated rule held by accident there and nowhere else.
+ */
+function decodeOrRaw(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export function parseRoute(hash: string): Route {
   const raw = hash.replace(/^#/, "");
   if (raw === "") return DEFAULT_ROUTE;
 
   const [head = "", ...rest] = raw.split("/");
-  const name = decodeURIComponent(head).toLowerCase();
+  const name = decodeOrRaw(head).toLowerCase();
 
   const section = FROM_URL[name] ?? (SECTIONS.includes(name as SectionId) ? (name as SectionId) : null);
   if (section === null) return DEFAULT_ROUTE;
 
-  const detail = rest.length === 0 ? null : decodeURIComponent(rest.join("/"));
+  const detail = rest.length === 0 ? null : decodeOrRaw(rest.join("/"));
   return { section, detail: detail === "" ? null : detail };
 }
 

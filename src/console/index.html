@@ -23,14 +23,25 @@
       never be able to stop the console loading.
     -->
     <script>
+      // The system preference is read first, and on its own, because the
+      // stylesheet cannot fall back to it: `dark:` is keyed off this class
+      // alone, not off a media query. The old catch left no class at all and
+      // called that "leaving it to the stylesheet" — so a browser with storage
+      // blocked and a dark system preference rendered light.
+      var system = false;
       try {
-        var stored = localStorage.getItem("bunwa.theme");
-        var system = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        if (stored === "dark" || (stored !== "light" && system)) {
-          document.documentElement.classList.add("dark");
-        }
+        system = window.matchMedia("(prefers-color-scheme: dark)").matches;
       } catch (e) {
-        /* leave the system preference to the stylesheet */
+        /* no matchMedia: light is the safe assumption */
+      }
+      var stored = null;
+      try {
+        stored = localStorage.getItem("bunwa.theme");
+      } catch (e) {
+        /* private windows and blocked site data throw; the preference stands */
+      }
+      if (stored === "dark" || (stored !== "light" && system)) {
+        document.documentElement.classList.add("dark");
       }
     </script>
   </head>

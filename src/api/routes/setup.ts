@@ -138,7 +138,11 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
 
         // Settings are accepted whether or not a key is minted, so an operator
         // whose key came from the environment can still name the instance.
-        const applied: Partial<Record<SettingKey, string>> = {};
+        // Checked in full before anything is written, so a request that is
+        // going to be refused does not leave half of itself applied: a valid
+        // name persisted beside a rejected timezone, answered 400, and the
+        // console showing a value it had been told was not saved.
+        const pending: Array<{ key: SettingKey; value: string }> = [];
         for (const key of SETTING_KEYS) {
           const value = body[key];
           if (value === undefined || value.trim() === "") continue;
@@ -152,8 +156,12 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
               key,
             );
           }
-          applied[key] = SettingsStore.set(key, value);
+          // Throws on a bad value, before any write has happened.
+          pending.push({ key, value: SettingsStore.validate(key, value) });
         }
+
+        const applied: Partial<Record<SettingKey, string>> = {};
+        for (const { key, value } of pending) applied[key] = SettingsStore.set(key, value);
 
         if (applied.serverTimezone !== undefined)
           setServerTimezone(applied.serverTimezone);

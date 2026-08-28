@@ -81,7 +81,22 @@ export function App() {
   // Whether what is in the box came from storage rather than from typing. A
   // prefilled masked field is the case where "is this the right key?" cannot
   // be answered by looking, so the field says where it came from.
-  const [restored] = useState(apiKey !== "");
+  //
+  // Latched from the store rather than read once at first render. `hydrate`
+  // proves a stored key and `forget` drops one that the instance can no longer
+  // have issued, and both happen after this component mounts — so a snapshot
+  // taken on render claimed "restored from this browser" beside a box the
+  // store had since emptied, which is a hint pointing at a credential that is
+  // not there.
+  const [restored, setRestored] = useState(false);
+
+  useEffect(() => {
+    // The store owns the key; the box mirrors it whenever it changes from
+    // outside. Typing does not come through here — it moves `draft` alone —
+    // so this cannot fight the operator mid-edit.
+    setDraft(apiKey);
+    setRestored(apiKey !== "");
+  }, [apiKey]);
   const route = useRoute((s) => s.route);
   const navigate = useRoute((s) => s.navigate);
   const replace = useRoute((s) => s.replace);
@@ -300,7 +315,13 @@ export function App() {
                     type="password"
                     mono
                     value={draft}
-                    onChange={setDraft}
+                    onChange={(next) => {
+                      // Typed now, whatever it was a moment ago: the hint
+                      // would otherwise describe the stored key while the box
+                      // holds something the operator has just entered.
+                      setRestored(false);
+                      setDraft(next);
+                    }}
                     placeholder="bw_live_…"
                     hint={
                       restored
