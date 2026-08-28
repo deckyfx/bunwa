@@ -23,14 +23,29 @@ interface SettingsState {
   save: (values: Partial<Record<SettingKey, string>>) => Promise<void>;
 }
 
-/** Whatever the server said, or something honest if it said nothing useful. */
-const messageFrom = (error: { value?: unknown } | null): string => {
+/**
+ * Whatever the server said, or something honest if it said nothing useful.
+ *
+ * 403 is called out by name because it has one cause here and a specific fix:
+ * these settings are behind `manage:instance`, and a key minted before that
+ * scope existed does not have it. "could not load settings" sent an operator
+ * looking for a network problem that was not there.
+ */
+const messageFrom = (error: { status?: unknown; value?: unknown } | null): string => {
   const value = error?.value;
+  if (typeof value === "object" && value !== null && "detail" in value) {
+    const detail = (value as { detail?: unknown }).detail;
+    if (typeof detail === "string") return detail;
+  }
   if (typeof value === "object" && value !== null && "message" in value) {
     const message = (value as { message?: unknown }).message;
     if (typeof message === "string") return message;
   }
-  return "the server rejected that";
+  if (error?.status === 403) {
+    return "this key lacks the manage:instance scope. Grant it with `bun run key:grant <prefix>`, or mint a new key.";
+  }
+  if (typeof error?.status !== "number") return "could not reach the server";
+  return `the server rejected that (${String(error.status)})`;
 };
 
 export const useSettings = create<SettingsState>((set) => ({
@@ -42,7 +57,7 @@ export const useSettings = create<SettingsState>((set) => ({
   load: async () => {
     const { data, error } = await client(useSession.getState().apiKey).v1.settings.get();
     if (error !== null || data === null) {
-      set({ error: "could not load settings" });
+      set({ error: messageFrom(error) });
       return;
     }
     set({ settings: data as Settings, error: null });

@@ -21,7 +21,8 @@
     "start:headless": "bun run src/index-headless.ts",
     "key:list": "bun run src/ops/key-cli.ts list",
     "key:new": "bun run src/ops/key-cli.ts new",
-    "key:revoke": "bun run src/ops/key-cli.ts revoke"
+    "key:revoke": "bun run src/ops/key-cli.ts revoke",
+    "key:grant": "bun run src/ops/key-cli.ts grant"
   },
   "dependencies": {
     "@elysiajs/eden": "^1.4.9",
