@@ -108,6 +108,30 @@ describe("minting the first key", () => {
     expect(res.status).toBe(401);
   });
 
+  test("two requests with the same token mint one key, not two", async () => {
+    // The token check and clearSetupToken() sat either side of an awaited
+    // create, so both requests passed the check and both minted an all-scope
+    // key — one instance, two credentials granting everything, and the
+    // operator told about one of them.
+    const [a, b] = await Promise.all([
+      finish({ instanceName: "grande" }),
+      finish({ instanceName: "grande" }),
+    ]);
+
+    // Serialised, so the second runs after the first rather than beside it —
+    // and by then the single-use token it is presenting has been spent, so it
+    // is refused. 401 is the honest answer: the credential really is no longer
+    // valid. What must not happen is two 201s, or the 500 the unserialised
+    // version produced when both raced ensureBootstrap().
+    const codes = [a.status, b.status].sort((x, y) => x - y);
+    expect(codes, "a concurrent setup was not serialised").toEqual([201, 401]);
+
+    const minted = [await a.json(), await b.json()].filter(
+      (r) => (r as { apiKey?: string | null }).apiKey != null,
+    );
+    expect(minted, "more than one key was handed out for one setup").toHaveLength(1);
+  });
+
   test("returns a key that actually authenticates", async () => {
     // The assertion that matters. A minted string that the auth path rejects
     // is worse than no setup screen: the operator has been told they are done.

@@ -108,6 +108,20 @@ describe("what it refuses to do", () => {
     expect(await exists(inside), "it deleted a database inside the backup dir").toBe(true);
   });
 
+  test("refuses a database directory that contains the backups", async () => {
+    // The mirror of the test above, and the direction that was open: the
+    // delete is recursive and DATABASE_PATH can be a directory, so a parent of
+    // BACKUP_DIR would have taken the restore point with it. Checking only
+    // "target inside backups" left the containing case reachable.
+    const { code, out } = await purge(["--yes"], { DATABASE_PATH: dir });
+    expect(code).toBe(73);
+    expect(out).toContain("backup directory");
+    expect(
+      await exists(join(backupDir, "bunwa-20260101.sqlite")),
+      "it deleted the backups by way of their parent directory",
+    ).toBe(true);
+  });
+
   test("will not take --yes in production", async () => {
     const { code, out } = await purge(["--yes"], {
       NODE_ENV: "production",

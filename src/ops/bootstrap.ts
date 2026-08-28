@@ -113,6 +113,35 @@ async function registerEnvKey(database: Database, environmentId: string, present
   }
 
   const now = new Date();
+
+  // The previous API_KEY stops working here, which is what the docstring above
+  // has always claimed and what the code did not do. Rotating the variable
+  // registered the new key and left the old row active, so a credential the
+  // operator believed they had replaced still authenticated — and the only way
+  // to find it was to know it was there. Rotation has to mean the old one is
+  // finished.
+  //
+  // Scoped to this environment's bootstrap rows: keys minted through the
+  // console or the CLI are not superseded by an environment variable changing.
+  const superseded = await database
+    .update(apiKeys)
+    .set({ revokedAt: now, updatedAt: now })
+    .where(
+      and(
+        eq(apiKeys.environmentId, environmentId),
+        eq(apiKeys.label, BOOTSTRAP_KEY_LABEL),
+        isNull(apiKeys.revokedAt),
+      ),
+    )
+    .returning({ prefix: apiKeys.keyPrefix });
+
+  if (superseded.length > 0) {
+    log.info("revoked the previous API_KEY registration", {
+      environmentId,
+      revoked: superseded.length,
+    });
+  }
+
   await database.insert(apiKeys).values({
     environmentId,
     keyHash: await Bun.password.hash(presented, { algorithm: "argon2id" }),

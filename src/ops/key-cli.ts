@@ -19,7 +19,12 @@ import { ALL_SCOPES } from "../auth/scopes";
 import { ApiKeyStore } from "../stores/api-key-store";
 import { apiKeys, environments, projects } from "../db/schema";
 import { db } from "../db";
-import { DEFAULT_ENVIRONMENT_SLUG, DEFAULT_PROJECT_SLUG, ensureBootstrap } from "./bootstrap";
+import {
+  BOOTSTRAP_KEY_LABEL,
+  DEFAULT_ENVIRONMENT_SLUG,
+  DEFAULT_PROJECT_SLUG,
+  ensureBootstrap,
+} from "./bootstrap";
 import { formatDateTime } from "../time/format";
 import { MigrationManager } from "../db/migration-manager";
 
@@ -96,10 +101,34 @@ async function mint(label: string): Promise<void> {
  * Only ever adds. Narrowing a key from here would be a silent revocation of
  * something a caller may depend on; that is what `revoke` is for.
  */
-async function grant(prefix: string): Promise<void> {
+/** Keys this instance mints for its own operator, as opposed to a tenant's. */
+const OPERATOR_LABELS = new Set([BOOTSTRAP_KEY_LABEL, "console (setup)"]);
+
+/** The scopes that reach outside a single environment. Named, so a refusal can say why. */
+const INSTANCE_WIDE = ALL_SCOPES.filter((s) => s === "manage:instance" || s === "manage:projects");
+
+async function grant(prefix: string, force: boolean): Promise<void> {
   const [row] = await db().select().from(apiKeys).where(eq(apiKeys.keyPrefix, prefix)).limit(1);
   if (row === undefined) {
     console.error(`no key with prefix ${prefix}. Run \`bun run key:list\` to see them.`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // ALL_SCOPES includes manage:instance and manage:projects, which reach past
+  // the environment a project key is confined to. Granting them to a tenant's
+  // key hands that tenant the instance — the name WhatsApp shows for every
+  // other project on this deployment, and the timezone the logs are written
+  // in. A mistyped prefix is enough, and nothing about the result is visible
+  // afterwards.
+  //
+  // This command exists to repair the operator's own console key, so that is
+  // what it does by default. Escalating anything else has to be said out loud.
+  if (!OPERATOR_LABELS.has(row.label) && !force) {
+    console.error(`refusing: "${row.label}" is not an operator key.`);
+    console.error(`granting every scope would give it ${INSTANCE_WIDE.join(" and ")},`);
+    console.error("which reach past the environment a project key is confined to.");
+    console.error(`\nIf that is genuinely what you want: bun run key:grant ${prefix} --force`);
     process.exitCode = 1;
     return;
   }
@@ -156,10 +185,10 @@ if (command === "list") {
   await mint(argument ?? "cli");
 } else if (command === "grant") {
   if (argument === undefined) {
-    console.error("usage: bun run key:grant <prefix>");
+    console.error("usage: bun run key:grant <prefix> [--force]");
     process.exitCode = 1;
   } else {
-    await grant(argument);
+    await grant(argument, Bun.argv.includes("--force"));
   }
 } else if (command === "revoke") {
   if (argument === undefined) {

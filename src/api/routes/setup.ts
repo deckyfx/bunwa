@@ -30,7 +30,11 @@ import { ApiKeyStore } from "../../stores/api-key-store";
 import { config } from "../../config/env";
 import { ensureBootstrap } from "../../ops/bootstrap";
 import { log } from "../../observability/logger";
-import { SettingsStore, SETTING_KEYS, type SettingKey } from "../../stores/settings-store";
+import {
+  SettingsStore,
+  SETTING_KEYS,
+  type SettingKey,
+} from "../../stores/settings-store";
 import { setServerTimezone } from "../../time/format";
 import { ValidationError } from "../../stores/errors";
 
@@ -43,7 +47,34 @@ import { ValidationError } from "../../stores/errors";
  */
 let setupToken: string | null = null;
 
-/** Mint a setup token and announce it. Called at boot when unconfigured. */
+/**
+ * Setup runs one at a time.
+ *
+ * Two concurrent POSTs with the same valid token raced in two places at once:
+ * both passed the token check either side of an awaited create and each minted
+ * an all-scope key — one instance, two credentials granting everything, the
+ * operator told about one — and `ensureBootstrap()` ran twice, the loser
+ * failing on the row the winner had just inserted and answering 500.
+ *
+ * Serialising the whole transition fixes both, and gives the second request a
+ * truthful answer rather than a manufactured conflict: by the time it runs the
+ * instance really is configured, so it takes the already-configured path and
+ * reports `apiKey: null`.
+ */
+let setupChain: Promise<unknown> = Promise.resolve();
+
+function serialised<T>(work: () => Promise<T>): Promise<T> {
+  // Chained through both settled paths, so one failed setup does not wedge
+  // every later attempt behind a rejected promise.
+  const run = setupChain.then(work, work);
+  setupChain = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Mint a setup token and announce it. Called at boot when unconfigured.
+ *
+ */
 export function issueSetupToken(): string {
   setupToken = crypto.randomUUID().replace(/-/g, "");
   return setupToken;
@@ -93,69 +124,84 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
    */
   .post(
     "/",
-    async ({ body, headers, set }) => {
-      const state = await ensureBootstrap();
+    async ({ body, headers, set }) =>
+      serialised(async () => {
+        const state = await ensureBootstrap();
 
-      if (!tokenMatches(headers[SETUP_TOKEN_HEADER] ?? "")) {
-        set.status = 401;
-        return {
-          error: "setup-token-required",
-          message: `Present the setup token from the server log in the ${SETUP_TOKEN_HEADER} header.`,
-        };
-      }
-
-      // Settings are accepted whether or not a key is minted, so an operator
-      // whose key came from the environment can still name the instance.
-      const applied: Partial<Record<SettingKey, string>> = {};
-      for (const key of SETTING_KEYS) {
-        const value = body[key];
-        if (value === undefined || value.trim() === "") continue;
-
-        if (SettingsStore.resolve(key).source === "environment") {
-          // Silently ignoring it would leave the console showing a value the
-          // deployment overrides, which is the failure this rule exists to
-          // prevent — so say so instead.
-          throw new ValidationError(`${key} is set in the environment and cannot be changed here`, key);
+        if (!tokenMatches(headers[SETUP_TOKEN_HEADER] ?? "")) {
+          set.status = 401;
+          return {
+            error: "setup-token-required",
+            message: `Present the setup token from the server log in the ${SETUP_TOKEN_HEADER} header.`,
+          };
         }
-        applied[key] = SettingsStore.set(key, value);
-      }
 
-      if (applied.serverTimezone !== undefined) setServerTimezone(applied.serverTimezone);
+        // Settings are accepted whether or not a key is minted, so an operator
+        // whose key came from the environment can still name the instance.
+        const applied: Partial<Record<SettingKey, string>> = {};
+        for (const key of SETTING_KEYS) {
+          const value = body[key];
+          if (value === undefined || value.trim() === "") continue;
 
-      if (state.configured) {
-        // The token is spent here too, and that is the whole point of it being
-        // single-use. Returning without clearing left it valid after a request
-        // that had already used it: an attacker who read it from the log could
-        // keep replaying this endpoint to rewrite the instance name and the
-        // server timezone, on an instance whose setup was supposedly closed.
-        //
-        // Not an error for the settings half; only minting is closed.
+          if (SettingsStore.resolve(key).source === "environment") {
+            // Silently ignoring it would leave the console showing a value the
+            // deployment overrides, which is the failure this rule exists to
+            // prevent — so say so instead.
+            throw new ValidationError(
+              `${key} is set in the environment and cannot be changed here`,
+              key,
+            );
+          }
+          applied[key] = SettingsStore.set(key, value);
+        }
+
+        if (applied.serverTimezone !== undefined)
+          setServerTimezone(applied.serverTimezone);
+
+        if (state.configured) {
+          // The token is spent here too, and that is the whole point of it being
+          // single-use. Returning without clearing left it valid after a request
+          // that had already used it: an attacker who read it from the log could
+          // keep replaying this endpoint to rewrite the instance name and the
+          // server timezone, on an instance whose setup was supposedly closed.
+          //
+          // Not an error for the settings half; only minting is closed.
+          clearSetupToken();
+          return {
+            settings: SettingsStore.all(),
+            apiKey: null,
+            apiKeySource: state.apiKeySource,
+          };
+        }
+
+        if (state.environmentId === null || state.projectId === null) {
+          throw new Error(
+            "bootstrap did not produce an environment to mint against",
+          );
+        }
+
+        const { plaintext } = await ApiKeyStore.create({
+          projectId: state.projectId,
+          environmentId: state.environmentId,
+          label: "console (setup)",
+          scopes: [...ALL_SCOPES],
+        });
+
+        // The window is closed the moment it is used, not when the operator
+        // navigates away.
         clearSetupToken();
-        return { settings: SettingsStore.all(), apiKey: null, apiKeySource: state.apiKeySource };
-      }
+        log.info("setup completed; the first API key was minted", {
+          environmentId: state.environmentId,
+          scopes: ALL_SCOPES.length,
+        });
 
-      if (state.environmentId === null || state.projectId === null) {
-        throw new Error("bootstrap did not produce an environment to mint against");
-      }
-
-      const { plaintext } = await ApiKeyStore.create({
-        projectId: state.projectId,
-        environmentId: state.environmentId,
-        label: "console (setup)",
-        scopes: [...ALL_SCOPES],
-      });
-
-      // The window is closed the moment it is used, not when the operator
-      // navigates away.
-      clearSetupToken();
-      log.info("setup completed; the first API key was minted", {
-        environmentId: state.environmentId,
-        scopes: ALL_SCOPES.length,
-      });
-
-      set.status = 201;
-      return { settings: SettingsStore.all(), apiKey: plaintext, apiKeySource: "database" as const };
-    },
+        set.status = 201;
+        return {
+          settings: SettingsStore.all(),
+          apiKey: plaintext,
+          apiKeySource: "database" as const,
+        };
+      }),
     {
       body: t.Object({
         instanceName: t.Optional(t.String({ maxLength: 200 })),

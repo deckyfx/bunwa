@@ -82,8 +82,23 @@ function refuseIfBackup(paths: readonly string[]): void {
   const backupDir = resolve(Bun.env["BACKUP_DIR"] ?? "./data/backups");
   for (const path of paths) {
     const full = isAbsolute(path) ? path : resolve(path);
-    if (full === backupDir || full.startsWith(backupDir + "/")) {
-      console.error(`refusing: ${path} is inside the backup directory (${backupDir})`);
+
+    // Both directions, because the delete is recursive.
+    //
+    // Checking only "is the target inside the backups?" leaves the containing
+    // case open: DATABASE_PATH can be a directory, and if it is a parent of
+    // BACKUP_DIR then rm(recursive) takes the backups with it. That is the
+    // same unrecoverable outcome the one-directional check was written to
+    // prevent, reached from the other side — and it is the worst day this
+    // project can have, per docs/08.
+    const inside = full === backupDir || full.startsWith(backupDir + "/");
+    const contains = backupDir.startsWith(full + "/");
+    if (inside || contains) {
+      console.error(
+        inside
+          ? `refusing: ${path} is inside the backup directory (${backupDir})`
+          : `refusing: ${path} contains the backup directory (${backupDir})`,
+      );
       console.error("purging a database and its restore point together is not recoverable");
       process.exit(73); // EX_CANTCREAT — the request is valid, the state is not
     }
