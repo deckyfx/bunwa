@@ -90,6 +90,10 @@ async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?
  * The console page is not a parameter here. `createConsoleApp` adds it, so
  * nothing in this path imports the page and a headless build never pulls React
  * in to serve a route it does not mount.
+ *
+ * `mode` defaults to headless because that is the safe half: a build that
+ * forgets to say which it is serves the API without the console, rather than
+ * mounting a console it was never meant to carry.
  */
 export function createApp(registry?: EngineRegistry, mode: ServerMode = "headless") {
   const app = new Elysia()

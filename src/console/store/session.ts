@@ -72,8 +72,8 @@ interface SessionState {
  * which guesses were close. So the message points at the log, which is allowed
  * to know and now says so.
  */
-function describeFailure(status: unknown): string {
-  if (typeof status !== "number" || status === 0) {
+function describeFailure(status: number | undefined): string {
+  if (status === undefined || status === 0) {
     // Eden reports a transport failure with no status at all, which is the
     // case that was previously blamed on the key.
     return "could not reach the server. Is it still running?";
@@ -140,7 +140,15 @@ export const useSession = create<SessionState>((set, get) => ({
     if (get().apiKey !== trimmed) return;
 
     if (error !== null) {
-      set({ identity: null, busy: false, error: describeFailure(error.status) });
+      // Narrowed here rather than inside describeFailure, which now states
+      // what it needs. Eden types `status` loosely enough that the check has
+      // to happen somewhere; doing it at the boundary keeps the function's
+      // signature honest about the only thing it can use.
+      set({
+        identity: null,
+        busy: false,
+        error: describeFailure(typeof error.status === "number" ? error.status : undefined),
+      });
       return;
     }
 

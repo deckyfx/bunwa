@@ -99,7 +99,15 @@ type StreamConstructor = new (url: string) => {
 // stand-in rather than the hook. `StreamConstructor` above stays exact, so
 // what the hook is allowed to touch is still checked; only the assignment to
 // the global is forced.
-(globalThis as unknown as { EventSource: StreamConstructor }).EventSource = FakeEventSource;
+// defineProperty rather than a cast through `unknown`: the assignment is
+// checked against StreamConstructor, so a stand-in that stops matching what
+// the hook uses fails here instead of at runtime.
+const asStream: StreamConstructor = FakeEventSource;
+Object.defineProperty(globalThis, "EventSource", {
+  value: asStream,
+  writable: true,
+  configurable: true,
+});
 
 /** Mount the hook. Its return value is rendered so a state change is visible. */
 const Probe = () => createElement("output", null, useEventStream());

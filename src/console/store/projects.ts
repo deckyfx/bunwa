@@ -9,32 +9,26 @@
  */
 import { create } from "zustand";
 
-import { client } from "../lib/api";
+import { client, type RowOf } from "../lib/api";
 import { useSession } from "./session";
 
-export interface Project {
-  id: string;
-  slug: string;
-  displayName: string;
-  status: string;
-}
+type Api = ReturnType<typeof client>;
+type Admin = Api["admin"]["v1"];
 
-export interface Environment {
-  id: string;
-  slug: string;
-  kind: string;
-  status: string;
-}
-
-export interface KeySummary {
-  id: string;
-  label: string;
-  keyPrefix: string;
-  scopes: string[];
-  revokedAt: string | null;
-  expiresAt: string | null;
-  createdAt: string;
-}
+/**
+ * Derived from the admin routes, not declared here.
+ *
+ * These were three hand-written interfaces read through `as` casts, which is
+ * the arrangement that has now been wrong four times on this project — a cast
+ * cannot notice the server dropping a field, so the console reads `undefined`
+ * and renders a blank cell rather than failing to compile. Every one of them
+ * is a compile error now if the route changes shape.
+ */
+export type Project = RowOf<Awaited<ReturnType<Admin["projects"]["get"]>>>;
+export type Environment = RowOf<Awaited<ReturnType<ReturnType<Admin["projects"]>["environments"]["get"]>>>;
+export type KeySummary = RowOf<
+  Awaited<ReturnType<ReturnType<ReturnType<Admin["projects"]>["environments"]>["api-keys"]["get"]>>
+>;
 
 interface ProjectsState {
   projects: Project[] | null;
@@ -87,11 +81,14 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   load: async () => {
     const { data, error } = await api().admin.v1.projects.get();
-    if (error !== null || data === null) {
+    // `Array.isArray` as well as the error check: Eden types `data` as the
+    // union of the body and a raw Response, so narrowing is what makes the
+    // derived row type mean anything.
+    if (error !== null || !Array.isArray(data)) {
       set({ error: messageFrom(error), projects: null });
       return;
     }
-    set({ projects: data as Project[], error: null });
+    set({ projects: data, error: null });
   },
 
   createProject: async (slug, displayName) => {
@@ -117,12 +114,18 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     set({ openId: projectId, environments: null, keys: null, keysFor: null, error: null });
 
     const { data, error } = await api().admin.v1.projects({ projectId }).environments.get();
-    if (error !== null || data === null) {
+
+    // Dropped if the operator has opened a different project since. The
+    // request for A can settle after the request for B, and storing it then
+    // put A's environments under B's name and went on to load A's keys.
+    if (get().openId !== projectId) return;
+
+    if (error !== null || !Array.isArray(data)) {
       set({ error: messageFrom(error) });
       return;
     }
 
-    const environments = data as Environment[];
+    const environments = data;
     set({ environments });
 
     // Open the first environment's keys straight away. Every project has one
@@ -139,11 +142,15 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       .admin.v1.projects({ projectId })
       .environments({ environmentId })["api-keys"].get();
 
-    if (error !== null || data === null) {
+    // The environment the operator is looking at now, not the one this call
+    // was made for — the same race one level down.
+    if (get().keysFor !== environmentId) return;
+
+    if (error !== null || !Array.isArray(data)) {
       set({ error: messageFrom(error) });
       return;
     }
-    set({ keys: data as unknown as KeySummary[], error: null });
+    set({ keys: data, error: null });
   },
 
   createKey: async (projectId, environmentId, label, scopes) => {
@@ -159,7 +166,15 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       return;
     }
 
-    const minted = data as unknown as { key: string; label: string };
+    // Narrowed rather than asserted: the mint route answers with the key, and
+    // a cast here would hide the server renaming that field — which the
+    // operator would meet as an undefined credential in a "copy this now"
+    // dialog they cannot get back.
+    if (!("key" in data) || typeof data.key !== "string") {
+      set({ busy: false, error: "the server did not return a key" });
+      return;
+    }
+    const minted = data;
     // In memory only, and never written to storage: this is the operator
     // holding someone else's credential for as long as it takes to send it on.
     set({ busy: false, error: null, mintedKey: { plaintext: minted.key, label: minted.label } });

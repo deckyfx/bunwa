@@ -52,6 +52,15 @@ const TONE: Record<string, Tone> = {
   undelivered: BAD,
 };
 
+/**
+ * A device or message state, as a word with a colour behind it.
+ *
+ * Colour is spent here and almost nowhere else in the console, because state
+ * is the thing an operator scans a list for. An unrecognised value renders as
+ * itself in the neutral tone rather than being dropped or mapped to a guess:
+ * the server can add a state before this table knows about it, and showing the
+ * raw word is more useful than showing nothing.
+ */
 export function StatusPill({ state }: { state: string }) {
   const { className, Icon } = TONE[state] ?? UNKNOWN;
   return (

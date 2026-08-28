@@ -15,6 +15,14 @@
 import type { LucideIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
+/**
+ * A titled section of the console, with an anchor.
+ *
+ * Every screen is a stack of these, so the heading level, spacing and border
+ * are decided once. The `id` is what the hash router scrolls to, which is why
+ * it is required rather than optional — a section with no address cannot be
+ * linked to, and the whole point of the router is that a screen has one.
+ */
 export function Card({
   id,
   title,

@@ -8,6 +8,15 @@
 import { useId, useState, type ReactNode } from "react";
 import { Eye, EyeOff } from "lucide-react";
 
+/**
+ * A labelled input, with a reveal control when it holds a secret.
+ *
+ * Shared rather than repeated because the API-key box was written as a bare
+ * input and so missed the reveal toggle: a key restored from storage arrives
+ * already filled, and a row of dots gives no way to tell a leftover credential
+ * from the right one. Anything that can hold a secret gets the affordance by
+ * construction here, instead of whoever writes the next form remembering.
+ */
 export function Field({
   id,
   label,
