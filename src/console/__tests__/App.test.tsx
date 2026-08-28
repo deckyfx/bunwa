@@ -41,7 +41,7 @@ void mock.module("../lib/api", () => ({
 }));
 
 const { App } = await import("../App");
-const { useSetup } = await import("../store/setup");
+const { useSetup, resetSetupRequests } = await import("../store/setup");
 const { useSession } = await import("../store/session");
 
 const UNCONFIGURED = {
@@ -58,6 +58,9 @@ const UNCONFIGURED = {
 };
 
 beforeEach(() => {
+  // One test simulates a request that never answers, which would otherwise
+  // hold the store's dedupe guard for every test after it.
+  resetSetupRequests();
   statusResolver = () => Promise.resolve(UNCONFIGURED);
   submitResolver = () =>
     Promise.resolve({
@@ -150,5 +153,77 @@ describe("the minted key survives the state change that produced it", () => {
       expect(screen.getByLabelText("API key")).toBeDefined();
     });
     expect(screen.queryByText("bw_live_default_thekey")).toBeNull();
+  });
+});
+
+describe("a credential left over from a database that no longer exists", () => {
+  test("is discarded when the instance reports no keys", async () => {
+    // Browser storage outlives the database. A key from two purges ago was
+    // still being presented: two 401s per page load, two "api key rejected"
+    // warnings in the server log, and an error banner accusing a credential
+    // the operator had never typed — all while the setup screen was loading.
+    localStorage.setItem("bunwa.apiKey", "bw_test_grande_stale");
+    useSession.setState({ apiKey: "bw_test_grande_stale" });
+
+    render(<App />);
+    await screen.findByLabelText("Setup token");
+
+    await waitFor(() => {
+      expect(useSession.getState().apiKey).toBe("");
+    });
+    expect(localStorage.getItem("bunwa.apiKey")).toBeNull();
+  });
+
+  test("is not presented to the server first", async () => {
+    // The point is that the request is never made, not that its failure is
+    // handled: a 401 in the log is the operator's first impression of an
+    // instance they have not finished setting up.
+    let asked = 0;
+    whoamiResolver = () => {
+      asked += 1;
+      return Promise.resolve({ data: null, error: { status: 401 } });
+    };
+    useSession.setState({ apiKey: "bw_test_grande_stale" });
+
+    render(<App />);
+    await screen.findByLabelText("Setup token");
+    await waitFor(() => {
+      expect(useSession.getState().apiKey).toBe("");
+    });
+
+    expect(asked).toBe(0);
+  });
+
+  test("discarding it leaves no error to explain", async () => {
+    // There is nothing for the operator to act on: the key is gone because the
+    // instance it belonged to is gone.
+    useSession.setState({ apiKey: "bw_test_grande_stale" });
+
+    render(<App />);
+    await screen.findByLabelText("Setup token");
+    await waitFor(() => {
+      expect(useSession.getState().apiKey).toBe("");
+    });
+
+    expect(useSession.getState().error).toBeNull();
+  });
+
+  test("a stored key is still checked when the instance does have keys", async () => {
+    // The guard must not become "never trust storage": that would make every
+    // refresh a fresh login.
+    statusResolver = () =>
+      Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
+    whoamiResolver = () =>
+      Promise.resolve({
+        data: { projectId: "p", environmentId: "e", scopes: [], serverTimezone: "UTC" },
+        error: null,
+      });
+    useSession.setState({ apiKey: "bw_live_default_good" });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(useSession.getState().identity).not.toBeNull();
+    });
   });
 });

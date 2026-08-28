@@ -36,7 +36,7 @@ function StreamIcon({ state }: { state: ReturnType<typeof useEventStream> }) {
 }
 
 export function App() {
-  const { apiKey, identity, error, busy, connect, hydrate } = useSession();
+  const { apiKey, identity, error, busy, connect, hydrate, forget } = useSession();
   const configured = useSetup((s) => s.configured);
   const mintedKey = useSetup((s) => s.mintedKey);
   const refreshSetup = useSetup((s) => s.refresh);
@@ -53,17 +53,22 @@ export function App() {
     void refreshSetup();
   }, [refreshSetup]);
 
-  // Prove the restored key once, on mount.
-  //
-  // The store reads the key back out of localStorage, so `apiKey` survives a
-  // refresh, and until it is proved the console looked logged out while every
-  // background request behaved as though it were logged in — including the
-  // stream, which asked for a ticket every few seconds against a key the
-  // server had already rejected. `hydrate` owns the guards, so the same rule
-  // applies wherever it is called from rather than living in this component.
+  /*
+   * A key restored from storage is unverified until the server says otherwise
+   * — but only worth presenting once we know the instance has keys at all.
+   *
+   * Hydrating unconditionally meant a fresh instance spent its first second
+   * offering a credential from a database that no longer existed: two 401s,
+   * two "api key rejected" warnings in the server log, and an error banner
+   * accusing a key the operator had never typed, all while the setup screen
+   * was still loading. When the instance reports no keys, the stored one is
+   * provably dead, so it is dropped rather than tried.
+   */
   useEffect(() => {
-    void hydrate();
-  }, [hydrate]);
+    if (configured === null) return;
+    if (configured) void hydrate();
+    else forget();
+  }, [configured, hydrate, forget]);
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">

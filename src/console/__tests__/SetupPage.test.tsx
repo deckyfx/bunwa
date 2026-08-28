@@ -31,7 +31,7 @@ void mock.module("../lib/api", () => ({
 }));
 
 const { SetupPage } = await import("../pages/SetupPage");
-const { useSetup } = await import("../store/setup");
+const { useSetup, resetSetupRequests } = await import("../store/setup");
 
 const STATUS = (over: Record<string, unknown> = {}) => ({
   data: {
@@ -48,6 +48,9 @@ const STATUS = (over: Record<string, unknown> = {}) => ({
 });
 
 beforeEach(() => {
+  // One test simulates a request that never answers, which would otherwise
+  // hold the store's dedupe guard for every test after it.
+  resetSetupRequests();
   submitted.length = 0;
   useSetup.setState({
     configured: null,

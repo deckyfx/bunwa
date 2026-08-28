@@ -47,6 +47,38 @@ const messageFrom = (error: { status?: number; value?: unknown }): string => {
   return "the server rejected that";
 };
 
+/**
+ * The status request currently in flight, if any.
+ *
+ * Two components ask — the shell, to choose a screen, and the setup page
+ * itself, so it still works when rendered alone — and React's strict mode
+ * invokes every effect twice in development. That is four identical requests
+ * for one page load, which is four lines in the log an operator has to read
+ * past. Sharing the promise makes concurrent callers one request without
+ * either caller having to know the other exists.
+ *
+ * Deliberately not a cache: a later refresh must still hit the server, because
+ * finishing setup changes the answer.
+ */
+let inFlight: Promise<void> | null = null;
+
+/**
+ * How long a status request may hold the guard.
+ *
+ * Sharing a promise means a request that never settles would wedge `refresh`
+ * for the life of the page — no retry, no recovery, and the console stuck on
+ * "checking this instance…" forever. A fetch to a host that accepts the
+ * connection and then says nothing does exactly that. The guard is released on
+ * this timer whether or not the request has finished; the request itself is
+ * left alone, because its result is still worth having if it arrives.
+ */
+const GUARD_MS = 10_000;
+
+/** Release the dedupe guard. For tests, which simulate a request that hangs. */
+export function resetSetupRequests(): void {
+  inFlight = null;
+}
+
 export const useSetup = create<SetupState>((set) => ({
   configured: null,
   canMintKey: false,
@@ -57,23 +89,43 @@ export const useSetup = create<SetupState>((set) => ({
   mintedKey: null,
 
   refresh: async () => {
-    const { data, error } = await anonymous().setup.status.get();
+    // Concurrent callers share one request rather than racing four.
+    if (inFlight !== null) return inFlight;
 
-    if (error !== null || data === null) {
-      // Left as null rather than guessed. Assuming "configured" would hide the
-      // setup screen on a fresh instance; assuming "not configured" would show
-      // it to someone who is merely offline.
-      set({ error: "could not reach the server" });
-      return;
-    }
+    inFlight = (async () => {
+      const { data, error } = await anonymous().setup.status.get();
 
-    set({
-      configured: data.configured,
-      canMintKey: data.canMintKey,
-      apiKeySource: data.apiKeySource,
-      settings: data.settings as Settings,
-      error: null,
+      if (error !== null || data === null) {
+        // Left as null rather than guessed. Assuming "configured" would hide
+        // the setup screen on a fresh instance; assuming "not configured"
+        // would show it to someone who is merely offline.
+        set({ error: "could not reach the server" });
+        return;
+      }
+
+      set({
+        configured: data.configured,
+        canMintKey: data.canMintKey,
+        apiKeySource: data.apiKeySource,
+        settings: data.settings as Settings,
+        error: null,
+      });
+    })();
+
+    const request = inFlight;
+    const release = () => {
+      // Only if this request still owns the guard: a later refresh may have
+      // claimed it, and clearing that one would defeat the dedupe.
+      if (inFlight === request) inFlight = null;
+    };
+
+    const timer = setTimeout(release, GUARD_MS);
+    void request.finally(() => {
+      clearTimeout(timer);
+      release();
     });
+
+    return request;
   },
 
   submit: async (token, values) => {

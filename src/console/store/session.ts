@@ -39,6 +39,8 @@ interface SessionState {
   hydrate: () => Promise<void>;
   /** The server stopped accepting the key mid-session. */
   invalidate: (reason: string) => void;
+  /** Throw away the stored credential without complaining about it. */
+  forget: () => void;
 }
 
 /**
@@ -161,6 +163,29 @@ export const useSession = create<SessionState>((set, get) => ({
   invalidate: (reason: string) => {
     if (get().identity === null) return;
     set({ identity: null, busy: false, error: reason });
+  },
+
+  /**
+   * Drop a stored key that cannot possibly work.
+   *
+   * Called when the instance reports it has no keys at all: whatever is in
+   * this browser was issued by a database that no longer exists, so presenting
+   * it can only produce a 401. It did — twice per load, with an alarming
+   * "api key rejected" in the server log while the operator was still reading
+   * the setup screen, and an error banner accusing a credential they had not
+   * typed.
+   *
+   * Silent, unlike `invalidate`: there is nothing here for the operator to act
+   * on. The key is gone because the instance it belonged to is gone.
+   */
+  forget: () => {
+    if (get().apiKey === "" && get().error === null) return;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* nothing to clean up */
+    }
+    set({ apiKey: "", identity: null, error: null, busy: false });
   },
 
   bumpRevision: () => {
