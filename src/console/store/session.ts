@@ -35,6 +35,10 @@ interface SessionState {
   connect: (key: string) => Promise<void>;
   disconnect: () => void;
   bumpRevision: () => void;
+  /** Validate whatever key was restored from storage. Called once on mount. */
+  hydrate: () => Promise<void>;
+  /** The server stopped accepting the key mid-session. */
+  invalidate: (reason: string) => void;
 }
 
 const readStoredKey = (): string => {
@@ -104,6 +108,32 @@ export const useSession = create<SessionState>((set, get) => ({
 
   disconnect: () => {
     void get().connect("");
+  },
+
+  /**
+   * Check the restored key before anything relies on it.
+   *
+   * Nothing did this, so a refresh left `apiKey` set and `identity` null: the
+   * pages stayed hidden until someone pressed connect again, while everything
+   * keyed on the raw key carried on as though the session were live.
+   */
+  hydrate: async () => {
+    const stored = get().apiKey;
+    if (stored === "" || get().identity !== null) return;
+    await get().connect(stored);
+  },
+
+  /**
+   * Drop the identity but keep the key on screen.
+   *
+   * Called when the server rejects a credential that was working. The text is
+   * left in the field because the usual cause is the key being revoked or the
+   * database being replaced, and retyping it is not the fix — knowing it is no
+   * longer accepted is.
+   */
+  invalidate: (reason: string) => {
+    if (get().identity === null) return;
+    set({ identity: null, busy: false, error: reason });
   },
 
   bumpRevision: () => {
