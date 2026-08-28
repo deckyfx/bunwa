@@ -340,38 +340,56 @@ export class BaileysAdapter implements DeviceEngine {
     // three Ctrl-C. Reproduced against a live engine; the conformance suite
     // never saw it because it closes the engine rather than returning the
     // iterator.
-    let done = false;
-    let wake: (() => void) | null = null;
-
-    const wakeUp = () => {
-      wake?.();
-      wake = null;
-    };
-    this.wakers.add(wakeUp);
-
-    const finish = (): Promise<IteratorResult<EngineEvent>> => {
-      done = true;
-      this.wakers.delete(wakeUp);
-      wakeUp();
-      return Promise.resolve({ value: undefined, done: true });
-    };
-
+    // Per iterator, not per subscription — and this is the same mistake the
+    // `wakers` set upstairs already documents, made one level down.
+    //
+    // `done`, the wake slot and `finish` used to be created once here and
+    // shared by every iterator `[Symbol.asyncIterator]` handed out. Two
+    // consequences, both silent: breaking out of one `for await` set `done`
+    // and unregistered the waker, ending every other iterator on the same
+    // subscription; and a second parked `next()` overwrote the first's
+    // `resolve`, so the displaced one waited for ever.
+    //
+    // A queue rather than a slot for the same reason the class-level set is a
+    // set: "the most recent waiter" is not the question — "everyone waiting"
+    // is. Concurrent `next()` calls on one iterator are not the contract, but
+    // they are cheap to survive and expensive to debug.
     return {
-      [Symbol.asyncIterator]: () => ({
-        next: async (): Promise<IteratorResult<EngineEvent>> => {
-          for (;;) {
-            if (done) return { value: undefined, done: true };
-            const event = this.pending.shift();
-            if (event !== undefined) return { value: event, done: false };
-            if (this.closed) return finish();
-            await new Promise<void>((resolve) => {
-              wake = resolve;
-            });
-          }
-        },
-        return: finish,
-        throw: finish,
-      }),
+      [Symbol.asyncIterator]: () => {
+        let done = false;
+        const waiting: Array<() => void> = [];
+
+        const wakeUp = () => {
+          while (waiting.length > 0) waiting.shift()?.();
+        };
+        this.wakers.add(wakeUp);
+
+        const finish = (): Promise<IteratorResult<EngineEvent>> => {
+          done = true;
+          this.wakers.delete(wakeUp);
+          wakeUp();
+          return Promise.resolve({ value: undefined, done: true });
+        };
+
+        return {
+          next: async (): Promise<IteratorResult<EngineEvent>> => {
+            for (;;) {
+              if (done) return { value: undefined, done: true };
+              // Still one shared queue: an event goes to whichever iterator
+              // takes it, which is the existing contract and not what this
+              // change is about.
+              const event = this.pending.shift();
+              if (event !== undefined) return { value: event, done: false };
+              if (this.closed) return finish();
+              await new Promise<void>((resolve) => {
+                waiting.push(resolve);
+              });
+            }
+          },
+          return: finish,
+          throw: finish,
+        };
+      },
     };
   }
 

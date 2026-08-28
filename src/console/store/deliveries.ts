@@ -50,17 +50,34 @@ export const useDeliveries = create<DeliveryState>((set, get) => ({
     if (get().replaying.has(id)) return;
 
     const { apiKey } = useSession.getState();
+    // Before the row is marked, not after: an empty key cannot replay anything,
+    // and marking first left the row disabled while reporting a failure that
+    // was really "nobody is signed in".
+    if (apiKey === "") return;
+
     set((state) => ({ replaying: new Set(state.replaying).add(id) }));
 
-    const { error } = await client(apiKey).v1.deliveries({ id }).replay.post();
+    try {
+      const { error } = await client(apiKey).v1.deliveries({ id }).replay.post();
 
-    if (error !== null) set({ error: "could not replay" });
-    else await get().load();
+      // A replay authorised by one credential must not report under another.
+      // `load` and the error below both paint a screen that may by now belong
+      // to a different project — the same guard `load` itself already carries.
+      if (useSession.getState().apiKey !== apiKey) return;
 
-    set((state) => {
-      const next = new Set(state.replaying);
-      next.delete(id);
-      return { replaying: next };
-    });
+      if (error !== null) set({ error: "could not replay" });
+      else await get().load();
+    } finally {
+      // In a finally, because the guard above returns early. Clearing this
+      // only on the paths that reach the end left the row marked as replaying
+      // for ever whenever the session changed mid-request — a permanently
+      // disabled button, which is the same fault as a composer that never
+      // re-enables.
+      set((state) => {
+        const next = new Set(state.replaying);
+        next.delete(id);
+        return { replaying: next };
+      });
+    }
   },
 }));

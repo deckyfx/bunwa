@@ -81,3 +81,46 @@ describe("an idle subscriber", () => {
     await engine.close();
   }, 15_000);
 });
+
+describe("two iterators on one subscription", () => {
+  test("returning one does not end the other", async () => {
+    // `done` and the wake slot were created once per subscribe() and shared by
+    // every iterator it handed out, so breaking out of one `for await` ended
+    // all of them — and a second parked next() overwrote the first's resolve,
+    // stranding it. Both are silent: the surviving consumer simply stops
+    // receiving events and nothing reports why.
+    const engine = new BaileysAdapter({ openSocket: () => Promise.resolve(new StubSocket()) });
+    const stream = engine.subscribe();
+    const first = stream[Symbol.asyncIterator]();
+    const second = stream[Symbol.asyncIterator]();
+
+    // Park both. With one shared slot the second push displaced the first.
+    const parkedFirst = first.next();
+    const parkedSecond = second.next();
+    await Bun.sleep(20);
+
+    // End only the first, the way a consumer's stop() does.
+    await first.return?.();
+
+    const firstSettled = await Promise.race([
+      parkedFirst.then((r) => (r.done === true ? "done" : "value")),
+      Bun.sleep(1_000).then(() => "TIMED OUT"),
+    ]);
+    expect(firstSettled, "the returned iterator did not settle").toBe("done");
+
+    // The second must still be waiting rather than finished.
+    const secondStillParked = await Promise.race([
+      parkedSecond.then(() => "settled"),
+      Bun.sleep(200).then(() => "still waiting"),
+    ]);
+    expect(secondStillParked, "returning one iterator ended the other").toBe("still waiting");
+
+    // And it must still be wakeable, which is the half a shared wake slot lost.
+    await engine.close();
+    const secondSettled = await Promise.race([
+      parkedSecond.then(() => "settled"),
+      Bun.sleep(1_000).then(() => "TIMED OUT"),
+    ]);
+    expect(secondSettled, "the surviving iterator was never woken").toBe("settled");
+  }, 15_000);
+});

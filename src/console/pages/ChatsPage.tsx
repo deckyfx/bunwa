@@ -14,6 +14,22 @@ import { StatusPill } from "../components/StatusPill";
 import { useChats } from "../store/chats";
 import { useSession } from "../store/session";
 
+/**
+ * A message timestamp, in both forms a `<time>` element wants.
+ *
+ * Tolerant of a string as well as a Date: Eden revives the field from JSON, and
+ * a shape change there should degrade to showing the raw value rather than
+ * throwing inside a list render.
+ */
+function occurredAt(value: Date | string): { machine: string; human: string } {
+  const at = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(at.getTime())) return { machine: "", human: String(value) };
+  return {
+    machine: at.toISOString(),
+    human: at.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }),
+  };
+}
+
 export function ChatsPage() {
   const revision = useSession((s) => s.revision);
   const {
@@ -106,7 +122,15 @@ export function ChatsPage() {
                   >
                     <p>{message.body ?? `[${message.kind}]`}</p>
                     <div className="mt-1 flex items-center gap-2 text-xs text-slate-500">
-                      <time dateTime={String(message.occurredAt)}>{String(message.occurredAt)}</time>
+                      {/* `dateTime` has to be machine-readable and the text
+                          does not. String(date) gave both the same
+                          "Thu Aug 28 2026 06:15:04 GMT+0700" — which is not a
+                          valid datetime value, so the attribute conveyed
+                          nothing to anything parsing it, and is more than a
+                          reader needs beside a message. */}
+                      <time dateTime={occurredAt(message.occurredAt).machine}>
+                        {occurredAt(message.occurredAt).human}
+                      </time>
                       {/* Outbound only, and honest: pending means the engine
                           has not acknowledged it yet. */}
                       {message.direction === "outbound" && message.status !== null && (
