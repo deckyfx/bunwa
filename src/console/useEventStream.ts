@@ -20,13 +20,33 @@ interface Options {
   onEvent: (type: string, data: unknown) => void;
 }
 
+/**
+ * Hold one SSE connection for the console, and report its state.
+ *
+ * One connection per console rather than one per widget: every screen needs
+ * the same events, and a stream each would mint a ticket each and multiply the
+ * server's fan-out by the number of panels on screen. The caller is handed
+ * every event and decides what to refetch — the event says *that* something
+ * changed and the API stays the authority on what it changed to.
+ *
+ * The returned state is rendered rather than kept internal because a silently
+ * dead EventSource showing stale data as if live is worse than an error.
+ */
 export function useEventStream({ apiKey, onEvent }: Options): StreamState {
   const [state, setState] = useState<StreamState>("idle");
 
   // Held in a ref so a changing callback does not tear down the connection.
   // Without this, every parent render would mint a ticket and reconnect.
   const handler = useRef(onEvent);
-  handler.current = onEvent;
+
+  // Assigned in an effect, not during render. React may render a component and
+  // throw the result away — Strict Mode does it on every mount — and writing
+  // the ref during render lets a discarded render install its callback over
+  // the live one. The commit phase is the only point at which this render is
+  // known to be the one that counts.
+  useEffect(() => {
+    handler.current = onEvent;
+  }, [onEvent]);
 
   useEffect(() => {
     if (apiKey === "") {
@@ -83,6 +103,11 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
           // client could not keep up, and reconnecting instantly invites the
           // same outcome.
           publishState("stale");
+          // The caller is told, not just the badge. Overflow means envelopes
+          // were dropped, so every snapshot on screen may be wrong in a way no
+          // later event will correct — the reconnect alone brings the stream
+          // back and leaves the stale data sitting there.
+          handler.current("stream.overflow", null);
           source?.close();
           if (!cancelled) retry = setTimeout(() => void connect(), 5_000);
         });
@@ -142,6 +167,12 @@ const LISTENED = [
   "device.connected",
   "device.disconnected",
   "device.logged_out",
+  // The two the conversation and delivery screens exist to show. Without them
+  // an inbound message and a delivery ack arrived on the stream and reached
+  // nothing: the screens updated only when some *other* event happened to fire,
+  // which reads as a lag nobody can reproduce.
+  "message.received",
+  "message.ack",
   "message.undelivered",
 ] as const;
 

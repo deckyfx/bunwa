@@ -86,6 +86,14 @@ export function Chats({ apiKey, revision }: Props) {
       messagesGeneration.current += 1;
       setSelected(thread.id);
       setMessages(null);
+      // The composer goes with the conversation. A half-typed reply and a
+      // "could not send" from the previous thread both survived the switch,
+      // so the draft was aimed at whoever was opened next and the error
+      // blamed the wrong conversation. `sending` is deliberately not reset:
+      // a request really is still in flight, and its own guards decide what
+      // happens when it lands.
+      setDraft("");
+      setError(null);
     }
     if (thread.unreadCount > 0) {
       // Cleared optimistically and then reloaded: the badge is the least

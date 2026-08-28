@@ -28,3 +28,4 @@ sessions/
 # image build time — never committed, or the repo carries a stale copy of
 # whatever someone last built locally.
 dashboard/dist/
+note.txt

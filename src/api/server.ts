@@ -127,7 +127,12 @@ export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) 
         method: request.method,
         path,
         status: typeof set.status === "number" ? set.status : 200,
-        durationMs: Math.round(performance.now() - began),
+        // `began` comes from `derive`, which does not run for an unmatched
+        // route — the same gap the 404 correlation id below exists for. The
+        // subtraction was therefore NaN on every 404, and `Math.round(NaN)` is
+        // NaN, so the one request class most worth timing logged a duration no
+        // dashboard could read. Null says "not measured", which is true.
+        durationMs: typeof began === "number" ? Math.round(performance.now() - began) : null,
       });
     })
 
@@ -252,7 +257,14 @@ export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) 
   return app;
 }
 
-/** Wrap the app so every request runs inside a logging context. */
+/**
+ * Build the app and start listening.
+ *
+ * This used to wrap the app so every request ran inside a logging context, and
+ * the comment outlived the wrapper: the `derive` hook above enters the context
+ * now. A comment describing a mechanism that has moved sends the next reader
+ * looking for it here.
+ */
 
 export function createServer(registry?: EngineRegistry, consolePage?: ConsolePage) {
   const cfg = config();

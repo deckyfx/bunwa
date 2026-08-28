@@ -19,6 +19,16 @@ import { log } from "./observability/logger";
 /** How long to let in-flight requests finish before closing connections. */
 const SHUTDOWN_DRAIN_MS = 10_000;
 
+/**
+ * Start the process: validate config, migrate, register the engine, serve, and
+ * then wait for a signal.
+ *
+ * Exported, and takes the console page as an argument rather than importing
+ * it, so the two entry points differ by one argument instead of each owning a
+ * copy of this sequence. `src/index-headless.ts` never imports the page, which
+ * is what keeps React out of what a headless build serves; a runtime switch
+ * would bundle the thing it exists to exclude.
+ */
 async function main(consolePage?: ConsolePage): Promise<void> {
   let cfg: Config;
   try {

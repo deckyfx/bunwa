@@ -52,18 +52,22 @@ describe("choosing without naming an engine", () => {
     // The composition root decides which engine a deployment prefers by the
     // order it registers them. The pairing route names none.
     const registry = new EngineRegistry();
-    registry.register({ id: "gowa-1", kind: "baileys", capacity: 2, engine: new FakeEngine() });
+    registry.register({ id: "first-1", kind: "fake", capacity: 2, engine: new FakeEngine() });
     registry.register({ id: "baileys-1", kind: "baileys", capacity: 2, engine: new FakeEngine() });
 
-    expect(registry.chooseAny(noneAssigned).id).toBe("gowa-1");
+    expect(registry.chooseAny(noneAssigned).id).toBe("first-1");
   });
 
   test("a full first choice falls through to the next kind", () => {
+    // Two kinds, not two pools of one. Both were registered as "baileys" and
+    // named `gowa-1` and `baileys-1` — leftovers from the rename — so the test
+    // asserted a fallthrough between pools while claiming one between kinds,
+    // and would have passed with the kind handling removed entirely.
     const registry = new EngineRegistry();
-    registry.register({ id: "gowa-1", kind: "baileys", capacity: 1, engine: new FakeEngine() });
+    registry.register({ id: "fake-1", kind: "fake", capacity: 1, engine: new FakeEngine() });
     registry.register({ id: "baileys-1", kind: "baileys", capacity: 1, engine: new FakeEngine() });
 
-    expect(registry.chooseAny(new Map([["gowa-1", 1]])).id).toBe("baileys-1");
+    expect(registry.chooseAny(new Map([["fake-1", 1]])).id).toBe("baileys-1");
   });
 
   test("a Baileys-only deployment can pair", () => {
@@ -77,9 +81,9 @@ describe("choosing without naming an engine", () => {
 
   test("no room anywhere is an EngineError, not a silent choice", () => {
     const registry = new EngineRegistry();
-    registry.register({ id: "gowa-1", kind: "baileys", capacity: 1, engine: new FakeEngine() });
+    registry.register({ id: "baileys-1", kind: "baileys", capacity: 1, engine: new FakeEngine() });
 
-    expect(() => registry.chooseAny(new Map([["gowa-1", 1]]))).toThrow(EngineError);
+    expect(() => registry.chooseAny(new Map([["baileys-1", 1]]))).toThrow(EngineError);
   });
 
   test("an empty registry refuses rather than returning undefined", () => {
