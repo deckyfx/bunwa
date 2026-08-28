@@ -87,6 +87,10 @@ describe("redaction", () => {
 
   test("covers common credential aliases", () => {
     const [line] = capture(() => log.info("y", { accessToken: "a", refreshToken: "b", cookie: "c" }));
+    // Asserted before it is inspected. Every check below is negative, and a
+    // negative check against `undefined` passes — so with nothing captured,
+    // this proved credentials were redacted by proving nothing was logged.
+    expect(line, "nothing was captured to redact").toBeDefined();
     expect(line).not.toContain('"a"');
     expect(line).not.toContain('"b"');
     expect(line).not.toContain('"c"');
@@ -98,6 +102,7 @@ describe("redaction", () => {
     const [line] = capture(() =>
       log.info("z", { clientSecret: "A", client_secret: "B", SigningKey: "C", refresh_token: "D" }),
     );
+    expect(line, "nothing was captured to redact").toBeDefined();
     for (const leaked of ['"A"', '"B"', '"C"', '"D"']) expect(line).not.toContain(leaked);
   });
 
@@ -131,11 +136,13 @@ describe("value-level redaction", () => {
   test("masks credentials quoted inside an error message and stack", () => {
     // Driver errors routinely echo the connection string they failed on.
     const [line] = capture(() => log.error("y", new Error("connect failed for postgres://bob:s3cret@db/x")));
+    expect(line, "nothing was captured to redact").toBeDefined();
     expect(line).not.toContain("s3cret");
   });
 
   test("masks bearer tokens and key=value pairs", () => {
     const [line] = capture(() => log.info("z", { header: "Authorization: Bearer abcdef0123456789" }));
+    expect(line, "nothing was captured to redact").toBeDefined();
     expect(line).not.toContain("abcdef0123456789");
   });
 
