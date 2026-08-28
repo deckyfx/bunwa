@@ -92,7 +92,25 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
           // is slow to start reading.
           return { claims, subscription: subscribe(claims.environmentId) };
         })
-        .get("/events/stream", async function* ({ claims, subscription }) {
+        .get("/events/stream", async function* ({ claims, subscription, request }) {
+          // Closed from the abort signal as well as from the finally below.
+          //
+          // `finally` in a generator does not run until the body reaches a
+          // suspension point it can be resumed through, and the body now parks
+          // on a race that includes a 25-second heartbeat timer. So a reader
+          // that disconnects while nothing is happening left the subscription
+          // registered on the bus for up to the whole heartbeat interval,
+          // taking a fan-out slot and filling a queue nobody would ever read.
+          // Before the heartbeat existed the race did not, and the wait was
+          // unbounded rather than 25 seconds — this made it visible, it did
+          // not create it.
+          //
+          // close() is idempotent, so both paths running is not a problem.
+          const abort = () => {
+            subscription.close();
+          };
+          request.signal.addEventListener("abort", abort, { once: true });
+
           try {
             // Said explicitly, so a console can show "live" from something the
             // server sent rather than from the absence of an error.
@@ -145,8 +163,11 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
               });
             }
           } finally {
-            // Runs on abort, on return, and when the server ends the response,
-            // so the bus stops filling a queue for a reader that has gone.
+            // Runs on return and when the server ends the response, so the bus
+            // stops filling a queue for a reader that has gone. The listener
+            // goes with it, or a long-lived request object accumulates one per
+            // stream it ever served.
+            request.signal.removeEventListener("abort", abort);
             subscription.close();
           }
         }),

@@ -117,4 +117,11 @@ export const useClaim = create<ClaimState>((set, get) => ({
 // Cleared when the credential changes, so this store never renders one
 // tenant's data under another's key while the new key's requests are in
 // flight. See ./tenant.
-blankOnKeyChange(useClaim, () => ({ msisdn: "", alias: "", result: null, error: null, busy: false }));
+blankOnKeyChange(useClaim, () => {
+  // The generation moves too. Clearing the visible state is not enough: sign
+  // out and back in with the same key while a claim is in flight and both
+  // guards in `submit` still pass — same generation, same key — so the old
+  // response repopulates the form that was just cleared.
+  submitGeneration += 1;
+  return { msisdn: "", alias: "", result: null, error: null, busy: false };
+});

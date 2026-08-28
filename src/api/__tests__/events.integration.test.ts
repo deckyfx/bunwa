@@ -18,7 +18,7 @@ import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
-import { publish, resetBus } from "../../events/bus";
+import { publish, resetBus, subscriberCount } from "../../events/bus";
 import { EVENT_SCHEMA_VERSION } from "../../events/schema";
 import type { EventEnvelope } from "../../events/schema";
 
@@ -190,4 +190,37 @@ describe("a stream carries its own environment and no other", () => {
     expect(seen).toContain('"mine"');
     expect(seen, "another environment's event reached this stream").not.toContain('"theirs"');
   });
+});
+
+describe("a reader that disconnects while nothing is happening", () => {
+  test("its subscription is closed at once, not at the next heartbeat", async () => {
+    // A generator's `finally` cannot run until the body reaches a suspension
+    // point it can be resumed through, and the body parks on a race that
+    // includes the 25-second heartbeat. So an idle reader that went away left
+    // its subscription registered on the bus — holding a fan-out slot and
+    // filling a queue nobody would ever read — until that timer came round.
+    // The abort listener is what makes the close immediate.
+    const controller = new AbortController();
+    const response = await app.handle(
+      new Request(`http://localhost/v1/events/stream?ticket=${encodeURIComponent(await mint())}`, {
+        signal: controller.signal,
+      }),
+    );
+    expect(response.status).toBe(200);
+
+    // Read the opening frame so the stream is genuinely established, then stop.
+    const reader = response.body!.getReader();
+    await reader.read();
+    expect(subscriberCount(environmentId), "the stream never subscribed").toBe(1);
+
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
+
+    // Immediately, without waiting out HEARTBEAT_MS.
+    await Bun.sleep(100);
+    expect(
+      subscriberCount(environmentId),
+      "the subscription outlived the reader that abandoned it",
+    ).toBe(0);
+  }, 10_000);
 });

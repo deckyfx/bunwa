@@ -83,11 +83,22 @@ jobs:
         # rejected only .sqlite with -wal and -shm. A committed bunwa.db or a
         # rollback journal — both of which carry the same credentials — passed
         # the guard that exists to stop exactly that.
+        #
+        # Matches are captured, then tested — no `grep -q` in the condition.
+        # `grep -q` exits at the first hit and closes the pipe, so `git ls-files`
+        # takes SIGPIPE and the pipeline's status becomes 141 under `pipefail`.
+        # The `if` then reads that as false and a tracked database walks past
+        # the guard. This step does not set pipefail today, so it fires
+        # correctly — but it is one `set -o pipefail`, or one `defaults.run`
+        # block with GitHub's documented `-eo pipefail`, away from turning a
+        # security check into a no-op that still reports success. Reproduced
+        # both ways before changing it.
         run: |
           pattern='\.(sqlite|db)(-(wal|shm|journal))?$'
-          if git ls-files | grep -qE "$pattern"; then
+          tracked=$(git ls-files | grep -E "$pattern" || true)
+          if [ -n "$tracked" ]; then
             echo "::error::a database is tracked in git"
-            git ls-files | grep -E "$pattern"
+            printf '%s\n' "$tracked"
             exit 1
           fi
           echo "no database tracked"

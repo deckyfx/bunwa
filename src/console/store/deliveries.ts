@@ -26,6 +26,19 @@ interface DeliveryState {
   replay: (id: string) => Promise<void>;
 }
 
+/**
+ * Replays this process has actually started, as opposed to rows that look busy.
+ *
+ * Outside the store on purpose. Store state is blanked when the credential
+ * changes — correctly, because it is what the screen renders — but a request
+ * already sent does not stop because the operator signed out, and a replay is
+ * a webhook the consumer receives again. Keeping the suppression here means a
+ * credential reset can clear the view without forgetting what is in flight.
+ *
+ * Delivery ids are ULIDs, so an entry cannot collide with a different tenant's.
+ */
+const inFlight = new Set<string>();
+
 export const useDeliveries = create<DeliveryState>((set, get) => ({
   deliveries: null,
   replaying: new Set(),
@@ -48,7 +61,15 @@ export const useDeliveries = create<DeliveryState>((set, get) => ({
   replay: async (id: string) => {
     // Refused rather than queued. A second click on a row already in flight is
     // a duplicate webhook at the far end, not a retry.
-    if (get().replaying.has(id)) return;
+    //
+    // Checked against `inFlight`, not against the store's `replaying`. The two
+    // answer different questions: `replaying` is what the row should look
+    // like, and a credential change clears it because the view belongs to the
+    // tenant — while the request itself carries on. Suppression has to outlive
+    // that, or signing out and back in mid-replay lets the same delivery be
+    // sent twice.
+    if (inFlight.has(id)) return;
+    inFlight.add(id);
 
     const { apiKey } = useSession.getState();
     // Before the row is marked, not after: an empty key cannot replay anything,
@@ -69,6 +90,7 @@ export const useDeliveries = create<DeliveryState>((set, get) => ({
       if (error !== null) set({ error: "could not replay" });
       else await get().load();
     } finally {
+      inFlight.delete(id);
       // In a finally, because the guard above returns early. Clearing this
       // only on the paths that reach the end left the row marked as replaying
       // for ever whenever the session changed mid-request — a permanently
