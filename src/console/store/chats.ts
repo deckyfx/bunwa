@@ -154,7 +154,12 @@ export const useChats = create<ChatState>((set, get) => ({
       return;
     }
 
-    set({ messages: data });
+    // `error: null` as well as the messages. `select` clears the error on the
+    // way in but a background refresh does not go through it, so a failure
+    // followed by a successful reload left the message list correct and the
+    // error banner still above it — the screen contradicting itself, with the
+    // stale half the more alarming.
+    set({ messages: data, error: null });
 
     // Clear the badge optimistically, then tell the server. The badge is the
     // least important thing on screen and should not wait for a round trip.

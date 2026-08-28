@@ -9,6 +9,8 @@
  */
 import { Elysia, sse, t } from "elysia";
 
+import { problem } from "../server";
+
 import { requireApiKey } from "../../auth/middleware";
 import { subscribe } from "../../events/bus";
 import { mintTicket, spendTicket } from "../../stores/stream-ticket-store";
@@ -67,17 +69,18 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
     { query: t.Object({ ticket: t.String({ minLength: 1 }) }) },
     (guarded) =>
       guarded
-        .resolve(async ({ query, status }) => {
+        .resolve(async ({ query, status, path }) => {
           const claims = await spendTicket(query.ticket);
           if (claims === null) {
             // One answer for expired, spent and unknown alike. Distinguishing
             // them tells an attacker which guesses were close.
-            return status(401, {
-              type: "https://bunwa.dev/errors/invalid-ticket",
-              title: "Unauthorized",
-              status: 401,
-              detail: "the ticket is not valid",
-            });
+            // Built by the shared helper rather than by hand, so this
+            // matches every other error the API emits. The literal here had
+            // drifted already: no `instance`, which is the field that tells a
+            // caller *which* request failed, and it is the one error most
+            // likely to be read in isolation because the stream is opened by
+            // an EventSource with no surrounding request to correlate it to.
+            return status(401, problem(401, "invalid-ticket", "Unauthorized", "the ticket is not valid", path));
           }
           // Subscribed here, not in the generator.
           //

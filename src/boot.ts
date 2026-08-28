@@ -107,6 +107,31 @@ async function main(consolePage?: ConsolePage): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     log.info("shutting down", { signal });
+
+    // Every step below is best-effort, and the exit is not.
+    //
+    // Three of them already had their own catch — the engine one says why:
+    // "a rejected close with shutdown already marked in progress would leave
+    // it hung with no way for a later signal to recover it." The first step
+    // did not. If `server.stop()` rejected, this function rejected, the
+    // rejection was swallowed by the `void` at the call site, and
+    // process.exit(0) was never reached — with `shuttingDown` already true, so
+    // every later SIGINT returned immediately and the process could not be
+    // killed. The same unkillable process this file was written to fix,
+    // through the one door left open.
+    //
+    // A finally rather than a fourth catch: the guarantee is "this function
+    // exits the process", and that should not depend on remembering to wrap
+    // each new step someone adds above it.
+    try {
+      await drain();
+    } finally {
+      process.exit(0);
+    }
+  };
+
+  /** Everything that has to be given a chance to finish before the exit. */
+  const drain = async (): Promise<void> => {
     // Order matters. Stop accepting requests first: closing engines while
     // traffic is still arriving fails those requests for no reason. Then drain
     // the delivery pass in flight — anything unfinished stays queued and
@@ -172,7 +197,6 @@ async function main(consolePage?: ConsolePage): Promise<void> {
         error: err instanceof Error ? err.message : String(err),
       });
     });
-    process.exit(0);
   };
   process.on("SIGINT", () => void shutdown("SIGINT"));
   process.on("SIGTERM", () => void shutdown("SIGTERM"));
