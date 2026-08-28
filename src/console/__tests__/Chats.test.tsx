@@ -168,4 +168,49 @@ describe("switching conversation while a reply is in flight", () => {
       "the finished reply repainted the panel with the previous conversation",
     ).toBeNull();
   });
+
+  test("a thread with a reply still in flight keeps its composer disabled", async () => {
+    // Third version of this state, and the reason it is a set. A boolean
+    // disabled every composer at once. A single id then tracked only the most
+    // recent send, so replying in Ana, switching to Bo and replying there
+    // dropped Ana from the slot — and going back to Ana found its composer
+    // live while Ana's first reply was still in flight. A second click there is
+    // a duplicate WhatsApp message, not a retry.
+    const threads: ChatThread[] = [
+      { ...thread, id: "t1", displayName: "Ana", unreadCount: 0 },
+      { ...thread, id: "t2", displayName: "Bo", unreadCount: 0 },
+    ];
+    (api as { chats: typeof api.chats }).chats = async () => threads;
+    (api as { chatMessages: typeof api.chatMessages }).chatMessages = async (_k, id) => [
+      { ...inbound, id: `m-${id}`, body: id === "t1" ? "ANA MESSAGE" : "BO MESSAGE" },
+    ];
+
+    // Neither reply ever resolves: both stay in flight for the whole test.
+    (api as { reply: typeof api.reply }).reply = () => new Promise(() => undefined);
+
+    render(<Chats apiKey="k" revision={0} />);
+    await waitFor(() => expect(screen.getByText("Ana")).toBeDefined());
+
+    fireEvent.click(screen.getByRole("button", { name: /Ana/ }));
+    await waitFor(() => expect(screen.getByText("ANA MESSAGE")).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Reply"), { target: { value: "to ana" } });
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    fireEvent.click(screen.getByRole("button", { name: /Bo/ }));
+    await waitFor(() => expect(screen.getByText("BO MESSAGE")).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Reply"), { target: { value: "to bo" } });
+    // "send", not "queueing…": Bo has nothing in flight yet. Only one composer
+    // is on screen at a time, so this button belongs to Bo alone.
+    fireEvent.click(screen.getByRole("button", { name: "send" }));
+
+    // Back to Ana, whose reply has still not resolved.
+    fireEvent.click(screen.getByRole("button", { name: /Ana/ }));
+    await waitFor(() => expect(screen.getByText("ANA MESSAGE")).toBeDefined());
+
+    expect(
+      screen.queryByRole("button", { name: "send" }),
+      "Ana's composer was re-enabled while its own reply was still in flight",
+    ).toBeNull();
+    expect(screen.getByRole("button", { name: "queueing…" })).toBeDefined();
+  });
 });

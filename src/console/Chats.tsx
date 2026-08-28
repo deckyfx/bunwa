@@ -35,15 +35,20 @@ export function Chats({ apiKey, revision }: Props) {
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   /**
-   * Which thread has a reply in flight, or null.
+   * Every thread with a reply in flight.
    *
-   * A boolean disabled every composer at once, so a reply pending in one
-   * conversation locked the box in the conversation the operator had just
-   * switched to — a screen that will not accept typing, for a request about a
-   * thread no longer on screen. The id answers "is *this* composer waiting?",
-   * which is the question the button is actually asking.
+   * Three versions of this. A boolean disabled every composer at once, so a
+   * pending reply locked the box in the conversation the operator had just
+   * switched to. A single id fixed that and introduced a worse bug: sending in
+   * A, switching to B and sending there replaced A in the slot, so returning to
+   * A found its composer enabled while A's request was still in flight — and a
+   * second click there is a duplicate WhatsApp message, not a retry.
+   *
+   * A set, which is what Deliveries already worked out for `replaying` and for
+   * the same reason. Tracking one of anything answers "which was most recent?"
+   * when the question is "is *this* one busy?".
    */
-  const [sendingThread, setSendingThread] = useState<string | null>(null);
+  const [sendingThreads, setSendingThreads] = useState<ReadonlySet<string>>(new Set());
 
   // One counter each, not one shared.
   //
@@ -138,7 +143,7 @@ export function Chats({ apiKey, revision }: Props) {
     // arriving by a different route after I closed the first one.
     const threadId = selected;
 
-    setSendingThread(threadId);
+    setSendingThreads((current) => new Set(current).add(threadId));
     setError(null);
     try {
       await api.reply(apiKey, threadId, draft);
@@ -153,7 +158,11 @@ export function Chats({ apiKey, revision }: Props) {
       // would undo a *newer* send started in another conversation after this
       // one was switched away from, re-enabling a composer whose own request
       // is still in flight.
-      setSendingThread((current) => (current === threadId ? null : current));
+      setSendingThreads((current) => {
+        const next = new Set(current);
+        next.delete(threadId);
+        return next;
+      });
     }
   }
 
@@ -219,8 +228,8 @@ export function Chats({ apiKey, revision }: Props) {
                   onChange={(e) => setDraft(e.target.value)}
                   placeholder="Type a message"
                 />
-                <button type="submit" disabled={sendingThread === selected || draft.trim() === ""}>
-                  {sendingThread === selected ? "queueing…" : "send"}
+                <button type="submit" disabled={sendingThreads.has(selected) || draft.trim() === ""}>
+                  {sendingThreads.has(selected) ? "queueing…" : "send"}
                 </button>
               </form>
             </>
