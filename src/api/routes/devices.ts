@@ -130,7 +130,18 @@ export function deviceRoutes(registry: EngineRegistry) {
           // The challenge token is deliberately absent. It is the phone
           // holder's to present, and returning it would let the project confirm
           // on their behalf — which is the entire thing consent prevents.
-          message: "The phone holder has been asked to confirm. They reply on WhatsApp.",
+          //
+          // The wording says what actually happens. It used to read "The phone
+          // holder has been asked to confirm", and nobody was asked: the
+          // consent row and its token are created, DeviceStore.respondToConsent exists
+          // and is tested, and nothing sends the WhatsApp message or parses a
+          // reply. An API that states an action it does not take is worse than
+          // one that admits a gap, because the caller stops looking for the
+          // problem. Tracked in todo.txt; stage 1 exit criterion 2 is unmet
+          // until it is wired.
+          message:
+            "This number belongs to another project. Consent is recorded as pending, but the confirmation request is not yet delivered — an operator must approve it.",
+          consentDelivery: "not_implemented" as const,
         };
       },
       {

@@ -1,8 +1,22 @@
 # ADR-0007 — gowa is the v1 engine; Baileys is engine #2
 
-**Status:** Accepted · 2026-08-22 · Amended 2026-08-25 · Supersedes the
-provisional position in [ADR-0002](0002-engine-adapter.md) on *when* the native
-engine arrives
+**Status:** **Superseded 2026-08-27** by the completion of stage 4 · Accepted
+2026-08-22 · Amended 2026-08-25 · Superseded the provisional position in
+[ADR-0002](0002-engine-adapter.md) on *when* the native engine arrives
+
+> **Superseded, 2026-08-27.** gowa is not the engine. Stage 4 finished, Baileys
+> replaced it, and the adapter, the harness, the compose stack and the
+> reference clone were deleted. The last line of this document — "the gowa
+> adapter stays" — is the specific thing that was reversed; the reasoning is in
+> the amendment to [ADR-0002](0002-engine-adapter.md).
+>
+> Nothing below is edited. The v1 decision was right for v1, and the two facts
+> it rested on are why the control plane got built at all rather than being
+> half-built behind a WhatsApp client. The obligations it listed as transferring
+> with a pivot — session state, in-process sockets, the 203-second window — are
+> the correct list, and it is worth noting which of the three has actually been
+> discharged: session state has (see [13](../13-owning-the-data.md)); the other
+> two have not.
 
 > **Amendment, 2026-08-25.** The conditional framing below — Baileys "if and
 > only if" gowa becomes a bottleneck — is withdrawn. Baileys is now a committed

@@ -1,33 +1,79 @@
-# 07 — Dashboard
+# 07 — Console
+
+> **Revised after stage 4.** The separate-subproject arrangement below was
+> built, run, and then undone; the section that described it now describes what
+> replaced it and why. Everything from "Two applications, not one" onwards is
+> the original plan, annotated where the build diverged from it. The document
+> is titled "console" rather than "dashboard" because that is what the code and
+> the route call it.
 
 ## Context
 
 gowa's dashboard is not in its repository. `src/infrastructure/uiasset/`
 downloads a prebuilt `index.html` from a GitHub release and caches it on disk,
-with a SHA-256 and an ETag. So there is nothing to "port" in the literal
-sense — this is a greenfield build, which removes the main constraint.
+with a SHA-256 and an ETag. So there was nothing to "port" in the literal
+sense — this was a greenfield build, which removed the main constraint.
 
-## A separate subproject, and a separate image
+## One project, one app, two entry points
 
-The dashboard is **its own subproject** with its own build, its own
-`package.json`, and no import path into the control plane. It talks to bunwa
-over the same public HTTP API a project would use.
+This section originally specified the console as **its own subproject** with its
+own `package.json`, lockfile, tsconfig, test runner and copy of Elysia, running
+a second Elysia on a second port and reaching the API through a `/v1` proxy.
+That was built and then reversed, because separation between two halves written
+by the same person on the same day is upkeep rather than insulation. Concretely:
+the two copies of Elysia drifted within a day, the proxy silently pointed at the
+wrong port, CI failed on a missing `react` because the root install had no
+reason to descend into a subproject it did not know about, and a bare `bun test`
+skipped the console suite entirely while reporting success.
+
+The console now lives at `src/console/`, inside the one project, with one
+`package.json`, one lockfile, one tsconfig and one test runner. It is served at
+`/app` by **the same Elysia app** that answers its API calls, through a plugin
+(`src/api/console-plugin.ts`) that hands Bun's HTML import to a route and lets
+Elysia's own `listen()` do the bundling, script injection and hot reload.
 
 ```
 bunwa/
-├── src/            control plane        → image tag  bunwa:api
-└── dashboard/      React SPA            → image tag  bunwa:full  (api + SPA at /app)
+├── src/               control plane
+│   └── console/       React SPA, served at /app by the same app
+├── src/boot.ts             the startup sequence both entry points share
+├── src/index.ts            the API with the console mounted — the default
+└── src/index-headless.ts   the API alone
 ```
 
-Two tags from one build. `bunwa:api` contains no dashboard assets at all — for
-deployments that only want the API, the SPA is not merely unrouted, it is not
-present. The control plane serves `/app/*` static assets only when they exist on
-disk, so the same binary runs in both images with no build flag.
+The two entry points differ by one argument. `index.ts` imports the HTML and
+passes it to `main()`; `index-headless.ts` does not import it at all, which is
+what keeps React out of what a headless build serves — a runtime switch would
+ship the thing it exists to exclude. Both are two lines over a shared
+`boot.ts`, which is deliberate: an entry point that owned its own copy of the
+startup sequence is how one of them ended up merely exporting `main` and
+serving nothing. `/app` still answers in a headless build, with a
+404 that says the console is not in this build, because an operator who expected
+it should learn that from the route rather than from a bare 404 that could mean
+anything.
 
-Coupling is limited to the generated API types, imported from
-`@bunwa/api-types` — a build artefact of the control plane, not a source
-dependency. The dashboard can therefore be developed, versioned and released
-independently, and a project could replace it entirely with their own.
+One origin is what makes the coupling question disappear. The original answer
+was a generated `@bunwa/api-types` package, a build artefact of the control
+plane. That is no longer necessary: the console imports the server's exported
+`App` type directly and Eden Treaty types every call from it, so a route that
+changes signature is a compile error rather than a 400 found in a browser. The
+cost of the earlier arrangement was paid before it was fixed — a hand-written
+`Whoami` and `VirtualDevice` were both wrong, and the page rendered
+"undefined / undefined" against a live API, and a hand-written `attempts` and
+`occurredAt` were wrong in the same way in the commit after that.
+
+The server exports two app types rather than one, `HeadlessApp` and
+`ConsoleApp`, built by two functions, with `App` aliased to the latter. The
+tempting shape is `treaty<HeadlessApp | ConsoleApp>`, and it is wrong: a union
+narrows to what both halves share, so it would silently drop routes instead of
+describing them. The console knows which server it is talking to, because it is
+served by it.
+
+What is genuinely lost is independent release: the console versions and ships
+with the API. Against a proxy that pointed at the wrong port and two Elysias
+that disagreed, that is a trade worth making, and it can be reversed the day
+someone other than us wants to ship their own console — the API it talks to is
+still the same public one a project would use.
 
 ## Two applications, not one
 
@@ -50,6 +96,11 @@ amount of interface for someone who never agreed to have an account with you.
 Ship them as one codebase with two route trees and two navigation shells, not as
 one dashboard with role-conditional buttons scattered through it.
 
+**Built so far: the project console only, and not all of it.** The operator
+console does not exist. Nothing about the split has been decided against — it is
+that a second route tree with no screens in it is a shell, and routing was left
+until there was a second thing to route to.
+
 ## Stack
 
 | Concern | Choice | Rationale |
@@ -66,8 +117,26 @@ one dashboard with role-conditional buttons scattered through it.
 | Types | Eden Treaty | End-to-end types straight from the Elysia server — no client generation step |
 
 Eden Treaty is the reason to have chosen Elysia in [03](03-architecture.md): the
-dashboard imports the server's type and gets fully-typed calls with no codegen,
-no drift, and a compile error the moment an endpoint changes.
+console imports the server's `App` type and gets fully-typed calls with no
+codegen, no drift, and a compile error the moment an endpoint changes. That
+became simpler than planned once the console moved into the same project — the
+type is an import rather than a published artefact.
+
+Of that table, React 19, Bun's bundler, Tailwind v4, SSE and Eden Treaty are in
+use. TanStack Router, TanStack Query, shadcn/ui, React Hook Form and Recharts
+are not installed. Each was chosen for a problem the console has not reached:
+there is one route, no charts, and forms with one or two fields. They stay
+listed as the intended answers rather than being deleted, because the reasoning
+does not expire — but four screens is not the size at which they earn their
+weight.
+
+Server state is **zustand** stores under `src/console/store/`, one per subject,
+each holding the Eden client and the guards that go with it. That was not a
+preference for zustand over TanStack Query so much as the smallest thing that
+fixed a real problem: the state started in `App`'s `useState` and was passed
+down, so every screen took an `apiKey` prop and each had written its own version
+of the same in-flight and stale-response guards — which is how a stale key
+reached a screen that had already been told to use a different one.
 
 ## Project console
 
@@ -81,6 +150,12 @@ no drift, and a compile error the moment an endpoint changes.
 | **Deliveries** | Every attempt, status code, response body, replay from the DLQ |
 | **Rules** | Editor plus the dry-run tester |
 | **Logs** | Recent sends and inbound messages, filtered to this environment |
+
+Four of those exist: **claim a number**, **virtual devices**, **deliveries**,
+and one this table never anticipated — **conversations**, a thread list and
+message view with a composer, which exists because stage 4 made bunwa the system
+of record for history ([13](13-owning-the-data.md)). Environments, API keys,
+webhook configuration, rules and logs are still API-only.
 
 ### The claim screen
 
@@ -198,14 +273,27 @@ weaker than it would be for a customer-facing consent page — but the fleet and
 deliveries tables will hold thousands of rows, which is where the virtualisation
 budget earns its place.
 
+**None of these is measured.** [08](08-roadmap.md) listed them as enforced in
+CI and they are not, in either project layout. They are a stated intention with
+no gate behind it, which is worth saying plainly rather than leaving the table
+to imply otherwise.
+
 ## Delivery order
 
-The dashboard is stage 3, but two screens are needed earlier and should be built
-during stage 1 as raw, unstyled utilities inside the `api` image's `/dev` route,
-removed before release:
+The plan was that two screens — claim a number, and approve a consent — would be
+needed before stage 3 and should be built during stage 1 as unstyled utilities
+behind a `/dev` route, removed before release.
 
-1. **Claim a number** — nothing can be tested without a QR on screen
-2. **Approve a consent** — the WhatsApp challenge needs a manual fallback while
-   the reply parser is being written
+That is not what happened. There was no `/dev` route and nothing was thrown
+away: claim-a-number was built once, as the first real screen of the project
+console, and it is still the first thing a developer meets — the plan was right
+that the QR screen is what makes anything else testable.
 
-Everything else waits for the proper design pass.
+The consent fallback was not built, and neither was the thing it was a fallback
+for. `DeviceStore` runs the consent state machine and records the audit trail,
+but no code sends the WhatsApp challenge and nothing parses a reply into
+`DeviceStore.respond`. A claim against a number another project holds returns
+202 with "the phone holder has been asked to confirm", and nobody has been
+asked. Until that loop exists, the manual approval screen is not a fallback but
+the only way to complete the flow, so it moves from "skipped" back to
+"outstanding".

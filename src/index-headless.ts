@@ -1,11 +1,10 @@
 /**
  * The API alone.
  *
- * No console, and no React in the bundle: the page is not imported here, so a
- * headless build cannot accidentally carry the thing it exists to exclude.
- * `/app` answers 404 rather than being absent, which tells an operator who
- * expected the console that they are running the wrong image.
+ * The console page is not imported here, so a headless build cannot carry
+ * React to serve a route it never mounts. /app answers a 404 that names the
+ * build rather than being silently absent.
  */
-import { main } from "./index";
+import { main } from "./boot";
 
 await main();

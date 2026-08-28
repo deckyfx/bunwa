@@ -7,53 +7,21 @@
  * minted behind `x-api-key`, spent once by the stream, and worthless within a
  * minute.
  */
-import { Elysia, t } from "elysia";
+import { Elysia, sse, t } from "elysia";
+
+import { problem } from "../server";
 
 import { requireApiKey } from "../../auth/middleware";
 import { subscribe } from "../../events/bus";
-import type { EventEnvelope } from "../../events/schema";
 import { mintTicket, spendTicket } from "../../stores/stream-ticket-store";
-import { log } from "../../observability/logger";
-import { problem } from "../server";
 
 /**
- * How often to send a comment line when nothing is happening.
+ * How long an idle stream may say nothing.
  *
- * A proxy that sees no bytes closes an idle connection, and the browser then
- * reconnects — which costs a ticket each time and makes the console look like
- * it is flapping. A comment is not an event, so no consumer sees it.
+ * Under the 60 seconds most proxies and load balancers use before closing an
+ * idle connection, with room to spare for a slow hop.
  */
-const HEARTBEAT_MS = 15_000;
-
-/**
- * How many frames may sit unread before the connection is abandoned.
- *
- * The counterpart to the bus's own cap. Without one the backlog simply moves
- * from the bus into the stream's queue, where nothing bounds it.
- */
-const MAX_QUEUED_FRAMES = 32;
-
-/**
- * Everything this route can put on the wire.
- *
- * Named rather than `unknown`, so a future frame carrying something it should
- * not — a raw row, an error with a stack — is a compile error instead of a
- * payload a tenant receives.
- */
-type StreamPayload =
-  | EventEnvelope
-  | { environmentId: string }
-  | { reason: string };
-
-/** One SSE frame. `\n\n` terminates it; anything less and the client waits. */
-function frame(event: string, data: StreamPayload, id?: string): string {
-  const lines = [
-    id === undefined ? null : `id: ${id}`,
-    `event: ${event}`,
-    `data: ${JSON.stringify(data)}`,
-  ].filter((l) => l !== null);
-  return `${lines.join("\n")}\n\n`;
-}
+const HEARTBEAT_MS = 25_000;
 
 export const eventRoutes = new Elysia({ prefix: "/v1" })
   .group("/events", (group) =>
@@ -88,120 +56,131 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
    * same thing was confirmed with curl against a running server. If that ever
    * stops being true the test fails, which is the right place to find out.
    */
-  .get(
-    "/events/stream",
-    async ({ query, set, path, request }) => {
-      const claims = await spendTicket(query.ticket);
-      if (claims === null) {
-        set.status = 401;
-        // Deliberately one message for expired, spent and unknown alike.
-        // Distinguishing them tells an attacker which guesses were close.
-        return problem(401, "invalid-ticket", "Unauthorized", "the ticket is not valid", path);
-      }
-
-      const subscription = subscribe(claims.environmentId);
-
-      const stream = new ReadableStream<Uint8Array>({
-        async start(controller) {
-          const encoder = new TextEncoder();
-          const send = (chunk: string) => {
-            try {
-              controller.enqueue(encoder.encode(chunk));
-              return true;
-            } catch {
-              // The client is gone. Not an error worth logging per event.
-              return false;
-            }
-          };
-
-          /**
-           * Whether the client is keeping up.
-           *
-           * enqueue() never blocks, so a stalled reader let this loop drain the
-           * subscription and pile it into the stream's own queue instead —
-           * which has no limit. The bus caps a subscriber at twenty pending
-           * envelopes precisely so one slow consumer cannot grow without
-           * bound, and moving the backlog one layer downstream bypassed that
-           * entirely. Measured: 5000 chunks enqueued with no reader attached.
-           *
-           * desiredSize going negative means the queue is over its mark, which
-           * is the signal to give up on this connection rather than buffer for
-           * it.
-           */
-          const backedUp = () => (controller.desiredSize ?? 0) < -MAX_QUEUED_FRAMES;
-
-          // Told immediately, so a console can show "live" from something the
-          // server said rather than from the absence of an error.
-          send(frame("stream.open", { environmentId: claims.environmentId }));
-
-          const heartbeat = setInterval(() => {
-            // Checked here too. Bounding the event loop and leaving this
-            // unbounded just moves the growth to the idle case: a client that
-            // stops reading and receives nothing else still accumulates a
-            // keepalive every fifteen seconds, for ever. Same fault as the one
-            // this check was added for, one callback over.
-            if (!send(": keepalive\n\n") || backedUp()) {
-              clearInterval(heartbeat);
-              subscription.close();
-            }
-          }, HEARTBEAT_MS);
-
-          // Closing the tab aborts the request; without this the subscription
-          // survives the connection and the bus keeps a dead reader.
-          request.signal.addEventListener("abort", () => {
-            clearInterval(heartbeat);
+  /**
+   * The stream, with the ticket spent before the generator starts.
+   *
+   * `guard` + `resolve` rather than a check inside the handler: a generator
+   * cannot set a status and return a problem document, and Elysia only streams
+   * a handler that *is* a generator — an async handler returning an iterator
+   * comes back 200 with an empty body, which looks connected and delivers
+   * nothing.
+   */
+  .guard(
+    { query: t.Object({ ticket: t.String({ minLength: 1 }) }) },
+    (guarded) =>
+      guarded
+        .resolve(async ({ query, status, path }) => {
+          const claims = await spendTicket(query.ticket);
+          if (claims === null) {
+            // One answer for expired, spent and unknown alike. Distinguishing
+            // them tells an attacker which guesses were close.
+            // Built by the shared helper rather than by hand, so this
+            // matches every other error the API emits. The literal here had
+            // drifted already: no `instance`, which is the field that tells a
+            // caller *which* request failed, and it is the one error most
+            // likely to be read in isolation because the stream is opened by
+            // an EventSource with no surrounding request to correlate it to.
+            return status(401, problem(401, "invalid-ticket", "Unauthorized", "the ticket is not valid", path));
+          }
+          // Subscribed here, not in the generator.
+          //
+          // A generator body does not run until the first pull, so subscribing
+          // inside it left a window between the response being returned and
+          // the client reading it — events published in that window went to a
+          // bus with no subscriber and were lost. Real, not just a test
+          // artefact: it is small over a socket and wide whenever the consumer
+          // is slow to start reading.
+          return { claims, subscription: subscribe(claims.environmentId) };
+        })
+        .get("/events/stream", async function* ({ claims, subscription, request }) {
+          // Closed from the abort signal as well as from the finally below.
+          //
+          // `finally` in a generator does not run until the body reaches a
+          // suspension point it can be resumed through, and the body now parks
+          // on a race that includes a 25-second heartbeat timer. So a reader
+          // that disconnects while nothing is happening left the subscription
+          // registered on the bus for up to the whole heartbeat interval,
+          // taking a fan-out slot and filling a queue nobody would ever read.
+          // Before the heartbeat existed the race did not, and the wait was
+          // unbounded rather than 25 seconds — this made it visible, it did
+          // not create it.
+          //
+          // close() is idempotent, so both paths running is not a problem.
+          const abort = () => {
             subscription.close();
-          });
+          };
+          request.signal.addEventListener("abort", abort, { once: true });
+
+          // Already aborted is not a case the listener covers: the event has
+          // dispatched, so registering after it is registering for something
+          // that will never happen again. The subscription is created in
+          // `resolve`, before this body runs, so a request that died in that
+          // window would sit on the bus with neither path ever closing it —
+          // the `finally` only runs once the generator is resumed, which for
+          // a caller that has gone may be never.
+          if (request.signal.aborted) {
+            abort();
+            return;
+          }
 
           try {
-            for await (const envelope of subscription.events) {
-              if (!send(frame(envelope.type, envelope, envelope.id))) break;
+            // Said explicitly, so a console can show "live" from something the
+            // server sent rather than from the absence of an error.
+            yield sse({ event: "stream.open", data: { environmentId: claims.environmentId } });
 
-              // Cut loose rather than buffered, matching what the bus does to a
-              // subscriber that falls behind. A console that is this far back
-              // has missed events and needs to refetch, which is exactly what
-              // the overflow frame below tells it to do.
-              if (backedUp()) {
-                log.warn("stream consumer fell behind; closing", {
-                  environmentId: claims.environmentId,
-                });
-                send(frame("stream.overflow", { reason: "too far behind; refetch and reconnect" }));
-                break;
+            // Driven by hand rather than `for await`, so an idle stream can
+            // still say something.
+            //
+            // A quiet subscription yielded nothing at all, and an intermediary
+            // that times an idle connection out closes it — the console then
+            // treats a healthy server as a dropped stream, mints a fresh
+            // ticket and reconnects, on a loop, for as long as nothing
+            // happens. Which is most of the time on a small deployment.
+            //
+            // The pending `next()` is held across ticks rather than re-asked
+            // for. Racing a fresh `next()` against the timer each time would
+            // abandon the previous one, and an event delivered to an abandoned
+            // reader is an event nobody receives.
+            const events = subscription.events[Symbol.asyncIterator]();
+            let pending = events.next();
+            for (;;) {
+              const settled = await Promise.race([
+                pending.then((result) => ({ kind: "event" as const, result })),
+                Bun.sleep(HEARTBEAT_MS).then(() => ({ kind: "tick" as const })),
+              ]);
+
+              if (settled.kind === "tick") {
+                // A named event rather than a bare comment: it reaches only a
+                // listener that asked for it, so a console that ignores it is
+                // unaffected while the bytes still keep the connection open.
+                yield sse({ event: "stream.ping", data: {} });
+                continue;
               }
+
+              if (settled.result.done === true) break;
+              yield sse({
+                event: settled.result.value.type,
+                id: settled.result.value.id,
+                data: settled.result.value,
+              });
+              pending = events.next();
             }
 
-            // Says why it ended. A console that overflowed has missed events
-            // and must refetch rather than assume it is still current.
+            // Why it ended. A console that overflowed has missed events and
+            // must refetch rather than assume it is current.
             if (subscription.reason() === "overflow") {
-              send(frame("stream.overflow", { reason: "too far behind; refetch and reconnect" }));
+              yield sse({
+                event: "stream.overflow",
+                data: { reason: "too far behind; refetch and reconnect" },
+              });
             }
-          } catch (err) {
-            log.error("event stream failed", err, { environmentId: claims.environmentId });
           } finally {
-            clearInterval(heartbeat);
+            // Runs on return and when the server ends the response, so the bus
+            // stops filling a queue for a reader that has gone. The listener
+            // goes with it, or a long-lived request object accumulates one per
+            // stream it ever served.
+            request.signal.removeEventListener("abort", abort);
             subscription.close();
-            try {
-              controller.close();
-            } catch {
-              // Already closed by the client disconnecting.
-            }
           }
-        },
-        cancel() {
-          subscription.close();
-        },
-      });
-
-      return new Response(stream, {
-        headers: {
-          "content-type": "text/event-stream",
-          "cache-control": "no-cache, no-transform",
-          connection: "keep-alive",
-          // Nginx buffers text/event-stream by default, which holds events
-          // until the buffer fills and makes a live stream arrive in bursts.
-          "x-accel-buffering": "no",
-        },
-      });
-    },
-    { query: t.Object({ ticket: t.String({ minLength: 1 }) }) },
+        }),
   );

@@ -35,8 +35,7 @@ jobs:
 
       - name: Install dependencies
         # One project now. The console moved into src/console, so there is no
-        # second manifest to resolve and no workspace to descend into — which
-        # is what CI used to fail on, with a missing `react`.
+        # second manifest to resolve and no workspace to descend into.
         run: bun install --frozen-lockfile
 
       - name: Typecheck
@@ -73,16 +72,55 @@ jobs:
           fi
           echo "embedded manifest is current"
 
-      - name: Verify the harness has no runtime data committed
-        # deploy/stage0/data holds WhatsApp session credentials and captured
-        # message payloads. It is git-ignored; this fails the build if that ever
-        # stops being true.
+      - name: Verify no session data is committed
+        # The stage-0 harness that this used to guard is gone with gowa, but the
+        # risk moved rather than disappeared: bunwa now holds the credentials
+        # itself, in the database. A committed .sqlite is a committed WhatsApp
+        # account.
+        #
+        # The pattern covers everything .gitignore protects, which it did not:
+        # the ignore rules name *.sqlite, *.sqlite-journal and *.db, and this
+        # rejected only .sqlite with -wal and -shm. A committed bunwa.db or a
+        # rollback journal — both of which carry the same credentials — passed
+        # the guard that exists to stop exactly that.
+        #
+        # Matches are captured, then tested — no `grep -q` in the condition.
+        # `grep -q` exits at the first hit and closes the pipe, so `git ls-files`
+        # takes SIGPIPE and the pipeline's status becomes 141 under `pipefail`.
+        # The `if` then reads that as false and a tracked database walks past
+        # the guard. This step does not set pipefail today, so it fires
+        # correctly — but it is one `set -o pipefail`, or one `defaults.run`
+        # block with GitHub's documented `-eo pipefail`, away from turning a
+        # security check into a no-op that still reports success. Reproduced
+        # both ways before changing it.
         run: |
-          if git ls-files --error-unmatch 'deploy/stage0/data/*' >/dev/null 2>&1; then
-            echo "::error::runtime data is tracked in git"
+          pattern='\.(sqlite|db)(-(wal|shm|journal))?$'
+
+          # `|| true` would swallow a git failure as well as a clean miss, and
+          # an empty result then reads as "nothing tracked" — the guard passing
+          # because it never ran. Each command is checked on its own: grep says
+          # 0 for a match and 1 for none, and anything above that is grep
+          # itself failing, which is not the same answer as "no databases".
+          if ! files=$(git ls-files); then
+            echo "::error::git ls-files failed; the database check did not run"
             exit 1
           fi
-          echo "no runtime data tracked"
+
+          set +e
+          tracked=$(printf '%s\n' "$files" | grep -E "$pattern")
+          matched=$?
+          set -e
+          if [ "$matched" -gt 1 ]; then
+            echo "::error::grep failed ($matched); the database check did not run"
+            exit 1
+          fi
+
+          if [ -n "$tracked" ]; then
+            echo "::error::a database is tracked in git"
+            printf '%s\n' "$tracked"
+            exit 1
+          fi
+          echo "no database tracked"
 
   images:
     # Separate job: the checks above are fast and this is not, so a typecheck
@@ -174,7 +212,16 @@ jobs:
         # entry point they run, so that is what this asserts — the headless one
         # must not import the console page, or React reaches a build whose whole
         # purpose is to exclude it.
+        #
+        # Two separate assertions, not one `&&`. Chained, the step passed
+        # whenever the page was *missing* — the condition needed both halves
+        # true to fail, so the check that the asset exists asserted nothing and
+        # a build that shipped no console at all looked correct.
         run: |
+          if ! docker run --rm bunwa:api test -e /app/src/console/index.html; then
+            echo "::error::the console page is missing from the image entirely"
+            exit 1
+          fi
           if docker run --rm bunwa:api sh -c 'grep -q "console/index.html" /app/src/index-headless.ts'; then
             echo "::error::the headless entry point imports the console page"
             exit 1

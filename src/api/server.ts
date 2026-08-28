@@ -20,7 +20,7 @@ import { chatRoutes } from "./routes/chat";
 import { consolePlugin, noConsolePlugin } from "./console-plugin";
 import type { ConsolePage } from "./types";
 import { projectRoutes } from "./routes/project";
-import type { EngineRegistry } from "../engine/registry";
+import { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
 import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../stores/errors";
 import { enterContext, log, sanitiseCorrelationId } from "../observability/logger";
@@ -79,21 +79,17 @@ async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?
 }
 
 /**
- * Build the application. Exported unstarted so tests can drive it directly.
+ * Build the application, without the console. Exported unstarted so tests can
+ * drive it directly.
  *
  * The engine registry is optional: most routes never touch an engine, and
  * requiring one would make every HTTP test stand up a fake.
- */
-/**
- * What to serve at /app, if anything.
  *
- * A Bun HTML import when the console is included, and undefined in headless
- * mode. Passed in rather than imported here so the two entry points differ by
- * one argument: importing it unconditionally would bundle React into the
- * headless binary to serve a route it never mounts.
+ * The console page is not a parameter here. `createConsoleApp` adds it, so
+ * nothing in this path imports the page and a headless build never pulls React
+ * in to serve a route it does not mount.
  */
-
-export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) {
+export function createApp(registry?: EngineRegistry) {
   const app = new Elysia()
     // Correlation id first, so every later hook and handler logs under it.
     .derive({ as: "global" }, ({ request, set }) => {
@@ -251,9 +247,16 @@ export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) 
     // client is typed against the very app that answers it and there is no
     // proxy to keep in step — the console was briefly a second Elysia on
     // another port, and the two drifted within a day.
-    .use(consolePage === undefined ? noConsolePlugin : consolePlugin(consolePage))
-    .use(registry === undefined ? new Elysia() : deviceRoutes(registry))
-    .use(registry === undefined ? new Elysia() : messageRoutes(registry))
+    .use(noConsolePlugin)
+    // Mounted unconditionally, with an empty registry when none was supplied.
+    //
+    // The ternary here made `App` the union of "these routes exist" and "they
+    // do not", so Eden could not see them at all and the console's typed
+    // client lost every device and message call. An empty registry already
+    // answers correctly — chooseAny throws EngineError and the route returns
+    // 503, which is a truer answer than the 404 an absent route gave.
+    .use(deviceRoutes(registry ?? new EngineRegistry()))
+    .use(messageRoutes(registry ?? new EngineRegistry()))
     .use(ruleRoutes)
 
 
@@ -269,29 +272,60 @@ export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) 
 /**
  * Build the app and start listening.
  *
- * This used to wrap the app so every request ran inside a logging context, and
+ * Picks the console or headless shape from whether a page was supplied, which
+ * is the whole of the difference between the two entry points.
+ *
+ * It used to wrap the app so every request ran inside a logging context, and
  * the comment outlived the wrapper: the `derive` hook above enters the context
  * now. A comment describing a mechanism that has moved sends the next reader
  * looking for it here.
  */
-
 export function createServer(registry?: EngineRegistry, consolePage?: ConsolePage) {
   const cfg = config();
-  const app = createApp(registry, consolePage);
+  const app = consolePage === undefined ? createApp(registry) : createConsoleApp(registry, consolePage);
 
   return app.listen({ port: cfg.port, hostname: cfg.host });
 }
 
 /**
- * The server's shape, for the dashboard to import.
+ * The API without the console.
  *
- * Eden Treaty turns this into a fully-typed client with no code generation and
- * no schema to keep in sync — a route that changes signature becomes a compile
- * error in the dashboard rather than a 400 discovered by a user. That property
- * is the reason [03](../../docs/03-architecture.md) chose Elysia at all, and it
- * only holds if the type is actually exported, which until now it was not.
+ * What `bun run start:headless` serves. /app answers a 404 that says which
+ * build this is, rather than being absent.
  *
- * Derived from createApp rather than declared, so it cannot drift from what the
- * server really serves.
+ * Derived from `createApp` rather than declared, so it cannot drift from what
+ * the server really serves. Eden Treaty turns it into a fully-typed client
+ * with no code generation and no schema to keep in sync — a route that changes
+ * signature becomes a compile error in the console rather than a 400 found by
+ * a user, which is the reason [03](../../docs/03-architecture.md) chose Elysia
+ * at all, and it only holds if the type is actually exported.
  */
-export type App = ReturnType<typeof createApp>;
+export type HeadlessApp = ReturnType<typeof createApp>;
+
+/**
+ * The API with the console mounted.
+ *
+ * What `bun run start` serves, and what the browser's Eden client is typed
+ * against — the console only ever talks to a server that is serving it.
+ *
+ * Two concrete types rather than a union. `treaty<HeadlessApp | ConsoleApp>`
+ * would narrow to what both have in common, which loses routes instead of
+ * describing them: a union is the wrong tool for "one of these two shapes,
+ * and the caller knows which".
+ */
+export type ConsoleApp = ReturnType<typeof createConsoleApp>;
+
+/**
+ * The app a build with the console uses.
+ *
+ * Separate function rather than an argument, because a conditional mount makes
+ * the return type a union of "mounted" and "not mounted" — which is exactly
+ * how the device and message routes became invisible to Eden and the console's
+ * typed client silently lost every device call.
+ */
+export function createConsoleApp(registry: EngineRegistry | undefined, consolePage: ConsolePage) {
+  return createApp(registry).use(consolePlugin(consolePage));
+}
+
+/** The shape the console imports. Kept as `App` so callers need not choose. */
+export type App = ConsoleApp;

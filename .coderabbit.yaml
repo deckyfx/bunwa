@@ -15,9 +15,7 @@ reviews:
   # reviewing them would bury real findings in style notes.
   path_filters:
     - "!docs/**"            # design prose; long-lived, changes constantly, not code
-    - "!reference/**"       # read-only upstream clone (git-ignored, listed defensively)
     - "!bun.lock"
-    - "!deploy/stage0/data/**"
 
   # Findings that have been verified against the code and deliberately not
   # applied. Each is answered by an inline comment at the site and, where the
@@ -87,9 +85,13 @@ reviews:
       instructions: >-
         Engine adapters must not leak engine-specific concepts into the control
         plane. Flag any conditional on engine kind outside this directory, and
-        any type that mirrors a gowa response shape rather than the normalised
-        internal one. Errors from gowa arrive as an opaque 500 with a prose
-        message; unclassified failures must default to retryable, never fatal.
+        any type that mirrors a library's own shape rather than the normalised
+        internal one. There is one real engine (Baileys) and one fake; that is
+        deliberate — the gowa adapter was deleted in stage 4 rather than kept
+        as a failover, because a failover nothing exercises is a claim. Do not
+        suggest restoring it or ask why the interface has one implementation:
+        ADR-0002 records the reasoning. Unclassified engine failures must
+        default to retryable, never fatal.
 
     - path: "src/stores/**"
       instructions: >-
@@ -194,19 +196,36 @@ reviews:
         DeviceEngine signature — the moment one does, every other engine has to
         satisfy a Baileys-shaped contract and the adapter boundary is gone. The
         version is pinned exactly, without a caret, on purpose: 7.0.0-rc14 is a
-        release candidate chosen deliberately by the owner (ADR-0009), with
-        gowa kept as the failover and shadow mode before any traffic. Do not
-        suggest widening the range, and do not suggest downgrading to the
-        6.x "legacy" line — that trade is recorded and settled. Pay particular attention to disconnect handling:
+        release candidate chosen deliberately by the owner (ADR-0009), against
+        the analysis, with both sides recorded there. Do not suggest widening
+        the range, do not suggest downgrading to the 6.x "legacy" line, and do
+        not describe the pin as an accident — that trade is recorded and
+        settled. The safety argument is no longer "gowa is the failover": there
+        is no second engine, and what stands in its place is BAILEYS_ENABLED
+        defaulting to off, so a deployment opts in to an engine that has never
+        paired a real device. Pay particular attention to disconnect handling:
         401, 403, 440, 500 and 411 must never be retried, and 515 must always
         be, because it is how pairing completes.
 
-    - path: "src/tools/**"
+    - path: "src/console/**"
       instructions: >-
-        Diagnostic tooling, not production code. Hold it to a lower bar for
-        abstraction, but any probe that mutates external state (docker networks,
-        device config, sending messages) must restore that state in a finally
-        block and must never default to a destructive target.
+        The React console, served at /app by the same Elysia app that answers
+        its calls. It is not a separate project any more and must not become
+        one: no second package.json, no second tsconfig, no second copy of
+        Elysia or React, and no proxy — that arrangement existed, the two
+        copies of Elysia drifted within a day and the proxy pointed at the
+        wrong port. Calls go through the Eden Treaty client in
+        src/console/lib/api.ts, typed from the server's exported `App`; flag
+        any hand-written request type or bare fetch against /v1, because
+        hand-written Whoami and VirtualDevice types were both wrong and the
+        page rendered "undefined / undefined" against a live API. The API key
+        is held in localStorage and is a known weakness recorded in ADR-0008 —
+        do not re-report it; the cookie session it names is the fix when there
+        is a session to put in one. Flag anything that renders a QR or pairing
+        code obtained from anywhere other than the synchronous claim response:
+        those are withheld from the event stream on purpose, because a QR is a
+        credential and fanning it out would hand it to every other project
+        sharing that phone.
 
   auto_review:
     enabled: true

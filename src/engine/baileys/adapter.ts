@@ -93,7 +93,14 @@ export class BaileysAdapter implements DeviceEngine {
 
   private readonly sessions = new Map<string, Session>();
   private readonly pending: EngineEvent[] = [];
-  private notify: (() => void) | null = null;
+
+  /**
+   * Everyone parked waiting for the next event.
+   *
+   * A set rather than one slot: a single `notify` meant a second subscriber
+   * silently replaced the first, and the displaced one waited for ever.
+   */
+  private readonly wakers = new Set<() => void>();
   private closed = false;
 
   /**
@@ -323,16 +330,66 @@ export class BaileysAdapter implements DeviceEngine {
    * subscriptions it has no reason to know about.
    */
   subscribe(): AsyncIterable<EngineEvent> {
+    // An explicit iterator rather than a generator, so `return()` can wake it.
+    //
+    // A generator parked at `await` does not resume when return() is called —
+    // the request queues until that await settles. This one parked on a
+    // promise only `emit` or `close` resolves, and shutdown stops consumers
+    // before closing engines: the consumer waited for the iterator, the
+    // iterator waited for close, and the process could not be killed with
+    // three Ctrl-C. Reproduced against a live engine; the conformance suite
+    // never saw it because it closes the engine rather than returning the
+    // iterator.
+    // Per iterator, not per subscription — and this is the same mistake the
+    // `wakers` set upstairs already documents, made one level down.
+    //
+    // `done`, the wake slot and `finish` used to be created once here and
+    // shared by every iterator `[Symbol.asyncIterator]` handed out. Two
+    // consequences, both silent: breaking out of one `for await` set `done`
+    // and unregistered the waker, ending every other iterator on the same
+    // subscription; and a second parked `next()` overwrote the first's
+    // `resolve`, so the displaced one waited for ever.
+    //
+    // A queue rather than a slot for the same reason the class-level set is a
+    // set: "the most recent waiter" is not the question — "everyone waiting"
+    // is. Concurrent `next()` calls on one iterator are not the contract, but
+    // they are cheap to survive and expensive to debug.
     return {
-      [Symbol.asyncIterator]: async function* (this: BaileysAdapter) {
-        for (;;) {
-          while (this.pending.length > 0) yield this.pending.shift()!;
-          if (this.closed) return;
-          await new Promise<void>((resolve) => {
-            this.notify = resolve;
-          });
-        }
-      }.bind(this),
+      [Symbol.asyncIterator]: () => {
+        let done = false;
+        const waiting: Array<() => void> = [];
+
+        const wakeUp = () => {
+          while (waiting.length > 0) waiting.shift()?.();
+        };
+        this.wakers.add(wakeUp);
+
+        const finish = (): Promise<IteratorResult<EngineEvent>> => {
+          done = true;
+          this.wakers.delete(wakeUp);
+          wakeUp();
+          return Promise.resolve({ value: undefined, done: true });
+        };
+
+        return {
+          next: async (): Promise<IteratorResult<EngineEvent>> => {
+            for (;;) {
+              if (done) return { value: undefined, done: true };
+              // Still one shared queue: an event goes to whichever iterator
+              // takes it, which is the existing contract and not what this
+              // change is about.
+              const event = this.pending.shift();
+              if (event !== undefined) return { value: event, done: false };
+              if (this.closed) return finish();
+              await new Promise<void>((resolve) => {
+                waiting.push(resolve);
+              });
+            }
+          },
+          return: finish,
+          throw: finish,
+        };
+      },
     };
   }
 
@@ -352,16 +409,16 @@ export class BaileysAdapter implements DeviceEngine {
       await session.handle?.close().catch(() => undefined);
     }
     this.sessions.clear();
-    this.notify?.();
-    this.notify = null;
+    // Wake every subscriber so their loops see `closed` and finish, rather
+    // than staying parked on a promise nothing else will resolve.
+    for (const wake of [...this.wakers]) wake();
   }
 
   // ---- internals ----------------------------------------------------------
 
   private emit(event: EngineEvent): void {
     this.pending.push(event);
-    this.notify?.();
-    this.notify = null;
+    for (const wake of [...this.wakers]) wake();
   }
 
   private clearReconnect(session: Session): void {

@@ -13,8 +13,9 @@
  */
 import { create } from "zustand";
 
-import { client } from "../lib/api";
+import { client, type RowOf } from "../lib/api";
 import { useSession } from "./session";
+import { blankOnKeyChange } from "./tenant";
 
 /**
  * Derived from the server, not declared here.
@@ -27,19 +28,11 @@ import { useSession } from "./session";
  */
 type Api = ReturnType<typeof client>;
 
-/**
- * The success payload of an Eden call.
- *
- * `data` is a union of the body and the error shape, so the array element has
- * to be picked out of the half that is a list. Extract rather than exclude:
- * naming what we want is steadier than enumerating what we do not.
- */
-type Rows<T> = T extends { data: infer D } ? Extract<NonNullable<D>, readonly unknown[]> : never;
 
-export type ChatThread = Rows<Awaited<ReturnType<Api["v1"]["chats"]["get"]>>>[number];
-export type ChatMessage = Rows<
+export type ChatThread = RowOf<Awaited<ReturnType<Api["v1"]["chats"]["get"]>>>;
+export type ChatMessage = RowOf<
   Awaited<ReturnType<ReturnType<Api["v1"]["chats"]>["messages"]["get"]>>
->[number];
+>;
 
 interface ChatState {
   threads: ChatThread[] | null;
@@ -51,6 +44,7 @@ interface ChatState {
 
   loadThreads: () => Promise<void>;
   select: (threadId: string) => Promise<void>;
+  refresh: () => Promise<void>;
   setDraft: (text: string) => void;
   send: () => Promise<void>;
 }
@@ -95,7 +89,6 @@ export const useChats = create<ChatState>((set, get) => ({
   },
 
   select: async (threadId: string) => {
-    const mine = ++selectionGeneration;
     const { apiKey } = useSession.getState();
     // Same early return as loadThreads. Without a credential the request is
     // refused, and the refusal became "could not load this conversation" — an
@@ -103,7 +96,34 @@ export const useChats = create<ChatState>((set, get) => ({
     // nobody is signed in. Signed out is not a failed load.
     if (apiKey === "") return;
 
+    // Blanked on an explicit selection, because the operator asked for a
+    // different conversation and showing the previous one's messages under the
+    // new one's name is worse than showing nothing for a moment. A background
+    // refresh does not do this — see below.
     set({ selectedId: threadId, messages: null, error: null });
+    await get().refresh();
+  },
+
+  /**
+   * Reload the open conversation in place.
+   *
+   * Split out of `select` because an event means the messages on screen are
+   * stale, not that the operator changed thread. The revision effect reloaded
+   * only the thread list, so a message arriving in the conversation someone was
+   * reading updated the unread badge beside it and left the messages
+   * themselves untouched until they clicked away and back — which is the one
+   * case "SSE for truth" exists to cover.
+   *
+   * No blanking, for the same reason: repainting an open conversation empty
+   * every time any event arrives is a worse lie than a half-second of stale
+   * text.
+   */
+  refresh: async () => {
+    const mine = ++selectionGeneration;
+    const threadId = get().selectedId;
+    if (threadId === null) return;
+    const { apiKey } = useSession.getState();
+    if (apiKey === "") return;
 
     const { data, error } = await client(apiKey).v1.chats({ id: threadId }).messages.get();
 
@@ -126,7 +146,12 @@ export const useChats = create<ChatState>((set, get) => ({
       return;
     }
 
-    set({ messages: data });
+    // `error: null` as well as the messages. `select` clears the error on the
+    // way in but a background refresh does not go through it, so a failure
+    // followed by a successful reload left the message list correct and the
+    // error banner still above it — the screen contradicting itself, with the
+    // stale half the more alarming.
+    set({ messages: data, error: null });
 
     // Clear the badge optimistically, then tell the server. The badge is the
     // least important thing on screen and should not wait for a round trip.
@@ -169,6 +194,13 @@ export const useChats = create<ChatState>((set, get) => ({
     }
 
     set({ draft: "", sending: false });
-    await get().select(selectedId);
+    // refresh, not select: the thread is already open, and re-selecting it
+    // blanks the pane the operator is reading in order to redraw it.
+    await get().refresh();
   },
 }));
+
+// Cleared when the credential changes, so this store never renders one
+// tenant's data under another's key while the new key's requests are in
+// flight. See ./tenant.
+blankOnKeyChange(useChats, () => ({ threads: null, selectedId: null, messages: null, draft: "", sending: false, error: null }));

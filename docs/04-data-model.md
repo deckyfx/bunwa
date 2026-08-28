@@ -127,7 +127,7 @@ is the default target, which is what most integrations want.
 | `msisdn` | text unique | E.164. **The system-wide identity of the device.** |
 | `jid` | text null unique | WhatsApp JID once paired |
 | `push_name` | text null | |
-| `engine_kind` | enum | `gowa` · `native` |
+| `engine_kind` | enum | `baileys` · `fake` — was `gowa` · `native` until stage 4 |
 | `engine_pool_id` | text | |
 | `engine_device_id` | text | The id inside that engine |
 | `state` | enum | See the state machine below |
@@ -141,7 +141,7 @@ project caused it to be paired. `msisdn` being unique is what makes "this phone
 is already paired — reuse it?" a primary-key lookup rather than a heuristic.
 
 `engine_kind` + `engine_pool_id` + `engine_device_id` is the indirection that
-lets a device move between a gowa pool and a native pool with no project
+lets a device move between pools of different kinds with no project
 noticing ([11](11-engine-decision.md)).
 
 **State machine:**

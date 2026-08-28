@@ -1,0 +1,118 @@
+/**
+ * Webhook deliveries, and replaying the ones that failed.
+ *
+ * The screen that answers "did our webhook fire, and what did they say" —
+ * docs/06 calls that the question a customer eventually asks in anger, and
+ * answering it from logs is archaeology.
+ */
+import { create } from "zustand";
+
+import { client, type RowOf } from "../lib/api";
+import { useSession } from "./session";
+import { blankOnKeyChange } from "./tenant";
+
+type Api = ReturnType<typeof client>;
+
+export type Delivery = RowOf<Awaited<ReturnType<Api["v1"]["deliveries"]["get"]>>>;
+
+interface DeliveryState {
+  deliveries: Delivery[] | null;
+  /** Every id currently being replayed, not just the last one clicked. */
+  replaying: ReadonlySet<string>;
+  error: string | null;
+
+  load: () => Promise<void>;
+  replay: (id: string) => Promise<void>;
+}
+
+/**
+ * Replays this process has actually started, as opposed to rows that look busy.
+ *
+ * Outside the store on purpose. Store state is blanked when the credential
+ * changes — correctly, because it is what the screen renders — but a request
+ * already sent does not stop because the operator signed out, and a replay is
+ * a webhook the consumer receives again. Keeping the suppression here means a
+ * credential reset can clear the view without forgetting what is in flight.
+ *
+ * Delivery ids are ULIDs, so an entry cannot collide with a different tenant's.
+ */
+const inFlight = new Set<string>();
+
+export const useDeliveries = create<DeliveryState>((set, get) => ({
+  deliveries: null,
+  replaying: new Set(),
+  error: null,
+
+  load: async () => {
+    const { apiKey } = useSession.getState();
+    if (apiKey === "") return;
+
+    const { data, error } = await client(apiKey).v1.deliveries.get();
+    if (useSession.getState().apiKey !== apiKey) return;
+
+    if (error !== null || !Array.isArray(data)) {
+      set({ error: "could not load deliveries" });
+      return;
+    }
+    set({ deliveries: data, error: null });
+  },
+
+  replay: async (id: string) => {
+    // Refused rather than queued. A second click on a row already in flight is
+    // a duplicate webhook at the far end, not a retry.
+    //
+    // Checked against `inFlight`, not against the store's `replaying`. The two
+    // answer different questions: `replaying` is what the row should look
+    // like, and a credential change clears it because the view belongs to the
+    // tenant — while the request itself carries on. Suppression has to outlive
+    // that, or signing out and back in mid-replay lets the same delivery be
+    // sent twice.
+    if (inFlight.has(id)) return;
+
+    const { apiKey } = useSession.getState();
+    // Checked before anything is marked. An empty key cannot replay anything,
+    // and marking first left the row disabled while reporting a failure that
+    // was really "nobody is signed in".
+    //
+    // `inFlight` in particular must not be touched above this line. Its only
+    // removal is in the `finally` below, and this guard returns before the
+    // `try` — so adding the id first meant a click made while signed out
+    // suppressed that delivery permanently, for the life of the page, with no
+    // error and no busy row to show for it. Which is the same "returns early,
+    // so it never clears" fault the comment in that finally describes, made
+    // one line above it.
+    if (apiKey === "") return;
+
+    inFlight.add(id);
+    set((state) => ({ replaying: new Set(state.replaying).add(id) }));
+
+    try {
+      const { error } = await client(apiKey).v1.deliveries({ id }).replay.post();
+
+      // A replay authorised by one credential must not report under another.
+      // `load` and the error below both paint a screen that may by now belong
+      // to a different project — the same guard `load` itself already carries.
+      if (useSession.getState().apiKey !== apiKey) return;
+
+      if (error !== null) set({ error: "could not replay" });
+      else await get().load();
+    } finally {
+      inFlight.delete(id);
+      // In a finally, because the guard above returns early. Clearing this
+      // only on the paths that reach the end left the row marked as replaying
+      // for ever whenever the session changed mid-request — a permanently
+      // disabled button, which is the same fault as a composer that never
+      // re-enables.
+      set((state) => {
+        const next = new Set(state.replaying);
+        next.delete(id);
+        return { replaying: next };
+      });
+    }
+  },
+}));
+
+// Cleared when the credential changes, so this store never renders one
+// tenant's data under another's key while the new key's requests are in
+// flight. See ./tenant.
+blankOnKeyChange(useDeliveries, () => ({ deliveries: null, replaying: new Set<string>(), error: null }));

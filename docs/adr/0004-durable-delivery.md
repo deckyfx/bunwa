@@ -1,6 +1,6 @@
 # ADR-0004 — Webhook delivery is durable, and queued per virtual device
 
-**Status:** Accepted · 2026-08-22
+**Status:** Accepted · 2026-08-22 · **Partly unimplemented — see the note at the end**
 
 ## Context
 
@@ -51,3 +51,32 @@ of any captured payload.
   documented prominently
 - Strict ordering is not guaranteed under retry — a deliberate choice of
   durability over ordering, documented in [05](../05-events-and-rules.md)
+
+---
+
+## Note · 2026-08-27 · the queue is per environment, not per virtual device
+
+Recorded here because this ADR is where the guarantee is stated, and stating a
+guarantee the code does not provide is worse than not stating one.
+
+`deliveries` has no virtual-device column. `DeliveryStore.enqueue` takes an
+environment id and the worker caps in-flight work per environment, so two
+virtual devices in one environment share a queue. No version of this ever
+queued per device — it is an unimplemented decision rather than a regression.
+
+The consequence is exactly the one the Context section above objects to, moved
+down a level: a webhook endpoint that is slow or failing for one device delays
+events for every other device *in the same environment*. Between tenants the
+isolation holds, because an environment belongs to one project. Within a
+tenant it does not.
+
+The circuit breaker is keyed the same way, on `environment_webhooks`, so it
+inherits the same limit — and the same is true of the webhook itself, which is
+configured per environment rather than per binding. That is the shape of the
+gap: the tenancy model has a level the delivery path does not.
+
+The rest of the Decision section is implemented: durable-before-ack, the
+backoff ladder, the dead-letter queue with replay, the attempt log, and the
+timestamp-prefixed signature.
+
+The fix is in [`todo.txt`](../../todo.txt) with the migration it needs.

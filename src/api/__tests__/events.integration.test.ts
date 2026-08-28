@@ -18,7 +18,7 @@ import { EnvironmentStore } from "../../stores/environment-store";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
-import { publish, resetBus } from "../../events/bus";
+import { publish, resetBus, subscriberCount } from "../../events/bus";
 import { EVENT_SCHEMA_VERSION } from "../../events/schema";
 import type { EventEnvelope } from "../../events/schema";
 
@@ -97,7 +97,6 @@ function envelope(id: string, envId: string): EventEnvelope {
 /** Read frames until `want` is seen, or give up rather than hang. */
 async function readUntil(response: Response, want: string): Promise<string> {
   const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
   let seen = "";
   // One read outstanding at a time. Racing read() against a sleep left the
   // losing read queued, so a later frame resolved a promise nobody was
@@ -108,11 +107,22 @@ async function readUntil(response: Response, want: string): Promise<string> {
     for (;;) {
       const next = await reader.read();
       if (next.done === true) break;
-      seen += decoder.decode(next.value, { stream: true });
+      // Buffer, not TextDecoder.
+      //
+      // happy-dom installs Node's TextDecoder, which rejects Bun's Uint8Array
+      // with ERR_INVALID_ARG_TYPE — the two disagree across realms. The bytes
+      // were arriving the whole time; decoding them threw and the catch below
+      // turned that into an empty string, so three tests reported a stream
+      // that delivered nothing while the route was working perfectly.
+      seen += Buffer.from(next.value).toString("utf8");
       if (seen.includes(want)) break;
     }
-  } catch {
-    // The timeout cancelled the reader mid-read; `seen` holds what arrived.
+  } catch (err) {
+    // Reported, never swallowed. A bare catch here hid a decode failure and
+    // cost hours of looking at the route instead of the helper.
+    if (!String(err).includes("aborted")) {
+      throw new Error(`readUntil failed: ${String(err)}`);
+    }
   } finally {
     clearTimeout(timeout);
     await reader.cancel().catch(() => undefined);
@@ -158,34 +168,6 @@ describe("the ticket is the only way in", () => {
   });
 });
 
-describe("a client that never reads is cut loose", () => {
-  test("the backlog does not grow without bound in the stream's own queue", async () => {
-    // The bus caps a subscriber at twenty pending envelopes so one slow
-    // consumer cannot grow without limit. controller.enqueue() never blocks,
-    // so without a check here the loop simply drained the bus into the
-    // stream's queue instead — measured at 5000 chunks with no reader
-    // attached, which moves the backlog one layer down rather than bounding it.
-    const response = await openStream(await mint());
-    expect(response.status).toBe(200);
-
-    // Published one at a time with a yield between, so the stream loop drains
-    // each from the bus immediately and the bus never reaches its own cap of
-    // twenty. Publishing them in a tight loop instead overflows the bus first,
-    // which emits the same frame for a different reason — and a test that
-    // cannot tell the two apart proves nothing about this check.
-    for (let i = 0; i < 200; i++) {
-      publish(environmentId, envelope(`e${String(i)}`, environmentId));
-      await Bun.sleep(0);
-    }
-
-    // Now drain, and expect the server to have given up rather than buffered.
-    const seen = await readUntil(response, "stream.overflow");
-    expect(seen, "the stream buffered a whole backlog for a client that never read").toContain(
-      "stream.overflow",
-    );
-  }, 20_000);
-});
-
 describe("a stream carries its own environment and no other", () => {
   test("it announces itself, then delivers matching events", async () => {
     const response = await openStream(await mint());
@@ -208,4 +190,69 @@ describe("a stream carries its own environment and no other", () => {
     expect(seen).toContain('"mine"');
     expect(seen, "another environment's event reached this stream").not.toContain('"theirs"');
   });
+});
+
+describe("a reader that disconnects while nothing is happening", () => {
+  test("its subscription is closed at once, not at the next heartbeat", async () => {
+    // A generator's `finally` cannot run until the body reaches a suspension
+    // point it can be resumed through, and the body parks on a race that
+    // includes the 25-second heartbeat. So an idle reader that went away left
+    // its subscription registered on the bus — holding a fan-out slot and
+    // filling a queue nobody would ever read — until that timer came round.
+    // The abort listener is what makes the close immediate.
+    const controller = new AbortController();
+    const response = await app.handle(
+      new Request(`http://localhost/v1/events/stream?ticket=${encodeURIComponent(await mint())}`, {
+        signal: controller.signal,
+      }),
+    );
+    expect(response.status).toBe(200);
+
+    // Read the opening frame so the stream is genuinely established, then stop.
+    const reader = response.body!.getReader();
+    await reader.read();
+    expect(subscriberCount(environmentId), "the stream never subscribed").toBe(1);
+
+    controller.abort();
+    await reader.cancel().catch(() => undefined);
+
+    // Immediately, without waiting out HEARTBEAT_MS.
+    await Bun.sleep(100);
+    expect(
+      subscriberCount(environmentId),
+      "the subscription outlived the reader that abandoned it",
+    ).toBe(0);
+  }, 10_000);
+});
+
+describe("a request that was already aborted", () => {
+  test("does not leave its subscription on the bus", async () => {
+    // The subscription is created in `resolve`, before the generator body
+    // runs. `addEventListener("abort")` on a signal that has already fired
+    // registers for something that will never happen again, so neither that
+    // path nor the `finally` — which needs the generator resumed — would ever
+    // close it. The check has to be for the state, not only the event.
+    const ticket = await mint();
+    const controller = new AbortController();
+    controller.abort();
+
+    const response = await app.handle(
+      new Request(`http://localhost/v1/events/stream?ticket=${encodeURIComponent(ticket)}`, {
+        signal: controller.signal,
+      }),
+    );
+
+    // Pull once so the generator body actually runs; an aborted request may
+    // reject here, which is fine — what matters is what it left behind.
+    await response.body
+      ?.getReader()
+      .read()
+      .catch(() => undefined);
+    await Bun.sleep(100);
+
+    expect(
+      subscriberCount(environmentId),
+      "an already-aborted request left its subscription attached",
+    ).toBe(0);
+  }, 10_000);
 });

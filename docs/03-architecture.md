@@ -14,9 +14,12 @@ That single split is what makes the whole plan tractable:
 - The Go → Bun migration becomes a per-device engine swap instead of a big-bang
   rewrite ([ADR-0002](adr/0002-engine-adapter.md)).
 - A crashing engine takes down its devices only, never the control plane
-  ([ADR-0003](adr/0003-process-isolation.md)).
+  ([ADR-0003](adr/0003-process-isolation.md)). *This one no longer holds as
+  written: since stage 4 the engine is in the control plane's process. The note
+  at the end of that ADR says what survived and what did not.*
 - The control plane — the part with the actual product value — can be built,
-  tested and shipped while the engine remains gowa.
+  tested and shipped while the engine remains gowa. *It was, and that is why
+  replacing gowa later cost fourteen lines outside its own directory.*
 
 ## System view
 
@@ -63,25 +66,29 @@ Each becomes a directory under `src/`. The dependency rule is one-directional:
 | --- | --- |
 | `src/api/` | HTTP surface — Elysia routes, DTOs, validation, OpenAPI generation |
 | `src/auth/` | Project API keys, owner sessions, scope checks |
-| `src/tenancy/` | Projects, environments, devices, virtual devices, consent workflow |
-| `src/engine/` | `DeviceEngine` interface + adapters (`gowa/`, `native/`) + conformance suite |
+| `src/stores/` | Projects, environments, devices, virtual devices, consent workflow — planned as `src/tenancy/`, which never existed |
+| `src/engine/` | `DeviceEngine` interface + adapters (`baileys/`, `fake`) + conformance suite |
 | `src/events/` | Normalisation, the internal bus, subscriptions |
 | `src/rules/` | Trigger matching and action execution |
 | `src/delivery/` | Outbound webhooks, retry, DLQ, SSE hubs |
-| `src/store/` | Drizzle schema, migrations, repositories |
+| `src/db/` | Drizzle schema, migrations, the connection — planned as `src/store/` |
+| `src/console/` | The React SPA, served at `/app` by this same app ([07](07-dashboard.md)) |
 | `src/observability/` | Logging, metrics, tracing, correlation ids |
 | `src/config/` | Typed, validated environment configuration |
 
 ## The `DeviceEngine` interface
 
-This is the most important contract in the system. It must be expressible by
+This is the most important contract in the system. It had to be expressible by
 *both* an HTTP client talking to gowa *and* an in-process Baileys socket — which
-is precisely the constraint that keeps it honest.
+is precisely the constraint that kept it honest, and is why the pivot in stage 4
+was a directory rather than a rewrite. Only the second of those implementations
+still exists; the constraint is preserved anyway, because the next engine will
+not be in-process either.
 
 ```ts
 /** A single WhatsApp identity as the control plane sees it. */
 export interface DeviceEngine {
-  /** Stable engine identifier, e.g. "gowa" | "native". */
+  /** Stable engine identifier: "baileys" | "fake". */
   readonly kind: EngineKind;
 
   /** Provision a slot. Idempotent on deviceId. */
@@ -120,17 +127,26 @@ member and a conformance test, not an interface change.
 
 **`subscribe` returns normalised events, not raw ones.** Normalisation is the
 adapter's job, because only the adapter knows its source format. The control
-plane must never contain an `if (engine === "gowa")`.
+plane must never contain an `if (engine === "baileys")`. It does not, and this
+is enforced rather than intended: the pairing route names no engine at all —
+it asks the registry for any pool with capacity, and preference is registration
+order decided in the composition root. The earlier version asked for `"gowa"`
+by name and fell back to `"fake"`, which made adding an engine an edit to an
+API route.
 
 ### Adapter responsibilities
 
-| | gowa adapter | native adapter (later) |
+| | gowa adapter *(stage 1–4, deleted)* | Baileys adapter *(the engine)* |
 | --- | --- | --- |
-| Transport | HTTP over a Unix socket (colocated) or TCP (split) — see [ADR-0006](adr/0006-unix-socket-transport.md) | In-process Baileys socket |
-| Lifecycle events | Patched gowa webhooks + poll `/devices/{id}/status`, reconcile, synthesise | Emit directly from Baileys connection events |
-| Send | `POST /send/*`, mapped from `SendAction` | Baileys `sendMessage` |
-| Failure isolation | Container per pool | Worker process per pool |
-| Status of the port | **Stage 1 deliverable** | **Stage 4, optional** |
+| Transport | HTTP over TCP on container loopback — the Unix socket in [ADR-0006](adr/0006-unix-socket-transport.md) was deferred and never built | In-process socket, behind `src/engine/baileys/socket.ts` |
+| Lifecycle events | `/ws` bridge + poll `/devices/{id}/status`, reconcile, synthesise | Emitted directly from Baileys connection events |
+| Send | `POST /send/*`, mapped from `SendAction` | Baileys `sendMessage`, via the port |
+| Failure isolation | Container per pool | **None at the process level** — see [ADR-0003](adr/0003-process-isolation.md) |
+| Status of the port | Delivered in stage 1, removed in stage 4 | Delivered in stage 4 |
+
+The right-hand column was written as "native adapter (later), stage 4,
+optional". It is worth leaving the shape of that prediction visible: the column
+that was optional is the only one left.
 
 ### Conformance suite
 
@@ -138,6 +154,11 @@ A single test suite runs against *every* adapter. It is the contract's teeth, an
 it is what makes the eventual native engine a measurable swap rather than a leap
 of faith. Written in stage 1 against the gowa adapter, so that on the day the
 native adapter exists, "is it ready?" already has a numeric answer.
+
+It worked. The Baileys adapter inherited eight behavioural guarantees the day it
+compiled, and the suite still runs against both surviving engines — Baileys and
+`FakeEngine`, which is not a placeholder for a missing engine but the reason the
+control plane is testable without a phone.
 
 ## Blast radius
 
@@ -217,22 +238,30 @@ same binding and consent state.
 
 ## What lives where
 
+*Revised after stage 4. The layout below described a separate `dashboard/`
+subproject, a `reference/gowa/` clone and a `deploy/` directory of Dockerfiles
+and s6 service definitions. All three are gone.*
+
 ```
 bunwa/
-├── src/                  control plane            → image tag  bunwa:api
-├── dashboard/            React SPA, separate build → image tag  bunwa:full
+├── src/                  everything — control plane, engine, console
+│   ├── engine/baileys/   the only code that touches WhatsApp
+│   └── console/          React SPA, served at /app by the same app
 ├── docs/                 you are here
-├── reference/gowa/       read-only upstream, git-ignored
-└── deploy/               Dockerfiles, s6 service definitions, compose files
+└── Dockerfile            one image, two targets
 ```
 
-For v1 the gowa engine is colocated in the same image on container loopback,
-unmodified — see [ADR-0007](adr/0007-gowa-engine-for-v1.md). Split-container
-deployment with multiple engine pools remains available and is the path for
-scale.
+Engines no longer run as separate containers or worker processes. Stage 4
+replaced the gowa adapter with Baileys sockets held **in this process**, so the
+data plane and the control plane share a runtime. `deploy/`, the s6 supervisor
+and the compose stack existed to order and restart two processes; with one
+process there is nothing to order.
 
-Engines run as separate containers or worker processes, defined in `deploy/`,
-never imported by the control plane. They may also be **colocated in a single
-container** and reached over a Unix socket — the adapter takes a transport
-descriptor, so this is a deployment choice rather than an architectural one.
-See [10](10-single-container.md) and [ADR-0006](adr/0006-unix-socket-transport.md).
+This is the part of the architecture that changed most, and it changed the
+meaning of a decision rather than reversing it: `enginePoolId` and
+`ENGINE_POOL_CAPACITY` still bound how many devices a pool holds, but a pool is
+no longer a process boundary, so what the bound protects is different. See
+[ADR-0003](adr/0003-process-isolation.md), which is annotated rather than
+rewritten. [10](10-single-container.md) and
+[ADR-0006](adr/0006-unix-socket-transport.md) explored colocating two processes
+over a socket file; with one process the question does not arise.
