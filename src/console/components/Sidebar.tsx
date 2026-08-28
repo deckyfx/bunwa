@@ -38,11 +38,15 @@ export type SectionId = "claim" | "devices" | "chats" | "deliveries" | "projects
  * this only decides what is offered.
  */
 export const SECTIONS: Array<{ id: SectionId; label: string; icon: LucideIcon; scope?: string }> = [
+  // Projects first, and only an operator sees it: on this deployment a tenant
+  // is the unit everything else hangs off, so it is the first thing an
+  // operator wants and the thing they return to. A project key never sees it,
+  // and its list therefore still begins with Devices.
+  { id: "projects", label: "Projects", icon: FolderKanban, scope: "manage:projects" },
   { id: "devices", label: "Devices", icon: Smartphone },
   { id: "chats", label: "Conversations", icon: MessagesSquare },
   { id: "claim", label: "Claim a number", icon: PlusCircle, scope: "manage:devices" },
   { id: "deliveries", label: "Deliveries", icon: Send },
-  { id: "projects", label: "Projects", icon: FolderKanban, scope: "manage:projects" },
   { id: "settings", label: "Settings", icon: SlidersHorizontal, scope: "manage:instance" },
 ];
 
