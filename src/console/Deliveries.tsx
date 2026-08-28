@@ -1,15 +1,3 @@
-/**
- * Webhook deliveries.
- *
- * The last piece of stage 3's exit criteria: a developer watches a delivery
- * succeed without leaving the console. It is also the screen docs/07 says is
- * asked for "eventually, in anger" — the question is always "did you send it?",
- * and answering it from logs is archaeology.
- *
- * State and attempt count are shown together on purpose. `pending` with three
- * attempts is a very different situation from `pending` with none: the first is
- * a failing endpoint backing off, the second is work that has not started.
- */
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type Delivery } from "./api";
@@ -21,14 +9,17 @@ interface Props {
 }
 
 /**
- * The deliveries table, with replay.
+ * Webhook deliveries, with replay.
  *
- * Answers "did you send it?" from rows rather than from log archaeology, which
- * is the question this screen exists for and the one always asked in anger.
+ * The last piece of stage 3's exit criteria: a developer watches a delivery
+ * succeed without leaving the console. It is also the screen docs/07 says is
+ * asked for "eventually, in anger" — the question is always "did you send it?",
+ * and answering it from logs is archaeology.
  *
- * State and attempt count are rendered together on purpose: `pending` with
- * three attempts is a failing endpoint backing off, and `pending` with none is
- * work that has not started. Showing either alone invites the wrong diagnosis.
+ * State and attempt count are shown together on purpose. `pending` with three
+ * attempts is a very different situation from `pending` with none: the first is
+ * a failing endpoint backing off, the second is work that has not started.
+ * Showing either alone invites the wrong diagnosis.
  */
 export function Deliveries({ apiKey, revision }: Props) {
   const [rows, setRows] = useState<Delivery[] | null>(null);
