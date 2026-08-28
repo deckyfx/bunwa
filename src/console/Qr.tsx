@@ -50,6 +50,14 @@ export function Qr({ payload, scale = 6 }: Props) {
   if (pixels < 1) {
     throw new RangeError(`Qr scale must be a positive number, got ${String(scale)}`);
   }
+  // An upper bound as well as a lower one. `Number.MAX_VALUE` is finite and
+  // passes the check above, and then the multiplication below overflows to
+  // Infinity — the same invisible SVG the lower bound exists to prevent,
+  // reached from the other end. The ceiling is far past any real display: a
+  // version-40 code at 64 pixels a module is already over 11,000 across.
+  if (pixels > 64) {
+    throw new RangeError(`Qr scale must be at most 64, got ${String(scale)}`);
+  }
 
   let modules: boolean[][];
   try {

@@ -56,11 +56,21 @@ export function Deliveries({ apiKey, revision }: Props) {
     // Refused rather than queued. A second click on a row already in flight is
     // a double send, not a retry.
     if (replaying.has(id)) return;
+
+    // The key this replay was authorised by. `load` and `setError` below both
+    // paint the screen, and the screen may by then belong to a different
+    // project — so a replay started under one credential could refetch and
+    // report under another, showing one tenant an action taken for someone
+    // else. The same guard `load` already carries, for the same reason.
+    const usedKey = apiKey;
+
     setReplaying((current) => new Set(current).add(id));
     try {
-      await api.replay(apiKey, id);
+      await api.replay(usedKey, id);
+      if (usedKey !== apiKey) return;
       await load();
     } catch (err) {
+      if (usedKey !== apiKey) return;
       setError(err instanceof ApiError ? err.message : "could not replay");
     } finally {
       setReplaying((current) => {
