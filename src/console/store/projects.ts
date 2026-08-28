@@ -81,7 +81,18 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   mintedKey: null,
 
   load: async () => {
+    // The credential this listing was fetched under.
+    //
+    // `blankOnKeyChange` empties the store when the key changes, but a request
+    // already in flight lands afterwards and fills it straight back in — so
+    // clearing on its own paints one operator's projects for the next. Found
+    // by auditing the other actions after the same fault turned up in
+    // createKey, rather than by meeting it again.
+    const under = useSession.getState().apiKey;
+
     const { data, error } = await api().admin.v1.projects.get();
+    if (useSession.getState().apiKey !== under) return;
+
     // `Array.isArray` as well as the error check: Eden types `data` as the
     // union of the body and a raw Response, so narrowing is what makes the
     // derived row type mean anything.
@@ -94,7 +105,16 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   createProject: async (slug, displayName) => {
     set({ busy: true, error: null });
+    const under = useSession.getState().apiKey;
+
     const { error } = await api().admin.v1.projects.post({ slug: slug.trim(), displayName: displayName.trim() });
+
+    // Busy clears either way — this call finished, whoever is looking — but
+    // the outcome is only reported to the session that asked for it.
+    if (useSession.getState().apiKey !== under) {
+      set({ busy: false });
+      return false;
+    }
 
     if (error !== null) {
       set({ busy: false, error: messageFrom(error) });

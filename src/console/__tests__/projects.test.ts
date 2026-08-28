@@ -10,6 +10,7 @@ import { describe, expect, test, beforeEach, mock } from "bun:test";
 
 let mintResolver: () => Promise<unknown> = () =>
   Promise.resolve({ data: { key: "bw_live_x", label: "k" }, error: null });
+let listResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
 
 void mock.module("../lib/api", () => ({
   client: () => ({
@@ -30,7 +31,7 @@ void mock.module("../lib/api", () => ({
               { get: () => Promise.resolve({ data: [], error: null }) },
             ),
           }),
-          { get: () => Promise.resolve({ data: [], error: null }) },
+          { get: () => listResolver() },
         ),
       },
     },
@@ -55,6 +56,7 @@ const RESET = {
 beforeEach(() => {
   useSession.setState({ apiKey: "key-a", identity: null, error: null, busy: false, revision: 0 });
   useProjects.setState(RESET);
+  listResolver = () => Promise.resolve({ data: [], error: null });
 });
 
 describe("a key minted while the operator moves on", () => {
@@ -101,6 +103,29 @@ describe("a key minted while the operator moves on", () => {
     expect(
       useProjects.getState().mintedKey,
       "a credential minted under one session was shown to another",
+    ).toBeNull();
+  });
+});
+
+describe("a listing that lands after the operator signed out", () => {
+  test("does not repopulate the store for the next session", async () => {
+    // blankOnKeyChange empties the store on the key change; this is the
+    // request that was already in flight when it did, arriving afterwards and
+    // filling it straight back in.
+    let release: ((v: unknown) => void) | undefined;
+    listResolver = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+
+    const loading = useProjects.getState().load();
+    useSession.setState({ apiKey: "key-b" });
+    release?.({ data: [{ id: "p1", slug: "grande", displayName: "Grande", status: "active" }], error: null });
+    await loading;
+
+    expect(
+      useProjects.getState().projects,
+      "a previous session's projects were painted for the next one",
     ).toBeNull();
   });
 });
