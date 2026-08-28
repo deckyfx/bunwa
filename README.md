@@ -17,9 +17,10 @@ A Bun/TypeScript multi-tenant WhatsApp proxy. Speaks WhatsApp directly through [
 | 4 — Pivot to Baileys | ✅ | gowa removed; Baileys is the engine |
 | 5 — Features | ⏳ | Ordered by real usage, not novelty |
 
-547 tests in one suite, and `tsc --noEmit` clean. There is one `package.json`,
+548 tests in one suite, and `tsc --noEmit` clean. There is one `package.json`,
 one lockfile and one test runner: the console used to be a subproject with its
-own copy of all four, and the two halves drifted within a day. Known gaps are recorded in
+own copy of all four, and the two halves drifted within a day. Known gaps are
+recorded in
 [`todo.txt`](todo.txt) rather than left implicit — including two deferred
 security items and two places where the implementation does not yet match the
 design.
