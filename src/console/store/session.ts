@@ -152,6 +152,22 @@ export const useSession = create<SessionState>((set, get) => ({
       return;
     }
 
+    // A success with no body is not a success.
+    //
+    // Eden allows `data` to be null alongside a null `error`, and storing that
+    // set `identity` to null while this path reported no failure — so the
+    // console sat signed out having just been told the key was accepted, with
+    // nothing on screen to say why. Cheaper to name it here than to debug it
+    // from a screen that shows nothing at all.
+    if (data === null) {
+      set({
+        identity: null,
+        busy: false,
+        error: "the server accepted the key but returned nothing. Check the server log.",
+      });
+      return;
+    }
+
     try {
       localStorage.setItem(STORAGE_KEY, trimmed);
     } catch {
