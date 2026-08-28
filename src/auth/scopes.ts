@@ -34,6 +34,21 @@ export const ALL_SCOPES = [
    * tenant should not be given this one.
    */
   "manage:instance",
+  /**
+   * Projects, environments, and the keys that reach them.
+   *
+   * The instance operator's scope, and the boundary this whole model turns on:
+   * a key holding it can see and create *other tenants*, which is the one
+   * thing no project key may ever do. It guards /admin/v1, which until now was
+   * guarded by nothing at all — an environment flag decided whether the
+   * surface existed, and once it existed anyone who could reach the port could
+   * create a project and mint a credential for it.
+   *
+   * A project key must never be granted this. `key:new` mints with the full
+   * set because that key is the operator's; project keys are minted through
+   * the admin API with a narrower list.
+   */
+  "manage:projects",
 ] as const;
 
 export type Scope = (typeof ALL_SCOPES)[number];

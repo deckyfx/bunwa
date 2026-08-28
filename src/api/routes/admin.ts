@@ -1,13 +1,24 @@
 /**
  * Admin API — operator surface for projects, environments and keys.
  *
- * Session-authenticated in the finished system; unauthenticated for now, and
- * mounted only when explicitly enabled, so that gap cannot reach a deployment
- * by accident.
+ * Behind `manage:projects`, which is the boundary the tenant model turns on: a
+ * key holding it can see and create other tenants, and no project key may ever
+ * do that.
+ *
+ * It was unauthenticated. An environment flag decided whether the surface
+ * existed at all, and the comment here said session authentication was coming
+ * — so on any deployment with ADMIN_API_ENABLED set, anyone who could reach
+ * the port could create a project and mint a credential for it. Confirmed by
+ * doing it: `POST /admin/v1/projects` with no headers answered 201.
+ *
+ * The flag stays, as a way to remove the surface entirely rather than as the
+ * thing protecting it. A flag is a deployment decision; this is a credential
+ * check, and the two are not substitutes.
  */
 import { Elysia, t } from "elysia";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
+import { requireApiKey, requireScope } from "../../auth/middleware";
 import type { ApiKey } from "../../db/schema";
 import { ValidationError } from "../../stores/errors";
 import { EnvironmentStore } from "../../stores/environment-store";
@@ -15,6 +26,13 @@ import { ProjectStore } from "../../stores/project-store";
 import { log } from "../../observability/logger";
 
 export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
+  .use(requireApiKey)
+  // Applied to every route in the plugin rather than repeated per handler. The
+  // per-handler version is how one gets forgotten, and the one that gets
+  // forgotten here mints credentials.
+  .onBeforeHandle(({ auth, path }) => {
+    requireScope(auth, "manage:projects", path);
+  })
   .post(
     "/projects",
     async ({ body, set }) => {
