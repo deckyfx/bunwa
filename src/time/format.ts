@@ -10,13 +10,50 @@
  * imports `render.ts` and supplies the zone the server told it.
  */
 import { config } from "../config/env";
-import { renderDate, renderDateTime, renderIso, renderOffset, renderTime } from "./render";
+import {
+  renderDate,
+  renderDateTime,
+  renderIso,
+  renderOffset,
+  renderTime,
+  resetTimeFormatters as clearFormatters,
+} from "./render";
 
-export { resetTimeFormatters } from "./render";
+/**
+ * Reset both the formatter cache and the effective zone.
+ *
+ * The override is module state, so a test that sets it would otherwise leak a
+ * zone into every file that runs after it.
+ */
+export function resetTimeFormatters(): void {
+  clearFormatters();
+  effectiveZone = null;
+}
 
-/** The configured zone. Read per call so a reload is picked up. */
+/**
+ * The effective zone, held in memory rather than read per call.
+ *
+ * A setting an operator can change has to be resolved against the database,
+ * and the log path cannot afford a query per line — nor the import cycle it
+ * would create, since the settings store logs. Boot resolves it once and the
+ * settings endpoint updates it, so the cost is paid where the change happens.
+ */
+let effectiveZone: string | null = null;
+
+/**
+ * Point rendering at a zone. Null falls back to the environment.
+ *
+ * Called by boot with whatever `SettingsStore` resolves, and again whenever
+ * the setting is written; precedence between environment and database is that
+ * store's job, not this module's.
+ */
+export function setServerTimezone(zone: string | null): void {
+  effectiveZone = zone;
+}
+
+/** The zone every rendered timestamp uses. */
 export function serverTimezone(): string {
-  return config().serverTimezone;
+  return effectiveZone ?? config().serverTimezone;
 }
 
 /** `2026-08-27 21:15:04` in the server's timezone. */

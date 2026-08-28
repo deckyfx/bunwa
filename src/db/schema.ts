@@ -751,6 +751,26 @@ export const apiKeysRelations = relations(apiKeys, ({ one }) => ({
 
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
+/**
+ * Instance-wide settings an operator can change without a redeploy.
+ *
+ * Key/value rather than a column per setting, because the alternative is a
+ * migration every time one is added and this table exists precisely for the
+ * things that are still being decided — a display name today, a language
+ * later. Values are text; the typed accessors in `SettingsStore` own the
+ * parsing, so a bad value is rejected at the boundary rather than found by
+ * whatever reads it next.
+ *
+ * Scope is the whole instance, not a project. These describe how this
+ * deployment presents itself — what WhatsApp shows in Linked Devices, what
+ * timezone its screens render in — which is a property of the install.
+ */
+export const settings = sqliteTable("settings", {
+  key: text("key").primaryKey(),
+  value: text("value").notNull(),
+  ...timestamps,
+});
+
 export type Environment = typeof environments.$inferSelect;
 export type NewEnvironment = typeof environments.$inferInsert;
 export type ApiKey = typeof apiKeys.$inferSelect;
@@ -771,3 +791,4 @@ export type StreamTicket = typeof streamTickets.$inferSelect;
 export type RateLimit = typeof rateLimits.$inferSelect;
 export type Rule = typeof rules.$inferSelect;
 export type NewRule = typeof rules.$inferInsert;
+export type Setting = typeof settings.$inferSelect;

@@ -22,7 +22,14 @@ import {
   type SendResult,
 } from "../types";
 import { log } from "../../observability/logger";
-import { openSocket, type DisconnectKind, type OutboundMedia, type SocketHandle } from "./socket";
+import {
+  openSocket,
+  type DisconnectKind,
+  type OutboundMedia,
+  type PairingIntent,
+  type SocketHandle,
+  type SocketOptions,
+} from "./socket";
 
 /**
  * How long a QR stays valid.
@@ -80,7 +87,7 @@ interface Session {
  * adapter's suite already runs stubbed by default and goes live behind an
  * environment variable; this follows it.
  */
-export type SocketOpener = (options: { deviceId: string }) => Promise<SocketHandle>;
+export type SocketOpener = (options: SocketOptions) => Promise<SocketHandle>;
 
 export class BaileysAdapter implements DeviceEngine {
   readonly kind = "baileys" as const;
@@ -154,7 +161,7 @@ export class BaileysAdapter implements DeviceEngine {
 
     const session = this.sessions.get(deviceId)!;
 
-    if (session.handle === null) await this.connect(deviceId);
+    if (session.handle === null) await this.connect(deviceId, "qr");
     const handle = this.sessions.get(deviceId)?.handle;
     if (handle === undefined || handle === null) {
       throw new EngineError(`could not open a socket for ${deviceId}`, true);
@@ -180,7 +187,10 @@ export class BaileysAdapter implements DeviceEngine {
    */
   async startPairingWithCode(deviceId: string, msisdn: string): Promise<PairingSession> {
     await this.provision(deviceId);
-    if (this.sessions.get(deviceId)?.handle === null) await this.connect(deviceId);
+    // "code", so the socket presents Ubuntu. A socket already open for QR
+    // carries the wrong identity for this handshake, which is why the caller
+    // must not reuse one — see startPairingWithCode's doc comment.
+    if (this.sessions.get(deviceId)?.handle === null) await this.connect(deviceId, "code");
 
     const handle = this.sessions.get(deviceId)?.handle;
     if (handle === undefined || handle === null) {
@@ -428,12 +438,19 @@ export class BaileysAdapter implements DeviceEngine {
     }
   }
 
-  /** Open the socket and start draining its events. */
-  private async connect(deviceId: string): Promise<void> {
+  /**
+   * Open the socket and start draining its events.
+   *
+   * The intent travels with the open because it decides the identity WhatsApp
+   * displays, and for code pairing it decides whether pairing works at all.
+   * Defaulting to `resume` is safe: for an already-linked device the identity
+   * was fixed when it was paired.
+   */
+  private async connect(deviceId: string, intent: PairingIntent = "resume"): Promise<void> {
     const session = this.sessions.get(deviceId);
     if (session === undefined || session.stopping || this.closed) return;
 
-    const handle = await this.open({ deviceId });
+    const handle = await this.open({ deviceId, intent });
     session.handle = handle;
     session.pump = this.pump(deviceId, handle);
   }

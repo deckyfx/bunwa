@@ -213,6 +213,11 @@ describe("a released migration is immutable", () => {
       hash: "5a6cfebadc65d4f468d2c3f09b12d69329df9f897aa497b32f518b57f0893e15",
       when: 1787909040332,
     },
+    {
+      tag: "0007_settings",
+      hash: "68824d93194c31da7f526104cda67a7331b4d3cc10d56f7c49f914008a8cd0e5",
+      when: 1787955737747,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
@@ -260,9 +265,13 @@ describe("a released migration is immutable", () => {
       // The index goes with its table, so only tables need listing here.
       "0004_device_credentials": ["device_credentials", "device_signal_keys"],
       "0005_chat_history": ["chat_messages", "chat_threads", "chat_media"],
-      // Rebuilds `devices` to drop the two engine kinds gowa left behind. A
-      // rebuild is not a new table, so there is nothing to drop for it.
+      // Also rebuilds `devices` to drop two engine kinds that no longer exist.
+      // A rebuild is not a new table, so nothing is listed for it beyond the
+      // one this migration adds.
+      // Rebuilds `devices` rather than creating a table, so there is nothing
+      // to drop for it.
       "0006_retire_gowa_engine_kind": [],
+      "0007_settings": ["settings"],
     };
     for (const migration of built.slice(1)) {
       const tables = CREATED_AFTER_BASELINE[migration.tag];

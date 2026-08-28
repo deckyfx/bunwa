@@ -13,6 +13,7 @@
  */
 import makeWASocket, {
   BufferJSON,
+  Browsers,
   DisconnectReason,
   fetchLatestBaileysVersion,
   initAuthCreds,
@@ -27,6 +28,7 @@ import makeWASocket, {
 
 import { AuthStateStore } from "../../stores/auth-state-store";
 import { log } from "../../observability/logger";
+import { CLIENT_BROWSER, SettingsStore } from "../../stores/settings-store";
 
 /**
  * Why a socket went away, in terms the control plane already understands.
@@ -361,10 +363,51 @@ const SILENT_LOGGER = {
   child: () => SILENT_LOGGER,
 } as never;
 
+/**
+ * How this socket will be paired, which decides the identity it presents.
+ *
+ * `code` is not a cosmetic difference. WhatsApp will not complete a pairing
+ * code handshake unless the client presents the Ubuntu platform string —
+ * observed behaviour, not documented — so a custom instance name silently
+ * turns code pairing into a request that never succeeds. QR pairing has no
+ * such constraint, which is why the instance name is honoured there and
+ * quietly ignored here.
+ *
+ * `resume` is a device that is already linked: the identity was fixed when it
+ * was paired and nothing sent now changes what the phone displays.
+ */
+export type PairingIntent = "qr" | "code" | "resume";
+
 /** Which device this socket is for. Credentials come from the database. */
 export interface SocketOptions {
   deviceId: string;
+  /** Defaults to `resume`, the case with no display consequences. */
+  intent?: PairingIntent;
+  /**
+   * The platform string WhatsApp shows. Ignored when pairing by code.
+   *
+   * Resolved from settings when omitted. Resolved here rather than by the
+   * caller because this is already the boundary that reads the database — the
+   * adapter passing it meant every adapter test needed a settings table, which
+   * is coupling paid for nothing.
+   */
+  instanceName?: string;
 }
+
+/**
+ * The `[platform, browser, version]` triple WhatsApp renders as
+ * `browser (platform)`.
+ *
+ * Built here rather than passed in so the code-pairing constraint cannot be
+ * bypassed by a caller that does not know about it.
+ */
+export function browserIdentity(intent: PairingIntent, instanceName: string): [string, string, string] {
+  if (intent === "code") return Browsers.ubuntu("Chrome");
+  return [instanceName, CLIENT_BROWSER, CLIENT_VERSION];
+}
+
+/** Version reported alongside the browser. Cosmetic; WhatsApp only displays it. */
+const CLIENT_VERSION = "1.0.0";
 
 /**
  * Open a socket for one device.
@@ -381,6 +424,9 @@ export async function openSocket(options: SocketOptions): Promise<SocketHandle> 
 
   const socket: WASocket = makeWASocket({
     version,
+    // What the phone lists under Linked Devices. See `browserIdentity` for why
+    // the pairing method decides it.
+    browser: browserIdentity(options.intent ?? "resume", options.instanceName ?? SettingsStore.instanceName()),
     // Same reason as the key store: Baileys logs pairing material at info.
     logger: SILENT_LOGGER,
     auth: {

@@ -57,7 +57,7 @@ function enumerated<T extends string>(
  * Asked of Intl rather than checked against a list, because the list that
  * matters is the one the process has.
  */
-function isUsableTimezone(zone: string): boolean {
+export function isUsableTimezone(zone: string): boolean {
   try {
     new Intl.DateTimeFormat("en-GB", { timeZone: zone });
     return true;
@@ -169,6 +169,16 @@ export class Config {
    * governs presentation only.
    */
   readonly serverTimezone: string;
+  /**
+   * Whether SERVER_TIMEZONE was set explicitly, as opposed to defaulted.
+   *
+   * Settings that an operator can also change in the console need to know the
+   * difference: an explicit environment value wins and the field is shown
+   * locked, whereas a default is only a starting point the console may
+   * override. Without this the two are indistinguishable and the console would
+   * silently disagree with the deployment.
+   */
+  readonly serverTimezoneFromEnv: boolean;
 
   /**
    * How often the log file rolls over.
@@ -233,6 +243,7 @@ export class Config {
     // Validated against the runtime's own database rather than a list we would
     // have to maintain: Intl knows every zone this process can actually
     // format, so an accepted value is one that works.
+    this.serverTimezoneFromEnv = (source["SERVER_TIMEZONE"] ?? "").trim() !== "";
     this.serverTimezone = optional(source, "SERVER_TIMEZONE", "Asia/Jakarta");
     if (!isUsableTimezone(this.serverTimezone)) {
       throw new ConfigError(

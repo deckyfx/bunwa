@@ -33,7 +33,6 @@ export function useEventStream(): StreamState {
   // forever, and logged a rejection each time.
   const identity = useSession((s) => s.identity);
   const apiKey = useSession((s) => s.apiKey);
-  const identity = useSession((s) => s.identity);
   const bumpRevision = useSession((s) => s.bumpRevision);
   const invalidate = useSession((s) => s.invalidate);
   const [state, setState] = useState<StreamState>("idle");
