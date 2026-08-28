@@ -161,8 +161,16 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       .environments({ environmentId })
       ["api-keys"].post({ label: label.trim(), scopes });
 
+    // The mutations need the same guard the reads got, and for a sharper
+    // reason: a key really was minted for `projectId`, so reporting it under
+    // whatever is open now would show one project's credential under another
+    // project's name. Busy is cleared either way — the request this call
+    // started has finished, whoever is looking.
+    const current = get();
+    const stillHere = current.openId === projectId && current.keysFor === environmentId;
+
     if (error !== null || data === null) {
-      set({ busy: false, error: messageFrom(error) });
+      set({ busy: false, ...(stillHere ? { error: messageFrom(error) } : {}) });
       return;
     }
 
@@ -171,9 +179,18 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     // operator would meet as an undefined credential in a "copy this now"
     // dialog they cannot get back.
     if (!("key" in data) || typeof data.key !== "string") {
-      set({ busy: false, error: "the server did not return a key" });
+      set({ busy: false, ...(stillHere ? { error: "the server did not return a key" } : {}) });
       return;
     }
+
+    if (!stillHere) {
+      // Dropped rather than shown elsewhere. The key exists and the listing
+      // for that environment will show it; what must not happen is a
+      // "copy this now" dialog appearing over a different project.
+      set({ busy: false });
+      return;
+    }
+
     const minted = data;
     // In memory only, and never written to storage: this is the operator
     // holding someone else's credential for as long as it takes to send it on.
@@ -189,8 +206,18 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       .environments({ environmentId })["api-keys"]({ keyId })
       .delete();
 
+    // Same guard as createKey: the revoke happened, but an error or a refresh
+    // belongs to the selection it was made under.
+    const after = get();
+    const stillHere = after.openId === projectId && after.keysFor === environmentId;
+
     if (error !== null) {
-      set({ busy: false, error: messageFrom(error) });
+      set({ busy: false, ...(stillHere ? { error: messageFrom(error) } : {}) });
+      return;
+    }
+
+    if (!stillHere) {
+      set({ busy: false });
       return;
     }
 

@@ -205,7 +205,7 @@ export function SetupPage() {
             nameLocked
               ? "Set in the environment, which takes precedence over anything set here."
               : preview === ""
-                ? "Shown in WhatsApp under Linked Devices. Letters and digits only."
+                ? "Shown in WhatsApp under Linked Devices. Letters, digits, dots, underscores and hyphens; spaces become hyphens."
                 : `WhatsApp will show this as "Google Chrome (${preview})". Pairing by code always shows Ubuntu instead — WhatsApp will not complete that handshake otherwise.`
           }
         />
