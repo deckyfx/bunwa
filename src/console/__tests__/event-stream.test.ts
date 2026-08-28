@@ -8,8 +8,8 @@
  * on the key rather than on the server having accepted it, and the retry
  * treated 401 as transient. Each is asserted here.
  */
-import { describe, expect, test, beforeEach, mock } from "bun:test";
-import { render, waitFor } from "@testing-library/react";
+import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import { createElement } from "react";
 
 let whoamiResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
@@ -72,6 +72,12 @@ const reset = () => {
 };
 
 beforeEach(reset);
+
+// bun:test does not register React Testing Library's auto-cleanup, so a
+// rendered tree stays in the shared document after its test ends. Two files
+// rendering into the same body then see each other's markup, and a query that
+// should match one node throws because it matches two.
+afterEach(cleanup);
 
 describe("a key restored from storage", () => {
   test("is verified rather than assumed good", async () => {

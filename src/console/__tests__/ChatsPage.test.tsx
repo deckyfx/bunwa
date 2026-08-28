@@ -9,8 +9,8 @@
  * The rest of this page's behaviour is covered in chats.test.ts, where the
  * races live. This file exists for the wiring.
  */
-import { describe, expect, test, beforeEach, mock } from "bun:test";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 
 let messagesResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
 let threadsResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
@@ -53,6 +53,13 @@ const message = (id: string, body: string) => ({
   status: null,
   occurredAt: new Date(0),
 });
+
+// Explicit rather than relying on Testing Library's auto-cleanup, which
+// registers itself once against whichever file imports it first. That made
+// this file's isolation a property of the alphabet: adding a second rendering
+// test file elsewhere took the cleanup away, and both renders in this file
+// stayed in the document until a query matched two nodes and threw.
+afterEach(cleanup);
 
 beforeEach(() => {
   useSession.setState({ apiKey: "key-a", identity: null, error: null, busy: false, revision: 0 });
