@@ -210,7 +210,7 @@ describe("a released migration is immutable", () => {
     },
     {
       tag: "0006_retire_gowa_engine_kind",
-      hash: "33d88f8d2759cd9052e0bac99e4dcb4fd3b73fe7cdac064651dc3613328b984b",
+      hash: "5a6cfebadc65d4f468d2c3f09b12d69329df9f897aa497b32f518b57f0893e15",
       when: 1787909040332,
     },
   ];

@@ -9,7 +9,7 @@
  * claim screen — the number is already theirs, so re-claiming it would be the
  * wrong flow and would reopen a consent question that is already answered.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { api, ApiError, type VirtualDevice } from "./api";
 import { Qr } from "./Qr";
@@ -32,26 +32,56 @@ export function Devices({ apiKey, devices, onChanged }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [repair, setRepair] = useState<Repair | null>(null);
 
+  /**
+   * Whether this component is still mounted and still on the same credential.
+   *
+   * `act` awaits two round trips and then writes state and calls `onChanged`.
+   * Neither was guarded, so a logout that resolved after the operator switched
+   * keys reported success against the new project and asked it to refetch, and
+   * one that resolved after the screen unmounted wrote to a component that is
+   * gone. The key is captured per call rather than read from props at the end,
+   * because props are what changed.
+   */
+  const live = useRef(true);
+  useEffect(() => {
+    live.current = true;
+    return () => {
+      live.current = false;
+    };
+  }, []);
+
   async function act(alias: string, what: "logout" | "repair") {
+    const usedKey = apiKey;
+    /** Still the same screen, on the same credential, as when this started. */
+    const current = () => live.current && usedKey === apiKey;
+
     setBusy(`${alias}:${what}`);
     setError(null);
     try {
       if (what === "logout") {
-        await api.logoutDevice(apiKey, alias);
+        await api.logoutDevice(usedKey, alias);
+        if (!current()) return;
         setRepair(null);
       } else {
-        const result = await api.repairDevice(apiKey, alias);
+        const result = await api.repairDevice(usedKey, alias);
+        if (!current()) return;
+        // A pairing code is a credential for the number it pairs. Showing one
+        // minted under the previous key on a screen now signed in as someone
+        // else is the reason this guard is not merely tidiness.
         setRepair({ alias, ...result.pairing });
       }
       onChanged();
     } catch (err) {
+      if (!current()) return;
       setError(
         err instanceof ApiError
           ? `${err.message}${err.detail === null ? "" : ` — ${err.detail}`}`
           : "could not reach the API",
       );
     } finally {
-      setBusy(null);
+      // Cleared even when the guards above bailed out: `busy` disables the
+      // buttons, so leaving it set on a still-mounted screen locks the row.
+      if (live.current) setBusy(null);
     }
   }
 

@@ -70,6 +70,52 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
       setState(next);
     };
 
+    /**
+
+     * Consecutive failed attempts, for the backoff below.
+
+     *
+
+     * Reset when a stream actually opens rather than when one is created, so a
+
+     * server that accepts the connection and then drops it does not read as a
+
+     * success and restart the delay at two seconds for ever.
+
+     */
+
+    let failures = 0;
+
+
+    /**
+
+     * Reconnect, more slowly each time, up to a ceiling.
+
+     *
+
+     * A fixed two-second retry meant a console left open against a stopped
+
+     * server minted a ticket request every two seconds indefinitely — thirty a
+
+     * minute per open tab, each one a rejected request in the log. The ceiling
+
+     * keeps a long outage cheap while a brief one still recovers quickly.
+
+     */
+
+    function scheduleRetry(): void {
+
+      if (cancelled) return;
+
+      const delay = Math.min(2_000 * 2 ** failures, 30_000);
+
+      failures += 1;
+
+      retry = setTimeout(() => void connect(), delay);
+
+    }
+
+
     async function connect(): Promise<void> {
       publishState("connecting");
       try {
@@ -86,7 +132,10 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
 
         source = new EventSource(`/v1/events/stream?ticket=${encodeURIComponent(ticket)}`);
 
-        source.addEventListener("stream.open", () => publishState("live"));
+        source.addEventListener("stream.open", () => {
+          failures = 0;
+          publishState("live");
+        });
 
         // Overflow means this console fell behind and missed events. Marked
         // stale rather than left looking current, because the screen is now
@@ -99,9 +148,12 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
           // manages on its own. The server frame says "refetch and reconnect";
           // only the refetch was implemented.
           //
-          // Longer than the onerror delay on purpose: overflow means this
-          // client could not keep up, and reconnecting instantly invites the
-          // same outcome.
+          // A fixed delay, and deliberately not the backoff onerror uses.
+          // Overflow is not a connection failure — the server was reachable
+          // and this client could not keep up — so backing off further each
+          // time would punish a slow tab for a problem reconnecting does fix.
+          // Longer than the first onerror delay, because reconnecting
+          // instantly invites the same outcome.
           publishState("stale");
           // The caller is told, not just the badge. Overflow means envelopes
           // were dropped, so every snapshot on screen may be wrong in a way no
@@ -126,13 +178,17 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
         source.onerror = () => {
           // EventSource reconnects on its own, but its ticket is spent, so the
           // retry would be refused forever. Close it and mint a fresh one.
-          publishState("connecting");
           source?.close();
-          if (!cancelled) retry = setTimeout(() => void connect(), 2_000);
+          // "connecting" only while it might still be a blip. A server that is
+          // down answers every attempt the same way, and a badge that says
+          // "connecting…" for ten minutes is telling the operator the console
+          // is nearly back when it has no idea whether it is.
+          publishState(failures === 0 ? "connecting" : "stale");
+          scheduleRetry();
         };
       } catch {
         publishState("stale");
-        if (!cancelled) retry = setTimeout(() => void connect(), 5_000);
+        scheduleRetry();
       }
     }
 

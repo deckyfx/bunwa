@@ -145,6 +145,15 @@ export function createApp(registry?: EngineRegistry, consolePage?: ConsolePage) 
           ? correlationId
           : (sanitiseCorrelationId(request.headers.get("x-correlation-id")) ?? crypto.randomUUID());
       set.headers["x-correlation-id"] = id;
+
+      // Entered here as well as in `derive`, for the same reason the id is
+      // recovered above: `derive` never ran for an unmatched route, so nothing
+      // had put this id into the logging context. The header and the body
+      // carried it and every log line this handler produced was written under
+      // a different id — or none — which is precisely the trace the fallback
+      // above exists to preserve. Re-entering with an id already in context is
+      // a no-op, so the matched-route path is unaffected.
+      enterContext({ correlationId: id });
       if (code === "NOT_FOUND") {
         set.status = 404;
         return problem(404, "not-found", "Not found", undefined, path, id);

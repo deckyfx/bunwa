@@ -89,9 +89,9 @@ export function Chats({ apiKey, revision }: Props) {
       // The composer goes with the conversation. A half-typed reply and a
       // "could not send" from the previous thread both survived the switch,
       // so the draft was aimed at whoever was opened next and the error
-      // blamed the wrong conversation. `sending` is deliberately not reset:
-      // a request really is still in flight, and its own guards decide what
-      // happens when it lands.
+      // blamed the wrong conversation. `sending` is cleared by the send
+      // handler's finally block whatever happens, so the composer is usable
+      // in the conversation just opened.
       setDraft("");
       setError(null);
     }
@@ -131,7 +131,14 @@ export function Chats({ apiKey, revision }: Props) {
       if (selectedRef.current !== threadId) return;
       setError(err instanceof ApiError ? err.message : "could not send");
     } finally {
-      if (selectedRef.current === threadId) setSending(false);
+      // Unconditionally. The guard belongs on what gets *painted*, not on
+      // whether the composer is usable again: switching conversations while a
+      // reply was in flight left `sending` true for ever, and the send button
+      // is disabled on it — so the operator could no longer reply in the
+      // conversation they had just switched to. `sending` describes this
+      // component's composer, which is now pointed somewhere else, rather than
+      // the request that has finished either way.
+      setSending(false);
     }
   }
 

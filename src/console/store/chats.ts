@@ -82,6 +82,12 @@ export const useChats = create<ChatState>((set, get) => ({
 
   select: async (threadId: string) => {
     const { apiKey } = useSession.getState();
+    // Same early return as loadThreads. Without a credential the request is
+    // refused, and the refusal became "could not load this conversation" — an
+    // error about the conversation, on a screen whose actual state is that
+    // nobody is signed in. Signed out is not a failed load.
+    if (apiKey === "") return;
+
     set({ selectedId: threadId, messages: null, error: null });
 
     const { data, error } = await client(apiKey).v1.chats({ id: threadId }).messages.get();
@@ -123,7 +129,9 @@ export const useChats = create<ChatState>((set, get) => ({
   send: async () => {
     const { selectedId, draft } = get();
     const { apiKey } = useSession.getState();
-    if (selectedId === null || draft.trim() === "") return;
+    // apiKey too, for the reason select() has it: a send with no credential
+    // reported "could not send" as though the message had been rejected.
+    if (apiKey === "" || selectedId === null || draft.trim() === "") return;
 
     set({ sending: true, error: null });
     const { error } = await client(apiKey).v1.chats({ id: selectedId }).messages.post({
