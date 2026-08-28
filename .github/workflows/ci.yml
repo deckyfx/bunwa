@@ -95,7 +95,26 @@ jobs:
         # both ways before changing it.
         run: |
           pattern='\.(sqlite|db)(-(wal|shm|journal))?$'
-          tracked=$(git ls-files | grep -E "$pattern" || true)
+
+          # `|| true` would swallow a git failure as well as a clean miss, and
+          # an empty result then reads as "nothing tracked" — the guard passing
+          # because it never ran. Each command is checked on its own: grep says
+          # 0 for a match and 1 for none, and anything above that is grep
+          # itself failing, which is not the same answer as "no databases".
+          if ! files=$(git ls-files); then
+            echo "::error::git ls-files failed; the database check did not run"
+            exit 1
+          fi
+
+          set +e
+          tracked=$(printf '%s\n' "$files" | grep -E "$pattern")
+          matched=$?
+          set -e
+          if [ "$matched" -gt 1 ]; then
+            echo "::error::grep failed ($matched); the database check did not run"
+            exit 1
+          fi
+
           if [ -n "$tracked" ]; then
             echo "::error::a database is tracked in git"
             printf '%s\n' "$tracked"

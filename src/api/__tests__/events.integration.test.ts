@@ -224,3 +224,35 @@ describe("a reader that disconnects while nothing is happening", () => {
     ).toBe(0);
   }, 10_000);
 });
+
+describe("a request that was already aborted", () => {
+  test("does not leave its subscription on the bus", async () => {
+    // The subscription is created in `resolve`, before the generator body
+    // runs. `addEventListener("abort")` on a signal that has already fired
+    // registers for something that will never happen again, so neither that
+    // path nor the `finally` — which needs the generator resumed — would ever
+    // close it. The check has to be for the state, not only the event.
+    const ticket = await mint();
+    const controller = new AbortController();
+    controller.abort();
+
+    const response = await app.handle(
+      new Request(`http://localhost/v1/events/stream?ticket=${encodeURIComponent(ticket)}`, {
+        signal: controller.signal,
+      }),
+    );
+
+    // Pull once so the generator body actually runs; an aborted request may
+    // reject here, which is fine — what matters is what it left behind.
+    await response.body
+      ?.getReader()
+      .read()
+      .catch(() => undefined);
+    await Bun.sleep(100);
+
+    expect(
+      subscriberCount(environmentId),
+      "an already-aborted request left its subscription attached",
+    ).toBe(0);
+  }, 10_000);
+});

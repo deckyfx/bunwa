@@ -111,6 +111,18 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
           };
           request.signal.addEventListener("abort", abort, { once: true });
 
+          // Already aborted is not a case the listener covers: the event has
+          // dispatched, so registering after it is registering for something
+          // that will never happen again. The subscription is created in
+          // `resolve`, before this body runs, so a request that died in that
+          // window would sit on the bus with neither path ever closing it —
+          // the `finally` only runs once the generator is resumed, which for
+          // a caller that has gone may be never.
+          if (request.signal.aborted) {
+            abort();
+            return;
+          }
+
           try {
             // Said explicitly, so a console can show "live" from something the
             // server sent rather than from the absence of an error.
