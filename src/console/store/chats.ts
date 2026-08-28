@@ -13,7 +13,7 @@
  */
 import { create } from "zustand";
 
-import { client } from "../lib/api";
+import { client, type RowOf } from "../lib/api";
 import { useSession } from "./session";
 import { blankOnKeyChange } from "./tenant";
 
@@ -28,19 +28,11 @@ import { blankOnKeyChange } from "./tenant";
  */
 type Api = ReturnType<typeof client>;
 
-/**
- * The success payload of an Eden call.
- *
- * `data` is a union of the body and the error shape, so the array element has
- * to be picked out of the half that is a list. Extract rather than exclude:
- * naming what we want is steadier than enumerating what we do not.
- */
-type Rows<T> = T extends { data: infer D } ? Extract<NonNullable<D>, readonly unknown[]> : never;
 
-export type ChatThread = Rows<Awaited<ReturnType<Api["v1"]["chats"]["get"]>>>[number];
-export type ChatMessage = Rows<
+export type ChatThread = RowOf<Awaited<ReturnType<Api["v1"]["chats"]["get"]>>>;
+export type ChatMessage = RowOf<
   Awaited<ReturnType<ReturnType<Api["v1"]["chats"]>["messages"]["get"]>>
->[number];
+>;
 
 interface ChatState {
   threads: ChatThread[] | null;

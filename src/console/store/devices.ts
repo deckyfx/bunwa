@@ -8,15 +8,14 @@
  */
 import { create } from "zustand";
 
-import { client } from "../lib/api";
+import { client, type RowOf } from "../lib/api";
 import { useSession } from "./session";
 import { blankOnKeyChange } from "./tenant";
 
 type Api = ReturnType<typeof client>;
-type Rows<T> = T extends { data: infer D } ? Extract<NonNullable<D>, readonly unknown[]> : never;
 
 /** Derived from the server. The hand-written version had three wrong fields. */
-export type VirtualDevice = Rows<Awaited<ReturnType<Api["v1"]["devices"]["get"]>>>[number];
+export type VirtualDevice = RowOf<Awaited<ReturnType<Api["v1"]["devices"]["get"]>>>;
 
 interface DeviceState {
   devices: VirtualDevice[] | null;
@@ -24,6 +23,15 @@ interface DeviceState {
   load: () => Promise<void>;
 }
 
+/**
+ * The devices this environment can act through.
+ *
+ * A cache scoped to the credential that filled it. Every screen needs the list
+ * and each used to fetch its own, so a late response could commit under a key
+ * that had since changed — showing one tenant's numbers to another. One store
+ * means that check is written once, and `blankOnKeyChange` below empties it
+ * the moment the credential moves rather than leaving it to be overwritten.
+ */
 export const useDevices = create<DeviceState>((set) => ({
   devices: null,
   error: null,

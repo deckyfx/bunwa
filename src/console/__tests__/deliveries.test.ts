@@ -8,18 +8,47 @@
  */
 import { describe, expect, test, beforeEach, mock } from "bun:test";
 
+// `import type` survives mock.module: the mock replaces the runtime module and
+// the types still come from the real one, so these stand-ins are checked
+// against the routes they replace.
+import type { client } from "../lib/api";
+import type { Delivery } from "../store/deliveries";
+
+type Api = ReturnType<typeof client>;
+type Deliveries = Api["v1"]["deliveries"];
+
+/** The `{ id }` the route itself takes, rather than a hand-written guess. */
+type DeliveryParams = Parameters<Deliveries>[0];
+
+/**
+ * Only the halves the store reads.
+ *
+ * These were `unknown`, so the route could change shape and every assertion
+ * here would keep passing while the store read fields the server had stopped
+ * sending — the drift Eden was adopted to make impossible, switched off in the
+ * tests meant to prove the store survives a real server. The envelope's
+ * `status`, `headers` and raw `response` are left out because the store
+ * destructures `{ data, error }` and nothing else, so reconstructing them
+ * would pin nothing.
+ */
+type Reply<T> = { data: T | null; error: { status?: number } | null };
+
 const replayCalls: string[] = [];
-let replayResolver: () => Promise<unknown> = () => Promise.resolve({ data: {}, error: null });
-let listResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
+let replayResolver: () => Promise<Reply<unknown>> = () => Promise.resolve({ data: {}, error: null });
+let listResolver: () => Promise<Reply<Delivery[]>> = () => Promise.resolve({ data: [], error: null });
 
 void mock.module("../lib/api", () => ({
   client: () => ({
     v1: {
       deliveries: Object.assign(
-        (params: { id: string }) => ({
+        (params: DeliveryParams) => ({
           replay: {
             post: () => {
-              replayCalls.push(params.id);
+              // The route's path param is `string | number`, which the
+              // hand-written `{ id: string }` this replaced had quietly
+              // narrowed. Recorded as a string because that is what the
+              // assertions compare against.
+              replayCalls.push(String(params.id));
               return replayResolver();
             },
           },
@@ -34,7 +63,15 @@ void mock.module("../lib/api", () => ({
 const { useDeliveries } = await import("../store/deliveries");
 const { useSession } = await import("../store/session");
 
-const delivery = (id: string) => ({
+/**
+ * A delivery row, typed as the route returns one.
+ *
+ * Annotated rather than inferred, which is the whole point: untyped, `state`
+ * widened to `string` and the fixture drifted from a route that has had a
+ * four-value union there all along. The compiler now refuses a state the
+ * server cannot send.
+ */
+const delivery = (id: string): Delivery => ({
   id,
   eventType: "message.received",
   state: "failed",
@@ -65,7 +102,7 @@ describe("replaying", () => {
   test("a second click while one is in flight is refused", async () => {
     // A replay is a webhook the consumer receives again. Two is a duplicate at
     // the far end, not a retry.
-    let release: ((v: unknown) => void) | undefined;
+    let release: ((v: Reply<unknown>) => void) | undefined;
     replayResolver = () =>
       new Promise((resolve) => {
         release = resolve;
@@ -83,7 +120,7 @@ describe("replaying", () => {
   test("two different rows may replay at once", async () => {
     // The first fix tracked one id, so starting a second row re-enabled the
     // first while it was still sending.
-    let releases: ((v: unknown) => void)[] = [];
+    let releases: ((v: Reply<unknown>) => void)[] = [];
     replayResolver = () =>
       new Promise((resolve) => {
         releases.push(resolve);

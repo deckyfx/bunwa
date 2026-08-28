@@ -7,14 +7,13 @@
  */
 import { create } from "zustand";
 
-import { client } from "../lib/api";
+import { client, type RowOf } from "../lib/api";
 import { useSession } from "./session";
 import { blankOnKeyChange } from "./tenant";
 
 type Api = ReturnType<typeof client>;
-type Rows<T> = T extends { data: infer D } ? Extract<NonNullable<D>, readonly unknown[]> : never;
 
-export type Delivery = Rows<Awaited<ReturnType<Api["v1"]["deliveries"]["get"]>>>[number];
+export type Delivery = RowOf<Awaited<ReturnType<Api["v1"]["deliveries"]["get"]>>>;
 
 interface DeliveryState {
   deliveries: Delivery[] | null;
