@@ -7,7 +7,7 @@
  * the banner tells the developer to distrust data that is actually current.
  */
 import { describe, expect, test, afterEach } from "bun:test";
-import { render, screen, cleanup, waitFor } from "@testing-library/react";
+import { act, render, screen, cleanup, waitFor } from "@testing-library/react";
 
 import { useEventStream } from "../useEventStream";
 
@@ -133,9 +133,40 @@ describe("a superseded attempt does not describe the live one", () => {
     await waitFor(() => expect(ticketRequests).toBeGreaterThan(1), { timeout: 8_000 });
   }, 15_000);
 
-  test("no key means idle, not connecting", async () => {
-    globalThis.fetch = (async () => new Promise<Response>(() => undefined)) as unknown as typeof fetch;
+  test("no key means idle, and nothing is opened", async () => {
+    // The badge alone is not the property. "idle" is also what the hook shows
+    // for a moment before it connects, so asserting only the text would pass
+    // against a version that minted a ticket and opened a stream on the way —
+    // which is the thing an empty key must not do, because there is no
+    // credential to mint one with.
+    let ticketRequests = 0;
+    let streamsOpened = 0;
+
+    globalThis.fetch = (async () => {
+      ticketRequests += 1;
+      return new Promise<Response>(() => undefined);
+    }) as unknown as typeof fetch;
+
+    class CountingEventSource {
+      onerror: (() => void) | null = null;
+      onmessage: (() => void) | null = null;
+      constructor() {
+        streamsOpened += 1;
+      }
+      addEventListener(): void {}
+      close(): void {}
+    }
+    (globalThis as { EventSource?: unknown }).EventSource = CountingEventSource;
+
     render(<Probe apiKey="" />);
     await waitFor(() => expect(screen.getByText("idle")).toBeDefined());
+    // Settled, not merely rendered: the effect runs after the first paint, so
+    // checking the counters immediately would find them zero either way.
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(ticketRequests, "a ticket was requested with no key").toBe(0);
+    expect(streamsOpened, "a stream was opened with no key").toBe(0);
   });
 });

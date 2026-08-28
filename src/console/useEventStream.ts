@@ -57,6 +57,12 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
     let source: EventSource | null = null;
     let cancelled = false;
     let retry: ReturnType<typeof setTimeout> | undefined;
+    // Aborts the ticket request on unmount or a key change. `cancelled` already
+    // stops a late response being acted on, but the request itself carried on
+    // to completion — and on a key change that means the *previous* key's
+    // ticket is still being minted and spent server-side for a session that no
+    // longer exists.
+    let inFlight: AbortController | null = null;
 
     // Every state write goes through here.
     //
@@ -122,10 +128,24 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
         // A ticket per connection, because each is single-use. This is the
         // handshake ADR-0008 describes: EventSource cannot send the key, so
         // the key mints something short-lived that can travel in a URL.
+        inFlight = new AbortController();
         const res = await fetch("/v1/events/ticket", {
           method: "POST",
           headers: { "x-api-key": apiKey },
+          signal: inFlight.signal,
         });
+
+        // A refusal of the credential is not a transient failure, and retrying
+        // it is how a console burns a request every few seconds for as long as
+        // the tab is open. This happened: a key restored from localStorage
+        // outlived the database it was issued against, and the stream asked
+        // for a ticket for ever, logging a rejection each time. Waiting cannot
+        // make a revoked or unknown key valid — the operator has to supply
+        // another one, and the stale badge is what tells them to.
+        if (res.status === 401 || res.status === 403) {
+          publishState("stale");
+          return;
+        }
         if (!res.ok) throw new Error(`ticket refused: ${res.status}`);
         const { ticket } = (await res.json()) as { ticket: string };
         if (cancelled) return;
@@ -197,6 +217,7 @@ export function useEventStream({ apiKey, onEvent }: Options): StreamState {
     return () => {
       cancelled = true;
       if (retry !== undefined) clearTimeout(retry);
+      inFlight?.abort();
       source?.close();
       setState("idle");
     };
