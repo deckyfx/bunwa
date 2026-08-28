@@ -10,6 +10,7 @@ import { KeyRound, LoaderCircle, LogIn, MessageCircleMore, Wifi, WifiOff } from 
 
 import { ChatsPage } from "./pages/ChatsPage";
 import { Card } from "./components/Card";
+import { Field } from "./components/Field";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { ClaimPage } from "./pages/ClaimPage";
@@ -37,8 +38,13 @@ function StreamIcon({ state }: { state: ReturnType<typeof useEventStream> }) {
 export function App() {
   const { apiKey, identity, error, busy, connect, hydrate } = useSession();
   const configured = useSetup((s) => s.configured);
+  const mintedKey = useSetup((s) => s.mintedKey);
   const refreshSetup = useSetup((s) => s.refresh);
   const [draft, setDraft] = useState(apiKey);
+  // Whether what is in the box came from storage rather than from typing. A
+  // prefilled masked field is the case where "is this the right key?" cannot
+  // be answered by looking, so the field says where it came from.
+  const [restored] = useState(apiKey !== "");
   const stream = useEventStream();
 
   // Asked before anything else, because "this instance has no key" and "your
@@ -105,10 +111,16 @@ export function App() {
       <main className="mx-auto flex max-w-5xl flex-col gap-4 p-4">
         {/* A fresh instance gets the setup screen instead of a key form nothing
             could satisfy: there is no key to type, and no way to obtain one
-            without this. */}
-        {configured === false && <SetupPage />}
+            without this.
 
-        {configured !== false && identity === null && (
+            `mintedKey` is in the condition because finishing setup flips
+            `configured` to true — which unmounted this the instant the key was
+            created, destroying the one and only render of a credential that
+            cannot be shown again. The screen stays until the operator dismisses
+            it themselves. */}
+        {(configured === false || mintedKey !== null) && <SetupPage />}
+
+        {configured !== false && mintedKey === null && identity === null && (
           <Card id="connect" title="Connect" icon={KeyRound}>
             <form
               className="flex flex-wrap items-end gap-2"
@@ -117,19 +129,24 @@ export function App() {
                 void connect(draft);
               }}
             >
-              <div className="flex min-w-64 flex-1 flex-col gap-1">
-                <label htmlFor="api-key" className="text-sm font-medium">
-                  API key
-                </label>
-                <input
+              {/* The shared Field rather than a bare input, which is how this
+                  one missed the reveal toggle: a key restored from storage
+                  arrives already filled, and dots give no way to tell a
+                  leftover credential from the right one. */}
+              <div className="min-w-64 flex-1">
+                <Field
                   id="api-key"
+                  label="API key"
                   type="password"
+                  mono
                   value={draft}
-                  onChange={(e) => {
-                    setDraft(e.target.value);
-                  }}
+                  onChange={setDraft}
                   placeholder="bw_live_…"
-                  className="rounded-md border border-slate-300 bg-white px-3 py-2 font-mono text-sm outline-none focus:border-slate-500 dark:border-slate-700 dark:bg-slate-900"
+                  hint={
+                    restored
+                      ? "Restored from this browser. Reveal it to check it is the key you expect."
+                      : undefined
+                  }
                 />
               </div>
               <button

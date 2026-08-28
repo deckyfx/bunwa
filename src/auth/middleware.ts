@@ -70,6 +70,8 @@ export const requireApiKey = new Elysia({ name: "requireApiKey" })
     if (resolved === null) {
       // The key itself is never logged, not even a prefix: a log aggregator is
       // a lower-trust store than the database the hash lives in.
+      // The reason is logged by the resolver, which is the only place that
+      // knows it. This adds the path, which the resolver does not have.
       log.warn("api key rejected", { path });
       throw new AuthError(401, "invalid-credential", "Unauthorized", "the API key is not valid", path);
     }

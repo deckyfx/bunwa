@@ -41,6 +41,33 @@ interface SessionState {
   invalidate: (reason: string) => void;
 }
 
+/**
+ * What to say when connecting fails.
+ *
+ * "that key was not accepted" was said for every failure, including the ones
+ * where the server never answered — so an unreachable server, a crash and a
+ * genuinely wrong key all told the operator to go and check their key. Only
+ * one of those is about the key.
+ *
+ * The server cannot say *why* a key was refused: revoked, unknown and expired
+ * are deliberately indistinguishable to a caller, or probing tells an attacker
+ * which guesses were close. So the message points at the log, which is allowed
+ * to know and now says so.
+ */
+function describeFailure(status: unknown): string {
+  if (typeof status !== "number" || status === 0) {
+    // Eden reports a transport failure with no status at all, which is the
+    // case that was previously blamed on the key.
+    return "could not reach the server. Is it still running?";
+  }
+
+  if (status === 401) {
+    return "the server refused that key. It logs the reason — look for \"api key rejected\" in the server output.";
+  }
+  if (status >= 500) return `the server failed while checking the key (${String(status)}).`;
+  return `the server rejected the request (${String(status)}).`;
+}
+
 const readStoredKey = (): string => {
   try {
     return localStorage.getItem(STORAGE_KEY) ?? "";
@@ -93,7 +120,7 @@ export const useSession = create<SessionState>((set, get) => ({
     if (get().apiKey !== trimmed) return;
 
     if (error !== null) {
-      set({ identity: null, busy: false, error: "that key was not accepted" });
+      set({ identity: null, busy: false, error: describeFailure(error.status) });
       return;
     }
 

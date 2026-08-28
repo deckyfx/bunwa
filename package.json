@@ -18,7 +18,10 @@
     "build": "bun run db:embed && bun run typecheck && bun build --compile --outfile dist/bunwa src/index.ts",
     "backup": "bun run src/ops/backup-cli.ts",
     "dev:headless": "bun --watch run src/index-headless.ts",
-    "start:headless": "bun run src/index-headless.ts"
+    "start:headless": "bun run src/index-headless.ts",
+    "key:list": "bun run src/ops/key-cli.ts list",
+    "key:new": "bun run src/ops/key-cli.ts new",
+    "key:revoke": "bun run src/ops/key-cli.ts revoke"
   },
   "dependencies": {
     "@elysiajs/eden": "^1.4.9",

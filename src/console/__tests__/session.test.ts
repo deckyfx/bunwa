@@ -58,7 +58,38 @@ describe("connecting", () => {
     await useSession.getState().connect("bad");
 
     expect(useSession.getState().identity).toBeNull();
-    expect(useSession.getState().error).toContain("not accepted");
+    expect(useSession.getState().error).toContain("refused that key");
+  });
+
+  test("an unreachable server is not blamed on the key", async () => {
+    // Every failure used to say the key was not accepted, including the ones
+    // where the server never answered — so a crashed server sent the operator
+    // off to check a credential that was fine.
+    stubWhoami(() => Promise.resolve({ data: null, error: { status: undefined } }));
+
+    await useSession.getState().connect("bw_live_default_whatever");
+
+    expect(useSession.getState().error).toContain("could not reach the server");
+  });
+
+  test("a server error says so rather than accusing the key", async () => {
+    stubWhoami(() => Promise.resolve({ data: null, error: { status: 500 } }));
+
+    await useSession.getState().connect("bw_live_default_whatever");
+
+    expect(useSession.getState().error).toContain("500");
+    expect(useSession.getState().error).not.toContain("refused that key");
+  });
+
+  test("a rejection points at where the reason actually is", async () => {
+    // The server cannot say why — revoked, unknown and expired are
+    // deliberately indistinguishable to a caller — so the message has to send
+    // the operator to the log, which is allowed to know.
+    stubWhoami(() => Promise.resolve({ data: null, error: { status: 401 } }));
+
+    await useSession.getState().connect("bad");
+
+    expect(useSession.getState().error).toContain("api key rejected");
   });
 
   test("an empty key clears everything it authorised", async () => {
