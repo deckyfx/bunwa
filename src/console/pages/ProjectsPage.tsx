@@ -14,7 +14,7 @@ import { Check, ChevronRight, Copy, FolderKanban, KeyRound, Plus, ShieldCheck, T
 
 import { Card, Note } from "../components/Card";
 import { Field } from "../components/Field";
-import { PROJECT_SCOPE_NAMES } from "../lib/scopes";
+import { BOOTSTRAP_PROJECT_SLUG, PROJECT_SCOPE_NAMES } from "../lib/scopes";
 import { useProjects } from "../store/projects";
 import { useServerTimezone } from "../store/session";
 import { renderDateTime } from "../../time/render";
@@ -276,6 +276,17 @@ export function ProjectsPage() {
                 />
                 <span className="font-medium">{project.displayName}</span>
                 <span className="font-mono text-xs text-slate-500">{project.slug}</span>
+                {project.slug === BOOTSTRAP_PROJECT_SLUG && (
+                  // Marked, because it is not a tenant anyone created. Every
+                  // instance has one: a key must belong to an environment, so
+                  // one has to exist before setup can mint the operator's own.
+                  <span
+                    title="Created automatically. It holds the operator key, because a key must belong to an environment."
+                    className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-400"
+                  >
+                    instance
+                  </span>
+                )}
                 {project.status !== "active" && (
                   <span className="rounded bg-amber-100 px-1.5 py-px text-[10px] text-amber-800 dark:bg-amber-950 dark:text-amber-300">
                     {project.status}

@@ -16,3 +16,13 @@ export const PROJECT_SCOPE_NAMES = [
   "manage:webhook",
   "manage:rules",
 ] as const;
+
+/**
+ * The project every instance has, whether or not anyone asked for it.
+ *
+ * A key must belong to an environment — the column is NOT NULL with a foreign
+ * key — so one has to exist before setup can mint the operator's own
+ * credential. That makes it a real row in the projects list, and without
+ * saying so it reads as a tenant someone created and forgot.
+ */
+export const BOOTSTRAP_PROJECT_SLUG = "default";

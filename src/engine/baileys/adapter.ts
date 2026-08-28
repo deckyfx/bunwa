@@ -55,6 +55,14 @@ const DEGRADED_AFTER = 3;
 
 interface Session {
   handle: SocketHandle | null;
+  /**
+   * What the live socket was opened for.
+   *
+   * The identity presented during the handshake depends on it — a code pairing
+   * has to say Ubuntu or WhatsApp refuses to complete it — so a socket opened
+   * for one intent cannot serve another. Null whenever `handle` is.
+   */
+  intent: PairingIntent | null;
   /** Consecutive failed reconnects. Reset by a successful connection. */
   failures: number;
   /** When the device last went down, for reporting recovery time. */
@@ -123,6 +131,7 @@ export class BaileysAdapter implements DeviceEngine {
     if (!this.sessions.has(deviceId)) {
       this.sessions.set(deviceId, {
         handle: null,
+        intent: null,
         failures: 0,
         downSince: null,
         jid: null,
@@ -222,6 +231,7 @@ export class BaileysAdapter implements DeviceEngine {
     });
 
     session.handle = null;
+    session.intent = null;
     session.connected = false;
     session.loggedIn = false;
     // Cleared, or the device can never be paired again.
@@ -452,6 +462,7 @@ export class BaileysAdapter implements DeviceEngine {
 
     const handle = await this.open({ deviceId, intent });
     session.handle = handle;
+    session.intent = intent;
     session.pump = this.pump(deviceId, handle);
   }
 
@@ -578,6 +589,7 @@ export class BaileysAdapter implements DeviceEngine {
   private onDisconnected(deviceId: string, session: Session, reason: DisconnectKind | string, recoverable: boolean): void {
     session.connected = false;
     session.handle = null;
+    session.intent = null;
     session.downSince ??= new Date();
 
     if (reason === "logged_out") {
