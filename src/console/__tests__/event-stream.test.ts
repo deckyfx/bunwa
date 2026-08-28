@@ -61,6 +61,10 @@ const Probe = () => createElement("output", null, useEventStream());
 const IDENTITY = {
   projectId: "p1",
   environmentId: "e1",
+  projectSlug: "default",
+  projectName: "Default",
+  environmentSlug: "production",
+  environmentKind: "live",
   scopes: ["send:text"],
   serverTimezone: "Asia/Jakarta",
 };

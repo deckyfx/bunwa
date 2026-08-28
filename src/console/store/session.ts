@@ -19,6 +19,11 @@ const STORAGE_KEY = "bunwa.apiKey";
 export interface Identity {
   projectId: string;
   environmentId: string;
+  /** What a person calls this tenant. The ids are for machines. */
+  projectSlug: string;
+  projectName: string;
+  environmentSlug: string;
+  environmentKind: string;
   scopes: string[];
   /** The zone the server renders timestamps in. See `useServerTimezone`. */
   serverTimezone: string;
@@ -132,7 +137,7 @@ export const useSession = create<SessionState>((set, get) => ({
       /* the session still works, it just will not survive a refresh */
     }
 
-    set({ identity: data, busy: false, error: null });
+    set({ identity: data as Identity, busy: false, error: null });
   },
 
   disconnect: () => {

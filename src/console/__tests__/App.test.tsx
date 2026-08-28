@@ -13,7 +13,7 @@
  * one thing a component test cannot see.
  */
 import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 let statusResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
 let submitResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
@@ -29,7 +29,10 @@ void mock.module("../lib/api", () => ({
         get: () => Promise.resolve({ data: [], error: null }),
       }),
       deliveries: { get: () => Promise.resolve({ data: [], error: null }) },
-      events: { ticket: { post: () => Promise.resolve({ data: null, error: { status: 401 } }) } },
+      // A real ticket, not a 401. A rejected one makes the event stream
+      // invalidate the session, which tore the signed-in shell down mid-test —
+      // correct behaviour under a mock that was lying about the server.
+      events: { ticket: { post: () => Promise.resolve({ data: { ticket: "t1" }, error: null }) } },
     },
   }),
   anonymous: () => ({
@@ -39,6 +42,17 @@ void mock.module("../lib/api", () => ({
     ),
   }),
 }));
+
+/** happy-dom provides no EventSource, and the signed-in shell opens one. */
+class FakeEventSource {
+  constructor(_url: string) {
+    /* inert: these tests are about layout, not delivery */
+  }
+  addEventListener(): void {}
+  close(): void {}
+  onerror: (() => void) | null = null;
+}
+(globalThis as { EventSource?: unknown }).EventSource = FakeEventSource;
 
 const { App } = await import("../App");
 const { useSetup, resetSetupRequests } = await import("../store/setup");
@@ -225,5 +239,84 @@ describe("a credential left over from a database that no longer exists", () => {
     await waitFor(() => {
       expect(useSession.getState().identity).not.toBeNull();
     });
+  });
+});
+
+describe("the signed-in shell", () => {
+  const signIn = () => {
+    statusResolver = () =>
+      Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
+    whoamiResolver = () =>
+      Promise.resolve({
+        data: { projectId: "proj-1234-abcd", environmentId: "env-5678-efgh", scopes: [], serverTimezone: "UTC" },
+        error: null,
+      });
+    useSession.setState({ apiKey: "bw_live_default_good" });
+  };
+
+  test("shows the navigation once there is a session", async () => {
+    signIn();
+    render(<App />);
+
+    const nav = await screen.findByRole("navigation", { name: "Sections" });
+    expect(nav).toBeDefined();
+  });
+
+  test("shows no navigation before there is one", async () => {
+    // The panel navigates between things that all need a credential.
+    render(<App />);
+    await screen.findByLabelText("Setup token");
+    expect(screen.queryByRole("navigation", { name: "Sections" })).toBeNull();
+  });
+
+  test("one section at a time, and the panel says which", async () => {
+    signIn();
+    render(<App />);
+
+    const devices = await screen.findByRole("button", { name: "Devices" });
+    expect(devices.getAttribute("aria-current"), "the landing section").toBe("page");
+
+    fireEvent.click(screen.getByRole("button", { name: "Deliveries" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Deliveries" }).getAttribute("aria-current")).toBe("page");
+    });
+    // aria-current, not merely a background colour: which section is showing
+    // has to be answerable without seeing the styling.
+    expect(screen.getByRole("button", { name: "Devices" }).getAttribute("aria-current")).toBeNull();
+  });
+
+  test("sign out is reachable from both the ribbon and the panel", async () => {
+    // The panel is the considered place for it; the ribbon is where someone
+    // reaches when they want out of a shared screen quickly.
+    signIn();
+    render(<App />);
+    await screen.findByRole("navigation", { name: "Sections" });
+
+    // Two, deliberately: one in each place. Asserting the count rather than
+    // "at least one" is the difference between checking both exist and
+    // checking that either does.
+    expect(screen.getAllByRole("button", { name: "Sign out" })).toHaveLength(2);
+  });
+
+  test("signing out returns to the connect card", async () => {
+    signIn();
+    render(<App />);
+    await screen.findByRole("navigation", { name: "Sections" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Sign out" })[0]!);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("API key")).toBeDefined();
+    });
+    expect(screen.queryByRole("navigation", { name: "Sections" })).toBeNull();
+  });
+
+  test("the theme control is present whether or not there is a session", async () => {
+    // It is the one control that has nothing to do with being signed in, and
+    // the setup screen is exactly where someone might first want dark mode.
+    render(<App />);
+    await screen.findByLabelText("Setup token");
+    expect(screen.getByRole("button", { name: /^Theme:/ })).toBeDefined();
   });
 });

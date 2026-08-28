@@ -1,24 +1,32 @@
 /**
  * The console shell.
  *
- * Holds the key form, the connection indicator and the pages. It holds no
- * request state of its own any more — that moved into the stores, because
- * four screens needed the same guards and each had written its own.
+ * Holds the ribbon, the left panel and whichever section is showing. It holds
+ * no request state of its own — that lives in the stores, because four screens
+ * needed the same guards and each had written its own.
+ *
+ * Three shapes, and choosing between them is the shell's only real decision:
+ * setup for an instance with no credential, a centred connect card for one
+ * that has a credential nobody has presented yet, and the full console once
+ * the server has accepted one.
  */
 import { useEffect, useState } from "react";
-import { KeyRound, LoaderCircle, LogIn, MessageCircleMore, Wifi, WifiOff } from "lucide-react";
+import { KeyRound, LoaderCircle, LogIn, LogOut, MessageCircleMore, Wifi, WifiOff } from "lucide-react";
 
-import { ChatsPage } from "./pages/ChatsPage";
 import { Card } from "./components/Card";
 import { Field } from "./components/Field";
-import { SettingsPage } from "./pages/SettingsPage";
-import { SetupPage } from "./pages/SetupPage";
+import { Sidebar, type SectionId } from "./components/Sidebar";
+import { ThemeToggle } from "./components/ThemeToggle";
+import { ChatsPage } from "./pages/ChatsPage";
 import { ClaimPage } from "./pages/ClaimPage";
 import { DeliveriesPage } from "./pages/DeliveriesPage";
 import { DevicesPage } from "./pages/DevicesPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { SetupPage } from "./pages/SetupPage";
 import { useEventStream } from "./hooks/useEventStream";
 import { useSession } from "./store/session";
 import { useSetup } from "./store/setup";
+import { useTheme } from "./store/theme";
 
 /**
  * The event stream's state as a shape.
@@ -35,17 +43,29 @@ function StreamIcon({ state }: { state: ReturnType<typeof useEventStream> }) {
   return <WifiOff aria-hidden size={12} className="text-rose-600" />;
 }
 
+/** The selected section. One at a time, so each gets the whole page. */
+function Section({ id }: { id: SectionId }) {
+  if (id === "devices") return <DevicesPage />;
+  if (id === "chats") return <ChatsPage />;
+  if (id === "claim") return <ClaimPage />;
+  if (id === "deliveries") return <DeliveriesPage />;
+  return <SettingsPage />;
+}
+
 export function App() {
-  const { apiKey, identity, error, busy, connect, hydrate, forget } = useSession();
+  const { apiKey, identity, error, busy, connect, hydrate, forget, disconnect } = useSession();
   const configured = useSetup((s) => s.configured);
   const mintedKey = useSetup((s) => s.mintedKey);
   const refreshSetup = useSetup((s) => s.refresh);
+  const watchSystem = useTheme((s) => s.watchSystem);
+  const stream = useEventStream();
+
   const [draft, setDraft] = useState(apiKey);
   // Whether what is in the box came from storage rather than from typing. A
   // prefilled masked field is the case where "is this the right key?" cannot
   // be answered by looking, so the field says where it came from.
   const [restored] = useState(apiKey !== "");
-  const stream = useEventStream();
+  const [section, setSection] = useState<SectionId>("devices");
 
   // Asked before anything else, because "this instance has no key" and "your
   // key is wrong" need different screens and look identical from here.
@@ -70,8 +90,13 @@ export function App() {
     else forget();
   }, [configured, hydrate, forget]);
 
+  // Only takes effect while the choice is "system"; the store decides that.
+  useEffect(() => watchSystem(), [watchSystem]);
+
+  const signedIn = identity !== null;
+
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
+    <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950">
       {/* Sticky, because the stream indicator and the identity are the two
           things worth being able to check without scrolling — the question
           "is this still live?" comes up while looking at a table halfway down
@@ -80,8 +105,8 @@ export function App() {
           `backdrop-blur` with a translucent ground rather than a solid bar:
           content sliding under an opaque strip looks like it has been cut off,
           and the blur says it is passing behind something. */}
-      <header className="sticky top-0 z-20 border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
-        <div className="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-4 py-3">
+      <header className="sticky top-0 z-20 shrink-0 border-b border-slate-200 bg-white/80 backdrop-blur dark:border-slate-800 dark:bg-slate-950/80">
+        <div className="flex items-center justify-between gap-3 px-4 py-2.5">
           <div className="flex items-center gap-2.5">
             <span className="grid size-8 place-items-center rounded-lg bg-slate-900 text-white dark:bg-slate-100 dark:text-slate-900">
               <MessageCircleMore aria-hidden size={17} />
@@ -89,107 +114,144 @@ export function App() {
             <div className="leading-tight">
               <h1 className="text-sm font-semibold tracking-tight">bunwa</h1>
               {identity !== null && (
-                <p className="font-mono text-[11px] text-slate-500">
-                  {identity.projectId.slice(0, 8)} / {identity.environmentId.slice(0, 8)}
+                // The names, not the ids. "7f30cbb0 / fff9c296" told an
+                // operator nothing about which project or environment they
+                // were acting on — which is the one thing a header in front of
+                // a live WhatsApp connection has to make obvious. The ids are
+                // still available on the panel for anyone quoting one in a
+                // support ticket.
+                <p className="text-[11px] text-slate-500">
+                  {identity.projectName}
+                  <span className="mx-1 text-slate-300 dark:text-slate-700">/</span>
+                  {identity.environmentSlug}
+                  {identity.environmentKind === "test" && (
+                    // Called out, because sending from a test environment when
+                    // you meant production is silent and irreversible.
+                    <span className="ml-1.5 rounded bg-amber-100 px-1 py-px text-[10px] font-medium text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+                      test
+                    </span>
+                  )}
                 </p>
               )}
             </div>
           </div>
 
-          {/* The stream state is shown because "nothing is happening" and "we
-              stopped listening" look identical otherwise.
+          <div className="flex items-center gap-1.5">
+            {signedIn && (
+              <span
+                aria-label={`event stream ${stream}`}
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs dark:border-slate-800 dark:bg-slate-900"
+              >
+                <StreamIcon state={stream} />
+                <span className="text-slate-600 dark:text-slate-400">{stream}</span>
+              </span>
+            )}
 
-              The icon carries the same fact as the word, on purpose: this is
-              read peripherally, where a shape registers and a four-letter word
-              does not. `aria-label` on the wrapper keeps one announcement
-              rather than two. */}
-          <span
-            aria-label={`event stream ${stream}`}
-            className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-2.5 py-1 text-xs dark:border-slate-800 dark:bg-slate-900"
-          >
-            <StreamIcon state={stream} />
-            <span className="text-slate-600 dark:text-slate-400">{stream}</span>
-          </span>
+            <ThemeToggle />
+
+            {/* In the ribbon as well as the panel. The panel is the considered
+                place for it; the ribbon is where someone reaches when they
+                want out of a shared screen quickly. */}
+            {signedIn && (
+              <button
+                type="button"
+                onClick={disconnect}
+                aria-label="Sign out"
+                title="Sign out"
+                className="grid size-8 place-items-center rounded-md text-slate-500 hover:bg-rose-50 hover:text-rose-700 dark:hover:bg-rose-950 dark:hover:text-rose-400"
+              >
+                <LogOut aria-hidden size={16} />
+              </button>
+            )}
+          </div>
         </div>
       </header>
 
-      <main className="mx-auto flex max-w-5xl flex-col gap-4 p-4">
-        {/* A fresh instance gets the setup screen instead of a key form nothing
-            could satisfy: there is no key to type, and no way to obtain one
-            without this.
+      {signedIn ? (
+        /* The full width, with the panel. The tables and the conversation view
+           were squeezed into a 5xl column that left half of any real monitor
+           empty. */
+        <div className="flex min-h-0 flex-1">
+          <Sidebar active={section} onSelect={setSection} onSignOut={disconnect} identity={identity} />
 
-            `mintedKey` is in the condition because finishing setup flips
-            `configured` to true — which unmounted this the instant the key was
-            created, destroying the one and only render of a credential that
-            cannot be shown again. The screen stays until the operator dismisses
-            it themselves. */}
-        {(configured === false || mintedKey !== null) && <SetupPage />}
-
-        {configured !== false && mintedKey === null && identity === null && (
-          <Card id="connect" title="Connect" icon={KeyRound}>
-            <form
-              className="flex flex-wrap items-end gap-2"
-              onSubmit={(e) => {
-                e.preventDefault();
-                void connect(draft);
-              }}
-            >
-              {/* The shared Field rather than a bare input, which is how this
-                  one missed the reveal toggle: a key restored from storage
-                  arrives already filled, and dots give no way to tell a
-                  leftover credential from the right one. */}
-              <div className="min-w-64 flex-1">
-                <Field
-                  id="api-key"
-                  label="API key"
-                  type="password"
-                  mono
-                  value={draft}
-                  onChange={setDraft}
-                  placeholder="bw_live_…"
-                  hint={
-                    restored
-                      ? "Restored from this browser. Reveal it to check it is the key you expect."
-                      : undefined
-                  }
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={busy}
-                className="inline-flex items-center gap-1.5 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
-              >
-                {busy ? <LoaderCircle aria-hidden size={14} className="animate-spin" /> : <LogIn aria-hidden size={14} />}
-                {busy ? "checking…" : "connect"}
-              </button>
-            </form>
-
+          <main className="min-w-0 flex-1 p-4">
             {error !== null && (
-              <p role="alert" className="mt-3 text-sm text-rose-700 dark:text-rose-400">
+              <p role="alert" className="mb-3 text-sm text-rose-700 dark:text-rose-400">
                 {error}
               </p>
             )}
-          </Card>
-        )}
+            <Section id={section} />
+          </main>
+        </div>
+      ) : (
+        /* One card, centred. There is exactly one thing to do on this screen,
+           and pinning it to the top of a full-width page stranded it in a
+           corner. */
+        <main className="flex flex-1 items-center justify-center p-4">
+          <div className="w-full max-w-md">
+            {/* A fresh instance gets the setup screen instead of a key form
+                nothing could satisfy: there is no key to type, and no way to
+                obtain one without this.
 
-        {/* Once connected the key form is gone, so a failure after that has
-            nowhere to appear unless it is shown here. */}
-        {identity !== null && error !== null && (
-          <p role="alert" className="text-sm text-rose-700 dark:text-rose-400">
-            {error}
-          </p>
-        )}
+                `mintedKey` is in the condition because finishing setup flips
+                `configured` to true — which unmounted this the instant the key
+                was created, destroying the one and only render of a credential
+                that cannot be shown again. The screen stays until the operator
+                dismisses it themselves. */}
+            {(configured === false || mintedKey !== null) && <SetupPage />}
 
-        {identity !== null && (
-          <>
-            <ClaimPage />
-            <DevicesPage />
-            <ChatsPage />
-            <DeliveriesPage />
-            <SettingsPage />
-          </>
-        )}
-      </main>
+            {configured !== false && mintedKey === null && (
+              <Card id="connect" title="Connect" icon={KeyRound}>
+                <form
+                  className="flex flex-col gap-3"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void connect(draft);
+                  }}
+                >
+                  {/* The shared Field rather than a bare input, which is how
+                      this one missed the reveal toggle: a key restored from
+                      storage arrives already filled, and dots give no way to
+                      tell a leftover credential from the right one. */}
+                  <Field
+                    id="api-key"
+                    label="API key"
+                    type="password"
+                    mono
+                    value={draft}
+                    onChange={setDraft}
+                    placeholder="bw_live_…"
+                    hint={
+                      restored
+                        ? "Restored from this browser. Reveal it to check it is the key you expect."
+                        : undefined
+                    }
+                  />
+
+                  <button
+                    type="submit"
+                    disabled={busy}
+                    className="inline-flex items-center justify-center gap-1.5 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
+                  >
+                    {busy ? (
+                      <LoaderCircle aria-hidden size={14} className="animate-spin" />
+                    ) : (
+                      <LogIn aria-hidden size={14} />
+                    )}
+                    {busy ? "checking…" : "connect"}
+                  </button>
+                </form>
+
+                {error !== null && (
+                  <p role="alert" className="mt-3 text-sm text-rose-700 dark:text-rose-400">
+                    {error}
+                  </p>
+                )}
+              </Card>
+            )}
+          </div>
+        </main>
+      )}
     </div>
   );
 }

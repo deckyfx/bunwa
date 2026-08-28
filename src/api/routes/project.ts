@@ -11,6 +11,7 @@ import { requireApiKey, requireScope } from "../../auth/middleware";
 import { DeliveryStore } from "../../stores/delivery-store";
 import { WebhookStore } from "../../stores/webhook-store";
 import { serverTimezone, setServerTimezone } from "../../time/format";
+import { ProjectStore } from "../../stores/project-store";
 import { SettingsStore, type SettingKey } from "../../stores/settings-store";
 import { ValidationError } from "../../stores/errors";
 import { log } from "../../observability/logger";
@@ -24,9 +25,15 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
    * an integrator hits: it confirms the credential works and shows exactly
    * which environment it acts on, before anything is sent to a real number.
    */
-  .get("/whoami", ({ auth }) => ({
+  .get("/whoami", async ({ auth }) => ({
     projectId: auth.projectId,
     environmentId: auth.environmentId,
+    // The names a person uses. The ids are stable and unambiguous, which is
+    // why they are here for machines, but a console header showing
+    // "7f30cbb0 / fff9c296" tells an operator nothing about which project or
+    // environment they are acting on — and that is the one thing a header in
+    // front of a live WhatsApp connection has to make obvious.
+    ...(await ProjectStore.describeTenant(auth.projectId, auth.environmentId)),
     scopes: auth.scopes,
     // The zone every timestamp the server renders is in. Returned here so the
     // console shows the same wall clock as the logs rather than the reader's

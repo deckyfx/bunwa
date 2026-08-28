@@ -1,6 +1,20 @@
 @import "tailwindcss";
 
 /*
+ * Dark mode follows a class, not only the system preference.
+ *
+ * Tailwind's default `dark:` variant is `prefers-color-scheme`, which cannot
+ * be overridden from the page — so a switcher had nothing to switch. The
+ * variant now matches a `.dark` class on the document, and the boot script in
+ * index.html puts that class there from the stored choice, falling back to the
+ * system preference when there is none.
+ *
+ * `:where()` keeps the selector at zero specificity, so a `dark:` utility
+ * still loses to a later plain one exactly as it did before.
+ */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/*
  * Fonts, from npm and served from our own origin.
  *
  * Not a Google Fonts <link>. That is one line instead of twenty, and it means
@@ -157,10 +171,17 @@ body {
     opacity: 1; /* Firefox dims placeholders again on top of the colour. */
   }
 
-  @media (prefers-color-scheme: dark) {
-    ::placeholder {
-      color: var(--color-slate-600);
-    }
+  /*
+   * Keyed to the class, not the media query.
+   *
+   * Written as `@media (prefers-color-scheme: dark)` before the theme became
+   * switchable, which meant switching to dark left the placeholder at its
+   * light value — legible, but the wrong grey, and only on the one element
+   * whose contrast this block exists to control. Every other dark rule follows
+   * the class; this one has to as well.
+   */
+  :where(.dark) ::placeholder {
+    color: var(--color-slate-600);
   }
 
 }

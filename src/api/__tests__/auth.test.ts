@@ -70,7 +70,15 @@ describe("GET /v1/whoami", () => {
     expect(res.status).toBe(200);
     // Exact match, not a subset: whoami is the endpoint an integrator hits
     // first, and a field appearing in it silently is a contract change.
-    expect(await res.json()).toEqual({ ...ids, scopes: ["send:text"], serverTimezone: "Asia/Jakarta" });
+    expect(await res.json()).toEqual({
+      ...ids,
+      projectSlug: "grande",
+      projectName: "Grande",
+      environmentSlug: "production",
+      environmentKind: "live",
+      scopes: ["send:text"],
+      serverTimezone: "Asia/Jakarta",
+    });
   });
 
   test("rejects a request with no credential", async () => {

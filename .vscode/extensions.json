@@ -3,6 +3,7 @@
     "oven.bun-vscode",
     "esbenp.prettier-vscode",
     "dbaeumer.vscode-eslint",
-    "editorconfig.editorconfig"
+    "editorconfig.editorconfig",
+    "bradlc.vscode-tailwindcss"
   ]
 }

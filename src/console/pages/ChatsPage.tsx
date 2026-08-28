@@ -71,8 +71,15 @@ export function ChatsPage() {
         </p>
       )}
 
-      <div className="grid gap-0 sm:grid-cols-[16rem_1fr]">
-        <nav aria-label="Conversations" className="border-slate-200 sm:border-r dark:border-slate-800">
+      {/* A fixed height so the two columns scroll independently. Without it
+          the page grows to the length of the longest conversation and the
+          thread list disappears above the fold — the one thing you need to
+          switch away from a long conversation. */}
+      <div className="grid h-[calc(100vh-11rem)] gap-0 sm:grid-cols-[18rem_1fr]">
+        <nav
+          aria-label="Conversations"
+          className="overflow-y-auto border-slate-200 sm:border-r dark:border-slate-800"
+        >
           {threads === null ? (
             <p className="p-4 text-sm text-slate-500">loading…</p>
           ) : threads.length === 0 ? (
@@ -106,7 +113,7 @@ export function ChatsPage() {
           )}
         </nav>
 
-        <div className="p-4">
+        <div className="overflow-y-auto p-4">
           {selectedId === null ? (
             <p className="text-sm text-slate-500">Pick a conversation.</p>
           ) : messages === null ? (
