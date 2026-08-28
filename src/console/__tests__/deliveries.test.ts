@@ -104,3 +104,41 @@ describe("replaying", () => {
     expect(useDeliveries.getState().replaying.size).toBe(0);
   });
 });
+
+describe("replaying with no credential", () => {
+  test("does not suppress the delivery once a key arrives", async () => {
+    // `inFlight` is only ever cleared in the `finally`, and the empty-key guard
+    // returns before the `try`. Marking the id before that guard therefore
+    // suppressed the delivery for the life of the page: no request, no error,
+    // no busy row — the button simply stopped working, and only for whoever
+    // had happened to click it while signed out.
+    useSession.setState({ apiKey: "" });
+    await useDeliveries.getState().replay("d1");
+    expect(replayCalls, "a replay was sent with no credential").toEqual([]);
+
+    // Now sign in and try the same row again. It must go through.
+    useSession.setState({ apiKey: "key-a" });
+    await useDeliveries.getState().replay("d1");
+    expect(replayCalls, "the row was permanently suppressed by the signed-out click").toEqual(["d1"]);
+  });
+
+  test("a second click while one is genuinely in flight is still refused", async () => {
+    // The property the guard exists for, kept: suppression must survive the
+    // reordering above.
+    useSession.setState({ apiKey: "key-a" });
+    let release: (() => void) | undefined;
+    replayResolver = () =>
+      new Promise((resolve) => {
+        release = () => resolve({ data: {}, error: null });
+      });
+
+    const first = useDeliveries.getState().replay("d2");
+    await useDeliveries.getState().replay("d2");
+    expect(replayCalls.filter((id) => id === "d2"), "the same delivery was replayed twice").toEqual([
+      "d2",
+    ]);
+
+    release?.();
+    await first;
+  });
+});

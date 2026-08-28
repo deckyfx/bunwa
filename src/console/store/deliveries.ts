@@ -69,14 +69,22 @@ export const useDeliveries = create<DeliveryState>((set, get) => ({
     // that, or signing out and back in mid-replay lets the same delivery be
     // sent twice.
     if (inFlight.has(id)) return;
-    inFlight.add(id);
 
     const { apiKey } = useSession.getState();
-    // Before the row is marked, not after: an empty key cannot replay anything,
+    // Checked before anything is marked. An empty key cannot replay anything,
     // and marking first left the row disabled while reporting a failure that
     // was really "nobody is signed in".
+    //
+    // `inFlight` in particular must not be touched above this line. Its only
+    // removal is in the `finally` below, and this guard returns before the
+    // `try` — so adding the id first meant a click made while signed out
+    // suppressed that delivery permanently, for the life of the page, with no
+    // error and no busy row to show for it. Which is the same "returns early,
+    // so it never clears" fault the comment in that finally describes, made
+    // one line above it.
     if (apiKey === "") return;
 
+    inFlight.add(id);
     set((state) => ({ replaying: new Set(state.replaying).add(id) }));
 
     try {
