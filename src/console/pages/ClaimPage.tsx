@@ -71,9 +71,13 @@ function Outcome({ result }: { result: ClaimResult }) {
         {/* Deliberately names who is being waited on. "Pending" reads as a
             queue, and the developer retries — messaging that person again. */}
         <p className="text-sm">
+          {/* The fallback must not out-claim the route. It used to read "The
+              phone holder has been asked to confirm", which the route stopped
+              saying precisely because nothing sends that message — so the
+              sentence the API retired could still reach the screen from here. */}
           {"message" in result && typeof result.message === "string"
             ? result.message
-            : "The phone holder has been asked to confirm. They reply on WhatsApp."}
+            : "This number belongs to another project. Consent has not been requested yet."}
         </p>
         <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
           This waits on a person, not on us. There is nothing to retry.
@@ -90,13 +94,24 @@ function Outcome({ result }: { result: ClaimResult }) {
         <p className="text-sm">Pairing is starting.</p>
       ) : (
         <div className="mt-2 flex flex-col gap-2">
-          {pairing.qr !== undefined && <Qr payload={pairing.qr} />}
-          <p className="text-sm text-slate-600 dark:text-slate-400">
-            Scan this in WhatsApp → Linked devices.
-          </p>
+          {/* Each instruction belongs to the thing above it. "Scan this" was
+              printed unconditionally, so a claim made with pairingMethod
+              "code" — which returns a pairCode and no QR — told the operator
+              to scan something that was not on the screen, and then offered
+              the code as an alternative to it. */}
+          {pairing.qr !== undefined && (
+            <>
+              <Qr payload={pairing.qr} />
+              <p className="text-sm text-slate-600 dark:text-slate-400">
+                Scan this in WhatsApp → Linked devices.
+              </p>
+            </>
+          )}
           {pairing.pairCode !== undefined && (
             <p className="text-sm">
-              Or enter code <strong className="font-mono">{pairing.pairCode}</strong>
+              {pairing.qr === undefined ? "Enter code " : "Or enter code "}
+              <strong className="font-mono">{pairing.pairCode}</strong>
+              {pairing.qr === undefined ? " in WhatsApp → Linked devices." : ""}
             </p>
           )}
         </div>

@@ -15,6 +15,7 @@ import { create } from "zustand";
 
 import { client } from "../lib/api";
 import { useSession } from "./session";
+import { blankOnKeyChange } from "./tenant";
 
 /**
  * Derived from the server, not declared here.
@@ -201,3 +202,8 @@ export const useChats = create<ChatState>((set, get) => ({
     await get().refresh();
   },
 }));
+
+// Cleared when the credential changes, so this store never renders one
+// tenant's data under another's key while the new key's requests are in
+// flight. See ./tenant.
+blankOnKeyChange(useChats, () => ({ threads: null, selectedId: null, messages: null, draft: "", sending: false, error: null }));

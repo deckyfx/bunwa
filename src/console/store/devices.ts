@@ -10,6 +10,7 @@ import { create } from "zustand";
 
 import { client } from "../lib/api";
 import { useSession } from "./session";
+import { blankOnKeyChange } from "./tenant";
 
 type Api = ReturnType<typeof client>;
 type Rows<T> = T extends { data: infer D } ? Extract<NonNullable<D>, readonly unknown[]> : never;
@@ -44,3 +45,8 @@ export const useDevices = create<DeviceState>((set) => ({
     set({ devices: data, error: null });
   },
 }));
+
+// Cleared when the credential changes, so this store never renders one
+// tenant's data under another's key while the new key's requests are in
+// flight. See ./tenant.
+blankOnKeyChange(useDevices, () => ({ devices: null, error: null }));

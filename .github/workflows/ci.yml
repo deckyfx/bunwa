@@ -77,10 +77,17 @@ jobs:
         # risk moved rather than disappeared: bunwa now holds the credentials
         # itself, in the database. A committed .sqlite is a committed WhatsApp
         # account.
+        #
+        # The pattern covers everything .gitignore protects, which it did not:
+        # the ignore rules name *.sqlite, *.sqlite-journal and *.db, and this
+        # rejected only .sqlite with -wal and -shm. A committed bunwa.db or a
+        # rollback journal — both of which carry the same credentials — passed
+        # the guard that exists to stop exactly that.
         run: |
-          if git ls-files | grep -qE '\.sqlite($|-wal$|-shm$)'; then
+          pattern='\.(sqlite|db)(-(wal|shm|journal))?$'
+          if git ls-files | grep -qE "$pattern"; then
             echo "::error::a database is tracked in git"
-            git ls-files | grep -E '\.sqlite($|-wal$|-shm$)'
+            git ls-files | grep -E "$pattern"
             exit 1
           fi
           echo "no database tracked"
@@ -175,9 +182,17 @@ jobs:
         # entry point they run, so that is what this asserts — the headless one
         # must not import the console page, or React reaches a build whose whole
         # purpose is to exclude it.
+        #
+        # Two separate assertions, not one `&&`. Chained, the step passed
+        # whenever the page was *missing* — the condition needed both halves
+        # true to fail, so the check that the asset exists asserted nothing and
+        # a build that shipped no console at all looked correct.
         run: |
-          if docker run --rm bunwa:api test -e /app/src/console/index.html && \
-             docker run --rm bunwa:api sh -c 'grep -q "console/index.html" /app/src/index-headless.ts'; then
+          if ! docker run --rm bunwa:api test -e /app/src/console/index.html; then
+            echo "::error::the console page is missing from the image entirely"
+            exit 1
+          fi
+          if docker run --rm bunwa:api sh -c 'grep -q "console/index.html" /app/src/index-headless.ts'; then
             echo "::error::the headless entry point imports the console page"
             exit 1
           fi

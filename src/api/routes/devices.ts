@@ -133,7 +133,7 @@ export function deviceRoutes(registry: EngineRegistry) {
           //
           // The wording says what actually happens. It used to read "The phone
           // holder has been asked to confirm", and nobody was asked: the
-          // consent row and its token are created, DeviceStore.respond exists
+          // consent row and its token are created, DeviceStore.respondToConsent exists
           // and is tested, and nothing sends the WhatsApp message or parses a
           // reply. An API that states an action it does not take is worse than
           // one that admits a gap, because the caller stops looking for the

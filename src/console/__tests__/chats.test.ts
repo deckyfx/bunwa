@@ -198,9 +198,34 @@ describe("refreshing the open conversation", () => {
     release?.({ data: [message("m9", "OTHER TENANT")], error: null });
     await inFlight;
 
-    expect(useChats.getState().messages?.[0]?.body, "a stale response painted the wrong tenant").toBe(
-      "ANA",
-    );
+    // Blank, not "ANA". This used to assert that key A's messages survived the
+    // switch, which only checked that the *incoming* response was dropped and
+    // quietly accepted the larger problem: key A's conversation still on
+    // screen under key B's credential. The store is cleared on a key change
+    // now, so the assertion is that nothing from either key is showing.
+    expect(useChats.getState().messages, "the previous tenant's messages survived a key change").toBeNull();
+  });
+
+  test("the whole store is blanked when the key changes", async () => {
+    // Not just the open conversation: the thread list, the draft and any error
+    // belong to the credential that loaded them. Between accepting a new key
+    // and its own requests landing, the screen renders — and it must not
+    // render the previous tenant's.
+    threadsResolver = () => Promise.resolve({ data: [thread("t1")], error: null });
+    messagesResolver = () => Promise.resolve({ data: [message("m1", "ANA")], error: null });
+    await useChats.getState().loadThreads();
+    await useChats.getState().select("t1");
+    useChats.setState({ draft: "half-typed reply" });
+
+    expect(useChats.getState().threads).not.toBeNull();
+
+    useSession.setState({ apiKey: "key-b" });
+
+    const after = useChats.getState();
+    expect(after.threads, "threads survived a key change").toBeNull();
+    expect(after.messages, "messages survived a key change").toBeNull();
+    expect(after.selectedId, "the selection survived a key change").toBeNull();
+    expect(after.draft, "the draft survived a key change").toBe("");
   });
 });
 

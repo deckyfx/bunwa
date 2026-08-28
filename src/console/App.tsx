@@ -5,7 +5,7 @@
  * request state of its own any more — that moved into the stores, because
  * four screens needed the same guards and each had written its own.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { ChatsPage } from "./pages/ChatsPage";
 import { ClaimPage } from "./pages/ClaimPage";
@@ -18,6 +18,19 @@ export function App() {
   const { apiKey, identity, error, busy, connect } = useSession();
   const [draft, setDraft] = useState(apiKey);
   const stream = useEventStream();
+
+  // Prove the restored key once, on mount.
+  //
+  // The store reads the key back out of localStorage, so `apiKey` survives a
+  // refresh — but nothing called `connect` with it, so `identity` stayed null
+  // and every page stayed hidden until the operator pressed connect on a form
+  // that was already filled in. Guarded on `identity` and `error` so this does
+  // not re-run behind a key the server has already rejected, and on `busy` so
+  // it cannot race the connection it started.
+  useEffect(() => {
+    if (apiKey === "" || identity !== null || error !== null || busy) return;
+    void connect(apiKey);
+  }, [apiKey, identity, error, busy, connect]);
 
   return (
     <main className="mx-auto flex max-w-5xl flex-col gap-4 p-4">

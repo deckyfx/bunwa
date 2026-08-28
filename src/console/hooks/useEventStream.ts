@@ -25,6 +25,7 @@ const LISTENED = [
 
 export function useEventStream(): StreamState {
   const apiKey = useSession((s) => s.apiKey);
+  const identity = useSession((s) => s.identity);
   const bumpRevision = useSession((s) => s.bumpRevision);
   const [state, setState] = useState<StreamState>("idle");
 
@@ -33,7 +34,13 @@ export function useEventStream(): StreamState {
   const generation = useRef(0);
 
   useEffect(() => {
-    if (apiKey === "") {
+    // Gated on the identity, not the key. `connect` sets `apiKey` before
+    // `whoami` answers and keeps it set when the answer is a refusal, so
+    // keying the stream on it alone meant a rejected credential still opened
+    // one — requesting a ticket, being refused, and retrying every few seconds
+    // for as long as the tab stayed open, while the screen beside it said the
+    // key was not accepted.
+    if (apiKey === "" || identity === null) {
       setState("idle");
       return;
     }
@@ -100,7 +107,7 @@ export function useEventStream(): StreamState {
       if (retry !== null) clearTimeout(retry);
       source?.close();
     };
-  }, [apiKey, bumpRevision]);
+  }, [apiKey, identity, bumpRevision]);
 
   return state;
 }

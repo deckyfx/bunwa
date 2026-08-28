@@ -15,6 +15,7 @@ import { create } from "zustand";
 
 import { client } from "../lib/api";
 import { useSession } from "./session";
+import { blankOnKeyChange } from "./tenant";
 
 type Api = ReturnType<typeof client>;
 type Payload<T> = T extends { data: infer D } ? NonNullable<D> : never;
@@ -35,6 +36,22 @@ interface ClaimState {
   reset: () => void;
 }
 
+/**
+ * Which submission is the current one.
+ *
+ * The stale-key branch below clears `busy` rather than returning bare, because
+ * a bare return left the claim button disabled for ever. That fix has its own
+ * hazard: key A's claim finishing *after* the operator switched to B and
+ * started a new claim would clear B's `busy` too, re-enabling the form while
+ * B's request is still in flight — and a second submission is a second device
+ * claim, not a retry.
+ *
+ * So the key check answers "may this result be shown?" and the generation
+ * answers "is this still the submission the form is waiting on?". They are
+ * different questions and the earlier version conflated them.
+ */
+let submitGeneration = 0;
+
 export const useClaim = create<ClaimState>((set, get) => ({
   msisdn: "",
   alias: "",
@@ -54,6 +71,7 @@ export const useClaim = create<ClaimState>((set, get) => ({
     const { apiKey } = useSession.getState();
     if (apiKey === "" || msisdn.trim() === "" || alias.trim() === "") return;
 
+    const mine = ++submitGeneration;
     set({ busy: true, error: null, result: null });
 
     const { data, error } = await client(apiKey).v1.devices.claim.post({
@@ -69,6 +87,10 @@ export const useClaim = create<ClaimState>((set, get) => ({
     // ever, and the claim button is disabled on `busy` — so switching keys
     // while a claim was in flight killed the form until a page reload, with
     // nothing on screen to say why.
+    // Superseded submissions write nothing at all — not even to clear `busy`,
+    // which belongs to whichever submission the form is waiting on now.
+    if (submitGeneration !== mine) return;
+
     if (useSession.getState().apiKey !== apiKey) {
       set({ busy: false, result: null, error: null });
       return;
@@ -85,6 +107,14 @@ export const useClaim = create<ClaimState>((set, get) => ({
   },
 
   reset: () => {
+    // Invalidates anything in flight as well as clearing the form: a claim
+    // that lands after a reset must not repopulate the fields it just cleared.
+    submitGeneration += 1;
     set({ msisdn: "", alias: "", result: null, error: null, busy: false });
   },
 }));
+
+// Cleared when the credential changes, so this store never renders one
+// tenant's data under another's key while the new key's requests are in
+// flight. See ./tenant.
+blankOnKeyChange(useClaim, () => ({ msisdn: "", alias: "", result: null, error: null, busy: false }));

@@ -13,6 +13,14 @@ import { requireApiKey } from "../../auth/middleware";
 import { subscribe } from "../../events/bus";
 import { mintTicket, spendTicket } from "../../stores/stream-ticket-store";
 
+/**
+ * How long an idle stream may say nothing.
+ *
+ * Under the 60 seconds most proxies and load balancers use before closing an
+ * idle connection, with room to spare for a slow hop.
+ */
+const HEARTBEAT_MS = 25_000;
+
 export const eventRoutes = new Elysia({ prefix: "/v1" })
   .group("/events", (group) =>
     group
@@ -87,8 +95,42 @@ export const eventRoutes = new Elysia({ prefix: "/v1" })
             // server sent rather than from the absence of an error.
             yield sse({ event: "stream.open", data: { environmentId: claims.environmentId } });
 
-            for await (const envelope of subscription.events) {
-              yield sse({ event: envelope.type, id: envelope.id, data: envelope });
+            // Driven by hand rather than `for await`, so an idle stream can
+            // still say something.
+            //
+            // A quiet subscription yielded nothing at all, and an intermediary
+            // that times an idle connection out closes it — the console then
+            // treats a healthy server as a dropped stream, mints a fresh
+            // ticket and reconnects, on a loop, for as long as nothing
+            // happens. Which is most of the time on a small deployment.
+            //
+            // The pending `next()` is held across ticks rather than re-asked
+            // for. Racing a fresh `next()` against the timer each time would
+            // abandon the previous one, and an event delivered to an abandoned
+            // reader is an event nobody receives.
+            const events = subscription.events[Symbol.asyncIterator]();
+            let pending = events.next();
+            for (;;) {
+              const settled = await Promise.race([
+                pending.then((result) => ({ kind: "event" as const, result })),
+                Bun.sleep(HEARTBEAT_MS).then(() => ({ kind: "tick" as const })),
+              ]);
+
+              if (settled.kind === "tick") {
+                // A named event rather than a bare comment: it reaches only a
+                // listener that asked for it, so a console that ignores it is
+                // unaffected while the bytes still keep the connection open.
+                yield sse({ event: "stream.ping", data: {} });
+                continue;
+              }
+
+              if (settled.result.done === true) break;
+              yield sse({
+                event: settled.result.value.type,
+                id: settled.result.value.id,
+                data: settled.result.value,
+              });
+              pending = events.next();
             }
 
             // Why it ended. A console that overflowed has missed events and
