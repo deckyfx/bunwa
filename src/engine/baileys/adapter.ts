@@ -196,9 +196,20 @@ export class BaileysAdapter implements DeviceEngine {
    */
   async startPairingWithCode(deviceId: string, msisdn: string): Promise<PairingSession> {
     await this.provision(deviceId);
-    // "code", so the socket presents Ubuntu. A socket already open for QR
-    // carries the wrong identity for this handshake, which is why the caller
-    // must not reuse one — see startPairingWithCode's doc comment.
+
+    // "code", so the socket presents Ubuntu. WhatsApp will not complete this
+    // handshake against the identity a QR socket carries, so a socket opened
+    // for anything else is closed and reopened rather than reused.
+    //
+    // This used to connect only when there was no socket at all, and left a
+    // comment saying the caller must not reuse a QR one. That put a
+    // correctness rule on every caller, out of reach of the type system, to
+    // avoid four lines here — and the failure it invites is a pairing code
+    // that is issued, looks fine, and never works.
+    const existing = this.sessions.get(deviceId);
+    if (existing?.handle !== null && existing?.intent !== "code") {
+      await this.dropSocket(deviceId);
+    }
     if (this.sessions.get(deviceId)?.handle === null) await this.connect(deviceId, "code");
 
     const handle = this.sessions.get(deviceId)?.handle;
@@ -439,6 +450,29 @@ export class BaileysAdapter implements DeviceEngine {
   private emit(event: EngineEvent): void {
     this.pending.push(event);
     for (const wake of [...this.wakers]) wake();
+  }
+
+  /**
+   * Close a live socket without unlinking the device.
+   *
+   * `close()` on the handle, never `logout()`: the credentials have to survive,
+   * because the socket is being replaced rather than ended. The reconnect timer
+   * is cleared first, or the reconnect this drops fires afterwards and reopens
+   * the socket with the intent that was just rejected.
+   */
+  private async dropSocket(deviceId: string): Promise<void> {
+    const session = this.sessions.get(deviceId);
+    if (session === undefined || session.handle === null) return;
+
+    this.clearReconnect(session);
+    await session.handle.close().catch((err: unknown) => {
+      // Already gone is the expected case, not a failure: the point is that no
+      // socket is open afterwards, and that holds either way.
+      log.debug("closing a socket that was already gone", { deviceId, error: String(err) });
+    });
+    session.handle = null;
+    session.intent = null;
+    session.connected = false;
   }
 
   private clearReconnect(session: Session): void {
