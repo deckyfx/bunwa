@@ -8,7 +8,14 @@
  */
 import { and, eq, isNull } from "drizzle-orm";
 
-import { DUMMY_KEY_HASH, generateApiKey, prefixOf, verifyApiKey } from "../auth/api-key";
+import {
+  bootstrapPrefix,
+  DUMMY_KEY_HASH,
+  generateApiKey,
+  isBootstrapCandidate,
+  prefixOf,
+  verifyApiKey,
+} from "../auth/api-key";
 import { db, type Database } from "../db";
 import { apiKeys, environments, projects, type ApiKey } from "../db/schema";
 import { NotFoundError, ValidationError } from "./errors";
@@ -80,7 +87,11 @@ export class ApiKeyStore {
    */
   /** @crossTenant Authentication itself: the credential is what establishes scope. */
   static async resolve(presented: string, database: Database = db()): Promise<ResolvedKey | null> {
-    const prefix = prefixOf(presented);
+    // A key this system minted is indexed by its own readable prefix; one an
+    // operator supplied through API_KEY is indexed by a derived value, because
+    // it does not carry our shape. Both are index selectors only — whichever
+    // row is selected still has to verify.
+    const prefix = prefixOf(presented) ?? (isBootstrapCandidate(presented) ? bootstrapPrefix(presented) : null);
     // Reject shape before touching the database: an unparseable credential must
     // not become a query on attacker-controlled text.
     if (prefix === null) return null;

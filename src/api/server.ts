@@ -20,6 +20,7 @@ import { chatRoutes } from "./routes/chat";
 import { consolePlugin, noConsolePlugin } from "./console-plugin";
 import type { ConsolePage } from "./types";
 import { projectRoutes } from "./routes/project";
+import { setupRoutes } from "./routes/setup";
 import { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
 import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../stores/errors";
@@ -240,6 +241,10 @@ export function createApp(registry?: EngineRegistry) {
 
     // Route plugins mount after the probes. An orchestrator's liveness and
     // readiness checks must never be able to end up behind a plugin's auth.
+    //
+    // Setup comes first because it is the one surface that answers before a
+    // credential exists; everything below it requires one.
+    .use(setupRoutes)
     .use(projectRoutes)
     .use(eventRoutes)
     .use(chatRoutes)

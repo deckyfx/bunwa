@@ -22,6 +22,9 @@ import { startEngineConsumer } from "./engine/consumer";
 import { startHousekeeping } from "./ops/housekeeping";
 import { log } from "./observability/logger";
 import { currentLogFile } from "./observability/sinks";
+import { ensureBootstrap } from "./ops/bootstrap";
+import { issueSetupToken } from "./api/routes/setup";
+import { SettingsStore } from "./stores/settings-store";
 
 /** How long to let in-flight requests finish before closing connections. */
 const SHUTDOWN_DRAIN_MS = 10_000;
@@ -101,6 +104,23 @@ async function main(consolePage?: ConsolePage): Promise<void> {
   // The file this line landed in is named in the line itself, so someone
   // handed a log excerpt can find the rest of it.
   log.info("bunwa started", { ...cfg.describe(), logFile: currentLogFile(), url: server.server?.url.toString() });
+
+  // After the started line, so an operator reading a fresh log sees the
+  // instance come up and then what it wants from them, in that order.
+  const instance = await ensureBootstrap();
+  if (instance.configured) {
+    log.info("instance is configured", {
+      apiKeySource: instance.apiKeySource,
+      instanceName: SettingsStore.instanceName(),
+    });
+  } else {
+    // Printed rather than logged through the structured path as well, because
+    // this is the one line the operator must actually read, and it is easy to
+    // lose among request lines on a busy start.
+    const token = issueSetupToken();
+    log.warn("this instance has no API key yet; open the console to finish setup");
+    process.stdout.write(`\n  setup token: ${token}\n  open ${server.server?.url.toString() ?? "the console"} to finish setup\n\n`);
+  }
 
   /** Drain in-flight requests before exiting, so a deploy drops nothing. */
   // Idempotent: two signals in quick succession must not run this twice and

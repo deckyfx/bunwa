@@ -26,6 +26,9 @@ export class ConfigError extends Error {
 
 /** Read an optional variable, applying a default only when it is truly absent. */
 /** How often the log file rolls over. */
+/** Below this an operator-chosen key is guessable rather than secret. */
+export const MIN_API_KEY_LENGTH = 32;
+
 export const LOG_ROTATIONS = ["hourly", "daily", "weekly", "never"] as const;
 export type LogRotation = (typeof LOG_ROTATIONS)[number];
 
@@ -168,6 +171,17 @@ export class Config {
    * worse than any of them being in UTC. Stored timestamps stay UTC — this
    * governs presentation only.
    */
+  /**
+   * A pre-shared API key, or null to let the console mint one.
+   *
+   * Present in the environment means present in whatever created it — a
+   * compose file, a secrets manager — which is how a deployment gets a
+   * reproducible credential instead of one that only exists after somebody
+   * clicked through a setup screen. When set, it is registered at boot and the
+   * setup flow does not offer to create another.
+   */
+  readonly apiKey: string | null;
+
   readonly serverTimezone: string;
   /**
    * Whether SERVER_TIMEZONE was set explicitly, as opposed to defaulted.
@@ -243,6 +257,17 @@ export class Config {
     // Validated against the runtime's own database rather than a list we would
     // have to maintain: Intl knows every zone this process can actually
     // format, so an accepted value is one that works.
+    const presentedKey = (source["API_KEY"] ?? "").trim();
+    // Short enough to guess is worse than absent: this credential is granted
+    // every scope, and unlike a minted key nothing rate-limits how it was
+    // chosen. Refusing at boot is the only point where anyone is looking.
+    if (presentedKey !== "" && presentedKey.length < MIN_API_KEY_LENGTH) {
+      throw new ConfigError(
+        `API_KEY must be at least ${MIN_API_KEY_LENGTH} characters; it is granted every scope. Leave it unset to mint one from the setup screen.`,
+      );
+    }
+    this.apiKey = presentedKey === "" ? null : presentedKey;
+
     this.serverTimezoneFromEnv = (source["SERVER_TIMEZONE"] ?? "").trim() !== "";
     this.serverTimezone = optional(source, "SERVER_TIMEZONE", "Asia/Jakarta");
     if (!isUsableTimezone(this.serverTimezone)) {
@@ -332,6 +357,7 @@ export class Config {
       port: this.port,
       host: this.host,
       logLevel: this.logLevel,
+      apiKey: this.apiKey === null ? "(unset)" : "(set)",
       serverTimezone: this.serverTimezone,
       logRotation: this.logRotation,
       logDir: this.logDir,
