@@ -146,3 +146,22 @@ respondToConsent with the token. The engine consumer already receives inbound
 messages and the rules engine already matches them, so the pieces exist; what
 is missing is the flow that connects them, and a decision about what happens
 when the holder never replies.
+
+
+## An unexplained test failure, once, never reproduced
+
+Seen once during the PR #8 review loop: a full `bun test` run reported
+`547 pass / 1 fail` where every run before and after reported 0 failures. The
+output carried no `(fail)` line and named no test, so there is nothing to point
+at.
+
+Not reproduced since, across thirteen full runs and every CI run on the branch.
+Recorded rather than dropped because "it went away" and "it is rare" are the
+same observation, and the next person to see one failure in a green suite
+should know it has happened before rather than assume they broke it.
+
+If it recurs: capture the whole run output rather than the tail, since the
+identifying line is what was missing. Bun's runner shares one process across
+files, so the first suspects are the module-level singletons the console
+stores use and the env-var save/restore in the logger and setup suites — the
+places where one test file can leave state behind for another.
