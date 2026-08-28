@@ -20,6 +20,16 @@ interface Props {
   revision: number;
 }
 
+/**
+ * The deliveries table, with replay.
+ *
+ * Answers "did you send it?" from rows rather than from log archaeology, which
+ * is the question this screen exists for and the one always asked in anger.
+ *
+ * State and attempt count are rendered together on purpose: `pending` with
+ * three attempts is a failing endpoint backing off, and `pending` with none is
+ * work that has not started. Showing either alone invites the wrong diagnosis.
+ */
 export function Deliveries({ apiKey, revision }: Props) {
   const [rows, setRows] = useState<Delivery[] | null>(null);
   const [error, setError] = useState<string | null>(null);
