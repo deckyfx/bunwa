@@ -215,8 +215,8 @@ describe("a released migration is immutable", () => {
     },
     {
       tag: "0007_settings",
-      hash: "68824d93194c31da7f526104cda67a7331b4d3cc10d56f7c49f914008a8cd0e5",
-      when: 1787955737747,
+      hash: "f65658efa205bde50f8777f52c019cf9762689513a6a0ff14e7b050a807b63cc",
+      when: 1787955854834,
     },
   ];
 

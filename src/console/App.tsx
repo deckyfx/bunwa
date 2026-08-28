@@ -25,6 +25,7 @@ import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { useEventStream } from "./hooks/useEventStream";
 import { useSession } from "./store/session";
+import { useRoute } from "./store/route";
 import { useSetup } from "./store/setup";
 import { useTheme } from "./store/theme";
 
@@ -65,7 +66,10 @@ export function App() {
   // prefilled masked field is the case where "is this the right key?" cannot
   // be answered by looking, so the field says where it came from.
   const [restored] = useState(apiKey !== "");
-  const [section, setSection] = useState<SectionId>("devices");
+  const route = useRoute((s) => s.route);
+  const navigate = useRoute((s) => s.navigate);
+  const replace = useRoute((s) => s.replace);
+  const listenToHistory = useRoute((s) => s.listen);
 
   // Asked before anything else, because "this instance has no key" and "your
   // key is wrong" need different screens and look identical from here.
@@ -93,7 +97,18 @@ export function App() {
   // Only takes effect while the choice is "system"; the store decides that.
   useEffect(() => watchSystem(), [watchSystem]);
 
+  // Back and forward move between sections, because they are addresses now.
+  useEffect(() => listenToHistory(), [listenToHistory]);
+
+
   const signedIn = identity !== null;
+
+  // Canonicalise a bare /app once there is something to look at, so the
+  // address in the bar is one that can be copied. Replace rather than push:
+  // arriving at /app should not leave an entry whose back button does nothing.
+  useEffect(() => {
+    if (signedIn && window.location.hash === "") replace(route.section, route.detail);
+  }, [signedIn, replace, route.section, route.detail]);
 
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 dark:bg-slate-950">
@@ -172,7 +187,7 @@ export function App() {
            were squeezed into a 5xl column that left half of any real monitor
            empty. */
         <div className="flex min-h-0 flex-1">
-          <Sidebar active={section} onSelect={setSection} onSignOut={disconnect} identity={identity} />
+          <Sidebar active={route.section} onSelect={navigate} onSignOut={disconnect} identity={identity} />
 
           <main className="min-w-0 flex-1 p-4">
             {error !== null && (
@@ -180,7 +195,7 @@ export function App() {
                 {error}
               </p>
             )}
-            <Section id={section} />
+            <Section id={route.section} />
           </main>
         </div>
       ) : (

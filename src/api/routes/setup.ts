@@ -5,9 +5,13 @@
  * what makes it dangerous: an endpoint that mints an API key is worth more to
  * an attacker than any endpoint behind one. Three things keep it honest.
  *
- * It closes permanently. Once a key exists, minting returns 409 — so the
- * window is between the process starting and the operator finishing, not for
- * as long as the deployment lives.
+ * It closes permanently. Once a key exists, minting is over: the request still
+ * succeeds and still applies settings, but it answers `apiKey: null` rather
+ * than a second credential. So the window is between the process starting and
+ * the operator finishing, not for as long as the deployment lives. It is not a
+ * 409, which this paragraph claimed for a while — an operator whose key came
+ * from the environment can still name the instance here, and refusing the whole
+ * request would take that away to describe a state they cannot change.
  *
  * It requires a token printed to the log at startup. Racing the operator is
  * otherwise a real attack on a public deployment: whoever reaches it first
@@ -119,7 +123,14 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
       if (applied.serverTimezone !== undefined) setServerTimezone(applied.serverTimezone);
 
       if (state.configured) {
+        // The token is spent here too, and that is the whole point of it being
+        // single-use. Returning without clearing left it valid after a request
+        // that had already used it: an attacker who read it from the log could
+        // keep replaying this endpoint to rewrite the instance name and the
+        // server timezone, on an instance whose setup was supposedly closed.
+        //
         // Not an error for the settings half; only minting is closed.
+        clearSetupToken();
         return { settings: SettingsStore.all(), apiKey: null, apiKeySource: state.apiKeySource };
       }
 

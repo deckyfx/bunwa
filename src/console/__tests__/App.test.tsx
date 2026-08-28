@@ -57,6 +57,7 @@ class FakeEventSource {
 const { App } = await import("../App");
 const { useSetup, resetSetupRequests } = await import("../store/setup");
 const { useSession } = await import("../store/session");
+const { useRoute } = await import("../store/route");
 
 const UNCONFIGURED = {
   data: {
@@ -75,6 +76,11 @@ beforeEach(() => {
   // One test simulates a request that never answers, which would otherwise
   // hold the store's dedupe guard for every test after it.
   resetSetupRequests();
+  // The address is shared state like any other, and it is shared across test
+  // *files*: a fragment left by another file put this one on the wrong
+  // section before it had rendered anything.
+  window.location.hash = "";
+  useRoute.setState({ route: { section: "devices", detail: null } });
   statusResolver = () => Promise.resolve(UNCONFIGURED);
   submitResolver = () =>
     Promise.resolve({

@@ -63,6 +63,17 @@ const messageFrom = (error: { status?: number; value?: unknown }): string => {
 let inFlight: Promise<void> | null = null;
 
 /**
+ * Which refresh is the current one.
+ *
+ * Incremented when a refresh starts, and checked before it commits. The guard
+ * above answers "should another request go out?"; this answers "is this answer
+ * still the newest?", which is a different question the moment GUARD_MS lets a
+ * second request start while the first is still in flight. Its result would
+ * otherwise land last and win.
+ */
+let generation = 0;
+
+/**
  * How long a status request may hold the guard.
  *
  * Sharing a promise means a request that never settles would wedge `refresh`
@@ -77,6 +88,12 @@ const GUARD_MS = 10_000;
 /** Release the dedupe guard. For tests, which simulate a request that hangs. */
 export function resetSetupRequests(): void {
   inFlight = null;
+  // The generation moves too, so a request that was hanging when this was
+  // called cannot commit afterwards. Note this is the opposite of what the
+  // GUARD_MS release does on purpose: that one frees the guard and still lets
+  // a late answer land, because nothing newer has asked. A reset means the
+  // caller has moved on.
+  generation += 1;
 }
 
 export const useSetup = create<SetupState>((set) => ({
@@ -92,10 +109,23 @@ export const useSetup = create<SetupState>((set) => ({
     // Concurrent callers share one request rather than racing four.
     if (inFlight !== null) return inFlight;
 
+    // Dedupe is not enough on its own. GUARD_MS releases the guard while the
+    // request it belongs to may still be running, so a later refresh can start
+    // and finish first — and the earlier one then commits over it, putting a
+    // stale `configured` back on a screen that had already moved past it. The
+    // generation says which answer is the current one; the guard only says
+    // whether to start another.
+    const mine = ++generation;
+    const current = () => generation === mine;
+
     inFlight = (async () => {
       const { data, error } = await anonymous().setup.status.get();
 
       if (error !== null || data === null) {
+        // The error path is guarded too. A failed older request overwriting a
+        // newer success replaces a working screen with "could not reach the
+        // server", which is the more alarming direction to get wrong.
+        if (!current()) return;
         // Left as null rather than guessed. Assuming "configured" would hide
         // the setup screen on a fresh instance; assuming "not configured"
         // would show it to someone who is merely offline.
@@ -103,6 +133,7 @@ export const useSetup = create<SetupState>((set) => ({
         return;
       }
 
+      if (!current()) return;
       set({
         configured: data.configured,
         canMintKey: data.canMintKey,

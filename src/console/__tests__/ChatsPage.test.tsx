@@ -33,6 +33,7 @@ void mock.module("../lib/api", () => ({
 const { ChatsPage } = await import("../pages/ChatsPage");
 const { useChats } = await import("../store/chats");
 const { useSession } = await import("../store/session");
+const { useRoute } = await import("../store/route");
 
 const thread = {
   id: "t1",
@@ -62,6 +63,11 @@ const message = (id: string, body: string) => ({
 afterEach(cleanup);
 
 beforeEach(() => {
+  // The address decides which conversation is open, so it has to be reset like
+  // any other shared state — a leftover fragment would open a conversation the
+  // next test never asked for.
+  window.location.hash = "";
+  useRoute.setState({ route: { section: "chats", detail: null } });
   useSession.setState({ apiKey: "key-a", identity: null, error: null, busy: false, revision: 0 });
   useChats.setState({
     threads: null,
@@ -83,8 +89,10 @@ describe("live updates", () => {
     // act, because these updates originate in the store rather than in an
     // event React dispatched — without it React warns that the render it
     // produced was never flushed under test.
+    // Through the address, because that is what a click does now: the page
+    // opens whatever the route says rather than selecting directly.
     await act(async () => {
-      await useChats.getState().select("t1");
+      useRoute.getState().navigate("chats", "t1");
     });
     await screen.findByText("first");
 
@@ -118,5 +126,57 @@ describe("live updates", () => {
     });
 
     expect(asked).toBe(false);
+  });
+});
+
+describe("the address opens a conversation", () => {
+  test("a deep link restores it without a click", async () => {
+    // The whole point: a reload, a bookmark and a pasted link land on the same
+    // conversation. Before this the page always came back on the thread list.
+    useRoute.setState({ route: { section: "chats", detail: "t1" } });
+
+    render(<ChatsPage />);
+
+    expect(await screen.findByText("first")).toBeDefined();
+  });
+
+  test("an address naming a conversation this environment does not have is ignored", async () => {
+    // The address is attacker-editable. Selecting an unknown id would ask the
+    // server for messages in a conversation that may belong to someone else,
+    // and the 404 would be the console's own doing.
+    useRoute.setState({ route: { section: "chats", detail: "not-a-thread" } });
+
+    render(<ChatsPage />);
+    await screen.findByText("Ana");
+
+    expect(screen.getByText("Pick a conversation.")).toBeDefined();
+  });
+
+  test("clearing the detail closes the conversation", async () => {
+    // Back, from a conversation to the list.
+    useRoute.setState({ route: { section: "chats", detail: "t1" } });
+    render(<ChatsPage />);
+    await screen.findByText("first");
+
+    await act(async () => {
+      useRoute.setState({ route: { section: "chats", detail: null } });
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText("Pick a conversation.")).toBeDefined();
+    });
+  });
+
+  test("clicking a thread changes the address rather than only the screen", async () => {
+    // Two paths doing the same work is how a back button ends up changing the
+    // URL while the screen stays put.
+    render(<ChatsPage />);
+    const row = await screen.findByText("Ana");
+
+    await act(async () => {
+      row.closest("button")?.click();
+    });
+
+    expect(useRoute.getState().route).toEqual({ section: "chats", detail: "t1" });
   });
 });

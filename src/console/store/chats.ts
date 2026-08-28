@@ -44,6 +44,8 @@ interface ChatState {
 
   loadThreads: () => Promise<void>;
   select: (threadId: string) => Promise<void>;
+  /** Close whatever is open. The address can say "no conversation" too. */
+  clearSelection: () => void;
   refresh: () => Promise<void>;
   setDraft: (text: string) => void;
   send: () => Promise<void>;
@@ -86,6 +88,10 @@ export const useChats = create<ChatState>((set, get) => ({
       return;
     }
     set({ threads: data, error: null });
+  },
+
+  clearSelection: () => {
+    set({ selectedId: null, messages: null, draft: "", error: null });
   },
 
   select: async (threadId: string) => {

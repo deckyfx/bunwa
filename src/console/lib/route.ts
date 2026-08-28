@@ -1,0 +1,62 @@
+/**
+ * Where the console is, expressed in the address bar.
+ *
+ * A fragment rather than a path, and that is the whole reason this works with
+ * no server support: `/app#devices` is a request for `/app` — the part after
+ * the `#` is never sent. A reload, a bookmark and a pasted link all land back
+ * on the same screen without the server needing a route per section, and
+ * without a deep link 404ing on a build that has not been redeployed.
+ *
+ * The section names here are the ones a person reads, not the ones the code
+ * uses internally: the chat screen is `chats` in the source and
+ * `conversations` in the URL, because an address is read aloud and typed by
+ * hand and should say what it means.
+ */
+import type { SectionId } from "../components/Sidebar";
+
+export interface Route {
+  section: SectionId;
+  /** The thing being looked at within the section, if any. */
+  detail: string | null;
+}
+
+/** URL name ↔ internal id. Only where the two differ. */
+const TO_URL: Partial<Record<SectionId, string>> = { chats: "conversations" };
+const FROM_URL: Record<string, SectionId> = { conversations: "chats" };
+
+const SECTIONS: SectionId[] = ["devices", "chats", "claim", "deliveries", "settings"];
+
+/** Where an address with nothing useful in it goes. */
+export const DEFAULT_ROUTE: Route = { section: "devices", detail: null };
+
+/**
+ * Read a route out of a fragment.
+ *
+ * Anything unrecognised falls back to the default rather than throwing or
+ * rendering nothing: a hand-edited or stale address should land somewhere
+ * usable, not on a blank page.
+ */
+export function parseRoute(hash: string): Route {
+  const raw = hash.replace(/^#/, "");
+  if (raw === "") return DEFAULT_ROUTE;
+
+  const [head = "", ...rest] = raw.split("/");
+  const name = decodeURIComponent(head).toLowerCase();
+
+  const section = FROM_URL[name] ?? (SECTIONS.includes(name as SectionId) ? (name as SectionId) : null);
+  if (section === null) return DEFAULT_ROUTE;
+
+  const detail = rest.length === 0 ? null : decodeURIComponent(rest.join("/"));
+  return { section, detail: detail === "" ? null : detail };
+}
+
+/** Build the fragment for a route. Always includes the `#`. */
+export function formatRoute(route: Route): string {
+  const name = TO_URL[route.section] ?? route.section;
+  // Encoded, because a detail can be anything the server issued and a bare
+  // one would break the fragment at the first slash or space it contained.
+  return route.detail === null ? `#${name}` : `#${name}/${encodeURIComponent(route.detail)}`;
+}
+
+/** Whether two routes are the same, so navigation can avoid a needless entry. */
+export const sameRoute = (a: Route, b: Route): boolean => a.section === b.section && a.detail === b.detail;

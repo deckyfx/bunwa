@@ -36,9 +36,30 @@ export function SettingsPage() {
   }, [settings]);
 
   if (settings === null) {
+    // The error branch first. Without it a failed load rendered "loading…" for
+    // ever: the message was in the store, the retry existed below, and neither
+    // was reachable because the form they live in never rendered. A screen
+    // that says it is still working when it has already given up is the one
+    // state worse than an error.
     return (
       <Card id="settings" title="Settings" icon={SlidersHorizontal}>
-        <Note>loading…</Note>
+        {error === null ? (
+          <Note>loading…</Note>
+        ) : (
+          <div className="flex flex-col items-start gap-3">
+            <p role="alert" className="text-sm text-rose-700 dark:text-rose-400">
+              {error}
+            </p>
+            <button
+              type="button"
+              onClick={() => void load()}
+              disabled={busy}
+              className="rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium disabled:opacity-40 dark:border-slate-700"
+            >
+              {busy ? "retrying…" : "retry"}
+            </button>
+          </div>
+        )}
       </Card>
     );
   }

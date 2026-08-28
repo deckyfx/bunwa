@@ -13,6 +13,7 @@ import { useEffect } from "react";
 import { MessagesSquare } from "lucide-react";
 
 import { Card } from "../components/Card";
+import { useRoute } from "../store/route";
 import { StatusPill } from "../components/StatusPill";
 import { useChats } from "../store/chats";
 import { useServerTimezone, useSession } from "../store/session";
@@ -39,6 +40,8 @@ function occurredAt(value: Date | string, zone: string): { machine: string; huma
 export function ChatsPage() {
   const revision = useSession((s) => s.revision);
   const zone = useServerTimezone();
+  const wanted = useRoute((s) => (s.route.section === "chats" ? s.route.detail : null));
+  const navigate = useRoute((s) => s.navigate);
   const {
     threads,
     selectedId,
@@ -48,6 +51,7 @@ export function ChatsPage() {
     error,
     loadThreads,
     select,
+    clearSelection,
     refresh,
     setDraft,
     send,
@@ -61,6 +65,30 @@ export function ChatsPage() {
     void loadThreads();
     void refresh();
   }, [loadThreads, refresh, revision]);
+
+  /*
+   * The address decides which conversation is open, not a click.
+   *
+   * So a reload, a bookmark and the back button all land on the same one. The
+   * click handler navigates and this opens what the address then says, rather
+   * than the two doing the work separately — which is how a back button ends
+   * up changing the URL while the screen stays put.
+   *
+   * Guarded on the thread being known: the address is read before the list has
+   * loaded, and selecting an id the server has not confirmed would ask for
+   * messages in a conversation this environment may not own.
+   */
+  useEffect(() => {
+    if (wanted === null) {
+      if (selectedId !== null) clearSelection();
+      return;
+    }
+    if (wanted === selectedId) return;
+    if (threads === null) return;
+    if (!threads.some((thread) => thread.id === wanted)) return;
+
+    void select(wanted);
+  }, [wanted, selectedId, threads, select, clearSelection]);
 
   return (
     <Card id="chats" title="Conversations" icon={MessagesSquare} className="[&>div]:p-0">
@@ -92,7 +120,12 @@ export function ChatsPage() {
                 <li key={thread.id}>
                   <button
                     type="button"
-                    onClick={() => void select(thread.id)}
+                    // Navigate rather than select. The effect above opens
+                    // whatever the address ends up saying, so one path does
+                    // the work and the back button behaves.
+                    onClick={() => {
+                      navigate("chats", thread.id);
+                    }}
                     aria-current={selectedId === thread.id}
                     className="flex w-full flex-col items-start gap-0.5 border-b border-slate-100 p-3 text-left hover:bg-slate-50 aria-[current=true]:bg-slate-100 dark:border-slate-900 dark:hover:bg-slate-900 dark:aria-[current=true]:bg-slate-800"
                   >
