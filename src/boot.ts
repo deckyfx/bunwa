@@ -21,7 +21,6 @@ import { BaileysAdapter } from "./engine/baileys/adapter";
 import { startEngineConsumer } from "./engine/consumer";
 import { startHousekeeping } from "./ops/housekeeping";
 import { log } from "./observability/logger";
-import { currentLogFile } from "./observability/sinks";
 import { ensureBootstrap } from "./ops/bootstrap";
 import { issueSetupToken } from "./api/routes/setup";
 import { SettingsStore } from "./stores/settings-store";
@@ -101,9 +100,9 @@ async function main(consolePage?: ConsolePage): Promise<void> {
   const stopHousekeeping = startHousekeeping();
 
   const stopWorker = startWorker({ allowInsecure: cfg.allowInsecureWebhookTargets });
-  // The file this line landed in is named in the line itself, so someone
-  // handed a log excerpt can find the rest of it.
-  log.info("bunwa started", { ...cfg.describe(), logFile: currentLogFile(), url: server.server?.url.toString() });
+  // The started line is emitted by the app's own onStart hook, which fires
+  // with the server that actually bound — so it reports the address in use
+  // rather than the one requested, and cannot be forgotten by an entry point.
 
   // After the started line, so an operator reading a fresh log sees the
   // instance come up and then what it wants from them, in that order.

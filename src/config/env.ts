@@ -357,7 +357,12 @@ export class Config {
       port: this.port,
       host: this.host,
       logLevel: this.logLevel,
-      apiKey: this.apiKey === null ? "(unset)" : "(set)",
+      // Named to avoid the redactor, deliberately. Any field whose name
+      // contains "apikey" is masked, which is right for a value that might be
+      // one and wrong for this — the whole point of the line is to say whether
+      // a key was supplied, and "***" answers neither yes nor no. Renaming is
+      // the fix; loosening the redactor for a convenient case is not.
+      bootstrapKey: this.apiKey === null ? "(unset)" : "(set)",
       serverTimezone: this.serverTimezone,
       logRotation: this.logRotation,
       logDir: this.logDir,
