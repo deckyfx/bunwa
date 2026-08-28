@@ -11,7 +11,11 @@
  */
 import { useEffect, useState } from "react";
 
+import { CircleCheck, LoaderCircle, Save, SlidersHorizontal } from "lucide-react";
+
+import { Card, Note } from "../components/Card";
 import { Field } from "../components/Field";
+import { TimezoneField } from "../components/TimezoneField";
 import { useSettings } from "../store/settings";
 
 export function SettingsPage() {
@@ -32,10 +36,9 @@ export function SettingsPage() {
 
   if (settings === null) {
     return (
-      <section className="flex flex-col gap-2">
-        <h2 className="text-lg font-semibold">Settings</h2>
-        <p className="text-sm text-slate-500">loading…</p>
-      </section>
+      <Card id="settings" title="Settings" icon={SlidersHorizontal}>
+        <Note>loading…</Note>
+      </Card>
     );
   }
 
@@ -43,9 +46,7 @@ export function SettingsPage() {
   const zoneLocked = settings.serverTimezone.source === "environment";
 
   return (
-    <section className="flex flex-col gap-4">
-      <h2 className="text-lg font-semibold">Settings</h2>
-
+    <Card id="settings" title="Settings" icon={SlidersHorizontal}>
       <form
         className="flex max-w-md flex-col gap-4"
         onSubmit={(e) => {
@@ -65,9 +66,8 @@ export function SettingsPage() {
           hint="Shown in WhatsApp under Linked Devices. It applies the next time a device is paired — an already-linked device keeps the name it was paired under."
         />
 
-        <Field
+        <TimezoneField
           id="settings-timezone"
-          label="Server timezone"
           value={timezone}
           onChange={setTimezone}
           disabled={zoneLocked}
@@ -83,16 +83,22 @@ export function SettingsPage() {
             {error}
           </p>
         )}
-        {saved && error === null && <p className="text-sm text-emerald-700 dark:text-emerald-400">saved</p>}
+        {saved && error === null && (
+          <p className="inline-flex items-center gap-1.5 text-sm text-emerald-700 dark:text-emerald-400">
+            <CircleCheck aria-hidden size={14} />
+            saved
+          </p>
+        )}
 
         <button
           type="submit"
           disabled={busy || (nameLocked && zoneLocked)}
-          className="self-start rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
+          className="inline-flex items-center gap-1.5 self-start rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
         >
+          {busy ? <LoaderCircle aria-hidden size={14} className="animate-spin" /> : <Save aria-hidden size={14} />}
           {busy ? "saving…" : "save"}
         </button>
       </form>
-    </section>
+    </Card>
   );
 }

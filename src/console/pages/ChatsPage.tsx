@@ -10,6 +10,9 @@
  */
 import { useEffect } from "react";
 
+import { MessagesSquare } from "lucide-react";
+
+import { Card } from "../components/Card";
 import { StatusPill } from "../components/StatusPill";
 import { useChats } from "../store/chats";
 import { useServerTimezone, useSession } from "../store/session";
@@ -60,10 +63,7 @@ export function ChatsPage() {
   }, [loadThreads, refresh, revision]);
 
   return (
-    <section aria-labelledby="chats" className="rounded-lg border border-slate-200 dark:border-slate-800">
-      <h2 id="chats" className="border-b border-slate-200 p-4 text-lg font-semibold dark:border-slate-800">
-        Conversations
-      </h2>
+    <Card id="chats" title="Conversations" icon={MessagesSquare} className="[&>div]:p-0">
 
       {error !== null && (
         <p role="alert" className="p-4 text-sm text-rose-700 dark:text-rose-400">
@@ -174,6 +174,6 @@ export function ChatsPage() {
           )}
         </div>
       </div>
-    </section>
+    </Card>
   );
 }

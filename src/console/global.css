@@ -138,4 +138,29 @@ body {
   [role="button"][aria-disabled="true"] {
     cursor: not-allowed;
   }
+
+  /*
+   * A placeholder must not read as a value.
+   *
+   * The browser default is close enough to the input's own text colour that a
+   * field showing "Asia/Jakarta" as a hint and a field containing
+   * "Asia/Jakarta" looked the same, and the only way to tell was to click into
+   * it. On a setup screen — where the question is precisely "have I filled
+   * this in?" — that is the whole job of the styling.
+   *
+   * Set here rather than per input so no form has to remember it. The dark
+   * value is dimmed rather than lightened: on a dark ground, less contrast
+   * means further from the text colour, not closer to white.
+   */
+  ::placeholder {
+    color: var(--color-slate-400);
+    opacity: 1; /* Firefox dims placeholders again on top of the colour. */
+  }
+
+  @media (prefers-color-scheme: dark) {
+    ::placeholder {
+      color: var(--color-slate-600);
+    }
+  }
+
 }

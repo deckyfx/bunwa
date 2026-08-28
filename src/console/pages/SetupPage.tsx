@@ -11,7 +11,11 @@
  */
 import { useEffect, useState } from "react";
 
+import { Check, Copy, LoaderCircle, Rocket, ShieldCheck } from "lucide-react";
+
+import { Card, Note } from "../components/Card";
 import { Field } from "../components/Field";
+import { TimezoneField } from "../components/TimezoneField";
 import { useSetup } from "../store/setup";
 
 /**
@@ -36,8 +40,11 @@ function MintedKey({ apiKey, onDismiss }: { apiKey: string; onDismiss: () => voi
   const [copied, setCopied] = useState(false);
 
   return (
-    <section className="flex flex-col gap-3 rounded-lg border border-emerald-300 bg-emerald-50 p-4 dark:border-emerald-800 dark:bg-emerald-950">
-      <h2 className="text-lg font-semibold">Your API key</h2>
+    <section className="flex flex-col gap-3 rounded-xl border border-emerald-300 bg-emerald-50 p-5 shadow-sm dark:border-emerald-800 dark:bg-emerald-950/60">
+      <h2 className="flex items-center gap-2 text-base font-semibold">
+        <ShieldCheck aria-hidden size={18} className="text-emerald-600 dark:text-emerald-500" />
+        Your API key
+      </h2>
       <p className="text-sm">
         This is the only time it will be shown. Store it somewhere safe before continuing — it cannot be
         recovered, only replaced.
@@ -48,7 +55,7 @@ function MintedKey({ apiKey, onDismiss }: { apiKey: string; onDismiss: () => voi
       <div className="flex flex-wrap gap-2">
         <button
           type="button"
-          className="rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white dark:bg-slate-100 dark:text-slate-900"
+          className="inline-flex items-center gap-1.5 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 dark:bg-slate-100 dark:text-slate-900"
           onClick={() => {
             void navigator.clipboard?.writeText(apiKey).then(
               () => {
@@ -62,6 +69,7 @@ function MintedKey({ apiKey, onDismiss }: { apiKey: string; onDismiss: () => voi
             );
           }}
         >
+          {copied ? <Check aria-hidden size={14} /> : <Copy aria-hidden size={14} />}
           {copied ? "copied" : "copy"}
         </button>
         <button
@@ -100,16 +108,19 @@ export function SetupPage() {
   // Null means the status call has not answered. Showing the form would be a
   // guess, and guessing wrong shows a setup screen to a configured instance.
   if (configured === null || settings === null) {
-    return <p className="text-sm text-slate-500">checking this instance…</p>;
+    return (
+      <Card id="setup" title="Set up this instance" icon={Rocket}>
+        <Note>checking this instance…</Note>
+      </Card>
+    );
   }
 
   const timezoneLocked = settings.serverTimezone.source === "environment";
   const preview = previewName(instanceName);
 
   return (
-    <section className="flex flex-col gap-4">
-      <div>
-        <h2 className="text-lg font-semibold">Set up this instance</h2>
+    <Card id="setup" title="Set up this instance" icon={Rocket}>
+      <div className="flex flex-col gap-4">
         <p className="text-sm text-slate-600 dark:text-slate-400">
           {canMintKey
             ? "No API key exists yet. Finishing here creates one."
@@ -117,7 +128,6 @@ export function SetupPage() {
               ? "The API key comes from API_KEY in the environment, so none will be created here."
               : "This instance already has an API key."}
         </p>
-      </div>
 
       <form
         className="flex flex-col gap-4"
@@ -149,12 +159,10 @@ export function SetupPage() {
           }
         />
 
-        <Field
+        <TimezoneField
           id="setup-timezone"
-          label="Server timezone"
           value={timezone}
           onChange={setTimezone}
-          placeholder="Asia/Jakarta"
           disabled={timezoneLocked}
           hint={
             timezoneLocked
@@ -172,11 +180,13 @@ export function SetupPage() {
         <button
           type="submit"
           disabled={busy}
-          className="self-start rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
+          className="inline-flex items-center gap-1.5 self-start rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
         >
+          {busy ? <LoaderCircle aria-hidden size={14} className="animate-spin" /> : <Rocket aria-hidden size={14} />}
           {busy ? "saving…" : canMintKey ? "finish setup and create a key" : "save settings"}
         </button>
       </form>
-    </section>
+      </div>
+    </Card>
   );
 }

@@ -8,6 +8,9 @@
  * rate-limits claims per environment, and why this screen says plainly that
  * the wait is human.
  */
+import { PlusCircle } from "lucide-react";
+
+import { Card } from "../components/Card";
 import { Field } from "../components/Field";
 import { Qr } from "../components/Qr";
 import { useClaim, type ClaimResult } from "../store/claim";
@@ -16,10 +19,7 @@ export function ClaimPage() {
   const { msisdn, alias, result, error, busy, setMsisdn, setAlias, submit } = useClaim();
 
   return (
-    <section aria-labelledby="claim" className="rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-      <h2 id="claim" className="mb-3 text-lg font-semibold">
-        Claim a number
-      </h2>
+    <Card id="claim" title="Claim a number" icon={PlusCircle}>
 
       <form
         className="flex flex-col gap-3 sm:max-w-sm"
@@ -47,7 +47,7 @@ export function ClaimPage() {
       )}
 
       {result !== null && <Outcome result={result} />}
-    </section>
+    </Card>
   );
 }
 
