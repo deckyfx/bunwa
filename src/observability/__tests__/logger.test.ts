@@ -295,11 +295,12 @@ describe("the file sink", () => {
     if (priorTimezone === undefined) delete Bun.env["SERVER_TIMEZONE"];
     else Bun.env["SERVER_TIMEZONE"] = priorTimezone;
 
-    rmSync(dir, { recursive: true, force: true });
-    // The sink first, then the config it was built from: resetting config
-    // while the sink still holds a handle to the deleted directory is what
-    // produced the write error above.
+    // The sink first, then the directory, then the config it was built from.
+    // The comment has said "sink first" all along while the rmSync sat above
+    // it, so the directory was removed with the sink still holding a handle to
+    // it — which is the write error this ordering exists to avoid.
     resetFileSink();
+    rmSync(dir, { recursive: true, force: true });
     resetConfig();
   });
 
@@ -355,7 +356,9 @@ describe("the file sink", () => {
     // The two sinks diverge on purpose: stdout is scraped, the file is read.
     const [consoleLine] = capture(() => log.info("started"));
     expect(consoleLine, "console").toMatch(/^\{/);
-    expect(written()[0], "file").not.toMatch(/^\{/);
+    const [fileLine] = written();
+    expect(fileLine, "the file sink wrote nothing").toBeDefined();
+    expect(fileLine, "file").not.toMatch(/^\{/);
   });
 
   test("redaction applies to the file too", () => {
@@ -363,6 +366,11 @@ describe("the file sink", () => {
     // of the two leaks.
     capture(() => log.info("auth", { apiKey: "bw_live_secret" }));
     const [line] = written();
+    // Asserted before it is inspected. `written()` returning nothing gives
+    // `undefined` here, and `expect(undefined).not.toContain(...)` passes — so
+    // this read as proof of redaction while proving only that no file was
+    // written, which is the one outcome it must not accept.
+    expect(line, "the file sink wrote nothing to redact").toBeDefined();
     expect(line).not.toContain("bw_live_secret");
   });
 
@@ -371,7 +379,9 @@ describe("the file sink", () => {
     Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
     try {
       capture(() => log.error("boom"));
-      expect(written()[0]).not.toContain("\u001b");
+      const [line] = written();
+      expect(line, "the file sink wrote nothing").toBeDefined();
+      expect(line).not.toContain("\u001b");
     } finally {
       if (original === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
       else Object.defineProperty(process.stdout, "isTTY", original);

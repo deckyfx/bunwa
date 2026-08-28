@@ -89,8 +89,21 @@
   --default-mono-font-family: var(--font-mono);
 }
 
+/*
+ * Native controls follow the console's theme, not the system's.
+ *
+ * `light dark` hands scrollbars, form controls and the browser's own UI to
+ * `prefers-color-scheme`, while everything the stylesheet draws is keyed off
+ * the `.dark` class. An operator who picked light on a dark-mode machine got a
+ * light page with dark scrollbars and dark date pickers — the half of the UI
+ * the theme switcher cannot reach disagreeing with the half it can.
+ */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+}
+
+.dark {
+  color-scheme: dark;
 }
 
 /*
