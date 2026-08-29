@@ -23,10 +23,18 @@ const LISTENED = [
   "message.undelivered",
 ] as const;
 
+/** HTTP statuses that mean the credential is wrong, not that the network is. */
+const FATAL = new Set([401, 403]);
+
 export function useEventStream(): StreamState {
-  const apiKey = useSession((s) => s.apiKey);
+  // Gated on the identity, not the raw key. Gating on the key meant a stored
+  // credential the server had never accepted still opened the stream: on a
+  // replaced database the console asked for a ticket every five seconds,
+  // forever, and logged a rejection each time.
   const identity = useSession((s) => s.identity);
+  const apiKey = useSession((s) => s.apiKey);
   const bumpRevision = useSession((s) => s.bumpRevision);
+  const invalidate = useSession((s) => s.invalidate);
   const [state, setState] = useState<StreamState>("idle");
 
   // Only the newest attempt may report. A key change while a ticket request is
@@ -58,9 +66,19 @@ export function useEventStream(): StreamState {
       if (!current()) return;
 
       if (error !== null || data === null || !("ticket" in data)) {
-        // Retry rather than give up: a ticket request fails for the same
-        // transient reasons any request does, and a console that stops
-        // listening looks identical to one where nothing is happening.
+        // A rejected credential is not transient, and retrying one is how a
+        // console ends up hammering an endpoint that will never say yes.
+        // Invalidating stops this effect at its guard rather than here, so
+        // there is one place that decides whether the stream may run.
+        if (error !== null && FATAL.has(error.status)) {
+          setState("idle");
+          invalidate("the server no longer accepts that key");
+          return;
+        }
+
+        // Anything else retries: a ticket request fails for the same transient
+        // reasons any request does, and a console that stops listening looks
+        // identical to one where nothing is happening.
         setState("stale");
         retry = setTimeout(() => void connect(), 5_000);
         return;
@@ -107,7 +125,7 @@ export function useEventStream(): StreamState {
       if (retry !== null) clearTimeout(retry);
       source?.close();
     };
-  }, [apiKey, identity, bumpRevision]);
+  }, [apiKey, identity, bumpRevision, invalidate]);
 
   return state;
 }

@@ -22,7 +22,14 @@ import {
   type SendResult,
 } from "../types";
 import { log } from "../../observability/logger";
-import { openSocket, type DisconnectKind, type OutboundMedia, type SocketHandle } from "./socket";
+import {
+  openSocket,
+  type DisconnectKind,
+  type OutboundMedia,
+  type PairingIntent,
+  type SocketHandle,
+  type SocketOptions,
+} from "./socket";
 
 /**
  * How long a QR stays valid.
@@ -48,6 +55,14 @@ const DEGRADED_AFTER = 3;
 
 interface Session {
   handle: SocketHandle | null;
+  /**
+   * What the live socket was opened for.
+   *
+   * The identity presented during the handshake depends on it — a code pairing
+   * has to say Ubuntu or WhatsApp refuses to complete it — so a socket opened
+   * for one intent cannot serve another. Null whenever `handle` is.
+   */
+  intent: PairingIntent | null;
   /** Consecutive failed reconnects. Reset by a successful connection. */
   failures: number;
   /** When the device last went down, for reporting recovery time. */
@@ -80,7 +95,7 @@ interface Session {
  * adapter's suite already runs stubbed by default and goes live behind an
  * environment variable; this follows it.
  */
-export type SocketOpener = (options: { deviceId: string }) => Promise<SocketHandle>;
+export type SocketOpener = (options: SocketOptions) => Promise<SocketHandle>;
 
 export class BaileysAdapter implements DeviceEngine {
   readonly kind = "baileys" as const;
@@ -116,6 +131,7 @@ export class BaileysAdapter implements DeviceEngine {
     if (!this.sessions.has(deviceId)) {
       this.sessions.set(deviceId, {
         handle: null,
+        intent: null,
         failures: 0,
         downSince: null,
         jid: null,
@@ -152,13 +168,10 @@ export class BaileysAdapter implements DeviceEngine {
       );
     }
 
-    const session = this.sessions.get(deviceId)!;
-
-    if (session.handle === null) await this.connect(deviceId);
-    const handle = this.sessions.get(deviceId)?.handle;
-    if (handle === undefined || handle === null) {
-      throw new EngineError(`could not open a socket for ${deviceId}`, true);
-    }
+    // Called for the socket, not the handle: the QR arrives on the event
+    // stream rather than as a return value, so what matters here is that a
+    // QR-intent socket is open before `firstQr` starts listening.
+    await this.socketFor(deviceId, "qr");
 
     const expiresAt = new Date(Date.now() + QR_TTL_MS);
 
@@ -180,12 +193,8 @@ export class BaileysAdapter implements DeviceEngine {
    */
   async startPairingWithCode(deviceId: string, msisdn: string): Promise<PairingSession> {
     await this.provision(deviceId);
-    if (this.sessions.get(deviceId)?.handle === null) await this.connect(deviceId);
 
-    const handle = this.sessions.get(deviceId)?.handle;
-    if (handle === undefined || handle === null) {
-      throw new EngineError(`could not open a socket for ${deviceId}`, true);
-    }
+    const handle = await this.socketFor(deviceId, "code");
 
     const code = await handle.requestPairingCode(msisdn);
     return { method: "code", pairCode: code, expiresAt: new Date(Date.now() + QR_TTL_MS) };
@@ -212,6 +221,7 @@ export class BaileysAdapter implements DeviceEngine {
     });
 
     session.handle = null;
+    session.intent = null;
     session.connected = false;
     session.loggedIn = false;
     // Cleared, or the device can never be paired again.
@@ -421,6 +431,56 @@ export class BaileysAdapter implements DeviceEngine {
     for (const wake of [...this.wakers]) wake();
   }
 
+  /**
+   * A socket opened for this intent, replacing one opened for another.
+   *
+   * The identity presented during the handshake depends on why the socket was
+   * opened — a code pairing has to say Ubuntu or WhatsApp will not complete it
+   * — so a socket opened for anything else cannot serve. Reusing one produces
+   * a pairing code that is issued, looks correct, and never works.
+   *
+   * Both pairing entry points go through here because the first version of
+   * this rule lived inline in `startPairingWithCode` and the QR path was left
+   * reusing whatever socket it found. One fix, one place, both directions:
+   * a rule written twice is a rule that will be corrected once.
+   */
+  private async socketFor(deviceId: string, intent: PairingIntent): Promise<SocketHandle> {
+    const existing = this.sessions.get(deviceId);
+    if (existing?.handle !== null && existing?.intent !== intent) {
+      await this.dropSocket(deviceId);
+    }
+    if (this.sessions.get(deviceId)?.handle === null) await this.connect(deviceId, intent);
+
+    const handle = this.sessions.get(deviceId)?.handle;
+    if (handle === undefined || handle === null) {
+      throw new EngineError(`could not open a socket for ${deviceId}`, true);
+    }
+    return handle;
+  }
+
+  /**
+   * Close a live socket without unlinking the device.
+   *
+   * `close()` on the handle, never `logout()`: the credentials have to survive,
+   * because the socket is being replaced rather than ended. The reconnect timer
+   * is cleared first, or the reconnect this drops fires afterwards and reopens
+   * the socket with the intent that was just rejected.
+   */
+  private async dropSocket(deviceId: string): Promise<void> {
+    const session = this.sessions.get(deviceId);
+    if (session === undefined || session.handle === null) return;
+
+    this.clearReconnect(session);
+    await session.handle.close().catch((err: unknown) => {
+      // Already gone is the expected case, not a failure: the point is that no
+      // socket is open afterwards, and that holds either way.
+      log.debug("closing a socket that was already gone", { deviceId, error: String(err) });
+    });
+    session.handle = null;
+    session.intent = null;
+    session.connected = false;
+  }
+
   private clearReconnect(session: Session): void {
     if (session.reconnectTimer !== null) {
       clearTimeout(session.reconnectTimer);
@@ -428,13 +488,21 @@ export class BaileysAdapter implements DeviceEngine {
     }
   }
 
-  /** Open the socket and start draining its events. */
-  private async connect(deviceId: string): Promise<void> {
+  /**
+   * Open the socket and start draining its events.
+   *
+   * The intent travels with the open because it decides the identity WhatsApp
+   * displays, and for code pairing it decides whether pairing works at all.
+   * Defaulting to `resume` is safe: for an already-linked device the identity
+   * was fixed when it was paired.
+   */
+  private async connect(deviceId: string, intent: PairingIntent = "resume"): Promise<void> {
     const session = this.sessions.get(deviceId);
     if (session === undefined || session.stopping || this.closed) return;
 
-    const handle = await this.open({ deviceId });
+    const handle = await this.open({ deviceId, intent });
     session.handle = handle;
+    session.intent = intent;
     session.pump = this.pump(deviceId, handle);
   }
 
@@ -451,6 +519,19 @@ export class BaileysAdapter implements DeviceEngine {
       for await (const event of handle.events) {
         const session = this.sessions.get(deviceId);
         if (session === undefined) return;
+
+        // Every event, not just `disconnected`.
+        //
+        // A closed socket keeps draining its queue, so a replaced handle can
+        // still deliver a `qr` that overwrites `session.lastQr` — handing the
+        // caller a code for a socket that is gone — or `connected`, `message`
+        // and `ack` events attributed to the socket that replaced it. The
+        // guard was written for the disconnect path only, which fixed the case
+        // that had been found and left the rest reachable.
+        //
+        // `handle === null` means no live socket to be stale against, which is
+        // the window between drop and reconnect; those events are dropped too.
+        if (session.handle !== handle) return;
 
         switch (event.kind) {
           case "qr":
@@ -558,9 +639,25 @@ export class BaileysAdapter implements DeviceEngine {
    * logged-out or replaced session is how a number gets restricted rather than
    * how it comes back.
    */
-  private onDisconnected(deviceId: string, session: Session, reason: DisconnectKind | string, recoverable: boolean): void {
+  private onDisconnected(
+    deviceId: string,
+    session: Session,
+    reason: DisconnectKind | string,
+    recoverable: boolean,
+  ): void {
+    // Staleness is filtered in `pump` now, for every event kind rather than
+    // this one alone.
+    //
+    // The intent is captured before it is cleared. Clearing it first meant the
+    // reconnect below called connect() with no intent, which defaults to
+    // "resume" — and resume is only safe for a device that is already linked.
+    // A recoverable drop midway through QR pairing therefore came back with
+    // the wrong identity and could not finish pairing.
+    const reconnectIntent = session.intent ?? "resume";
+
     session.connected = false;
     session.handle = null;
+    session.intent = null;
     session.downSince ??= new Date();
 
     if (reason === "logged_out") {
@@ -590,7 +687,7 @@ export class BaileysAdapter implements DeviceEngine {
     const delay = Math.min(RECONNECT_BASE_MS * 2 ** (session.failures - 1), RECONNECT_MAX_MS);
     session.reconnectTimer = setTimeout(() => {
       session.reconnectTimer = null;
-      void this.connect(deviceId).catch((err: unknown) => {
+      void this.connect(deviceId, reconnectIntent).catch((err: unknown) => {
         // Routed back through the policy rather than only logged. The timer
         // has already cleared itself, so a failed open ended the retries
         // permanently and left the device disconnected with nothing scheduled

@@ -18,12 +18,14 @@ import { ruleRoutes } from "./routes/rules";
 import { eventRoutes } from "./routes/events";
 import { chatRoutes } from "./routes/chat";
 import { consolePlugin, noConsolePlugin } from "./console-plugin";
-import type { ConsolePage } from "./types";
+import type { ConsolePage, ServerMode } from "./types";
 import { projectRoutes } from "./routes/project";
+import { setupRoutes } from "./routes/setup";
 import { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
 import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../stores/errors";
 import { enterContext, log, sanitiseCorrelationId } from "../observability/logger";
+import { currentLogFile } from "../observability/sinks";
 
 /** Process start, used to report uptime on the liveness probe. */
 const startedAt = Date.now();
@@ -88,9 +90,55 @@ async function databaseReady(): Promise<{ ok: boolean; latencyMs: number; error?
  * The console page is not a parameter here. `createConsoleApp` adds it, so
  * nothing in this path imports the page and a headless build never pulls React
  * in to serve a route it does not mount.
+ *
+ * `mode` defaults to headless because that is the safe half: a build that
+ * forgets to say which it is serves the API without the console, rather than
+ * mounting a console it was never meant to carry.
  */
-export function createApp(registry?: EngineRegistry) {
+export function createApp(registry?: EngineRegistry, mode: ServerMode = "headless") {
   const app = new Elysia()
+    /*
+     * The running shape, on the context.
+     *
+     * `decorate` rather than `state`: this is fixed for the life of the
+     * process, and `store` is for things that change. A handler reads it as
+     * `({ serverMode })` and needs no import, which matters for the handlers
+     * whose correct answer differs between the two builds — a 404 that says
+     * "this build has no console" is only right in one of them.
+     */
+    .decorate("serverMode", mode)
+
+    /*
+     * Elysia's own lifecycle, rather than a log line after `listen()` returns.
+     *
+     * `onStart` fires with the server that is actually bound, so the address
+     * logged is the one in use rather than the one requested — they differ
+     * whenever the port is 0, or the host resolves to something other than
+     * what was configured. The previous version read `server.server?.url`
+     * after the fact and printed `undefined` if anything about the bind was
+     * unusual, which is exactly when the line matters.
+     *
+     * It also means the line cannot be forgotten by a second entry point: it
+     * belongs to the app, not to whoever started it.
+     */
+    .onStart(({ server }) => {
+      log.info("bunwa started", {
+        mode,
+        console: mode === "console" ? "/app" : "(not served)",
+        url: server?.url.href ?? `http://${config().host}:${String(config().port)}/`,
+        ...config().describe(),
+        logFile: currentLogFile(),
+      });
+    })
+
+    .onStop(() => {
+      // Paired with onStart deliberately. Shutdown was logged from boot's
+      // signal handler, so a stop that happened any other way — a failed
+      // bind, a test tearing the app down — left no record that the server
+      // had gone.
+      log.info("bunwa stopped", { mode });
+    })
+
     // Correlation id first, so every later hook and handler logs under it.
     .derive({ as: "global" }, ({ request, set }) => {
       const supplied = sanitiseCorrelationId(request.headers.get("x-correlation-id"));
@@ -198,9 +246,13 @@ export function createApp(registry?: EngineRegistry) {
      * because a liveness probe that fails on a database blip gets the container
      * restarted for a fault a restart cannot fix.
      */
-    .get("/health", () => ({
+    .get("/health", ({ serverMode }) => ({
       status: "ok" as const,
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+      // Reported because "is the console being served?" is otherwise answered
+      // by probing /app and interpreting a 404, and an operator debugging a
+      // blank page needs to know which image is running before anything else.
+      mode: serverMode,
     }))
 
     /**
@@ -240,6 +292,10 @@ export function createApp(registry?: EngineRegistry) {
 
     // Route plugins mount after the probes. An orchestrator's liveness and
     // readiness checks must never be able to end up behind a plugin's auth.
+    //
+    // Setup comes first because it is the one surface that answers before a
+    // credential exists; everything below it requires one.
+    .use(setupRoutes)
     .use(projectRoutes)
     .use(eventRoutes)
     .use(chatRoutes)
@@ -260,11 +316,11 @@ export function createApp(registry?: EngineRegistry) {
     .use(ruleRoutes)
 
 
-    // Mounted only when explicitly enabled. The admin surface has no
-    // authentication yet, so it must not be reachable by default — an
-    // unauthenticated key-minting endpoint is not something to leave to a
-    // reverse proxy's configuration.
-    .use(config().adminApiEnabled ? adminRoutes : new Elysia());
+    // Mounted unconditionally; the plugin enforces the flag itself. A
+    // conditional mount made the app type a union of "these routes exist" and
+    // "they do not", which is how Eden lost every device and message call
+    // once already — and had lost `admin` entirely for the console.
+    .use(adminRoutes);
 
   return app;
 }
@@ -324,7 +380,7 @@ export type ConsoleApp = ReturnType<typeof createConsoleApp>;
  * typed client silently lost every device call.
  */
 export function createConsoleApp(registry: EngineRegistry | undefined, consolePage: ConsolePage) {
-  return createApp(registry).use(consolePlugin(consolePage));
+  return createApp(registry, "console").use(consolePlugin(consolePage));
 }
 
 /** The shape the console imports. Kept as `App` so callers need not choose. */

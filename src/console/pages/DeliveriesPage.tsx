@@ -6,6 +6,10 @@
  */
 import { useEffect } from "react";
 
+import { Send } from "lucide-react";
+
+import { Card } from "../components/Card";
+
 import { StatusPill } from "../components/StatusPill";
 import { useDeliveries } from "../store/deliveries";
 import { useSession } from "../store/session";
@@ -19,10 +23,7 @@ export function DeliveriesPage() {
   }, [load, revision]);
 
   return (
-    <section aria-labelledby="deliveries" className="rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-      <h2 id="deliveries" className="mb-3 text-lg font-semibold">
-        Deliveries
-      </h2>
+    <Card id="deliveries" title="Deliveries" icon={Send}>
 
       {error !== null && (
         <p role="alert" className="text-sm text-rose-700 dark:text-rose-400">
@@ -65,6 +66,6 @@ export function DeliveriesPage() {
           </tbody>
         </table>
       )}
-    </section>
+    </Card>
   );
 }

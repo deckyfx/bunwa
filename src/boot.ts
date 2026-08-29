@@ -21,6 +21,9 @@ import { BaileysAdapter } from "./engine/baileys/adapter";
 import { startEngineConsumer } from "./engine/consumer";
 import { startHousekeeping } from "./ops/housekeeping";
 import { log } from "./observability/logger";
+import { ensureBootstrap } from "./ops/bootstrap";
+import { issueSetupToken } from "./api/routes/setup";
+import { SettingsStore } from "./stores/settings-store";
 
 /** How long to let in-flight requests finish before closing connections. */
 const SHUTDOWN_DRAIN_MS = 10_000;
@@ -97,7 +100,26 @@ async function main(consolePage?: ConsolePage): Promise<void> {
   const stopHousekeeping = startHousekeeping();
 
   const stopWorker = startWorker({ allowInsecure: cfg.allowInsecureWebhookTargets });
-  log.info("bunwa started", { ...cfg.describe(), url: server.server?.url.toString() });
+  // The started line is emitted by the app's own onStart hook, which fires
+  // with the server that actually bound — so it reports the address in use
+  // rather than the one requested, and cannot be forgotten by an entry point.
+
+  // After the started line, so an operator reading a fresh log sees the
+  // instance come up and then what it wants from them, in that order.
+  const instance = await ensureBootstrap();
+  if (instance.configured) {
+    log.info("instance is configured", {
+      apiKeySource: instance.apiKeySource,
+      instanceName: SettingsStore.instanceName(),
+    });
+  } else {
+    // Printed rather than logged through the structured path as well, because
+    // this is the one line the operator must actually read, and it is easy to
+    // lose among request lines on a busy start.
+    const token = issueSetupToken();
+    log.warn("this instance has no API key yet; open the console to finish setup");
+    process.stdout.write(`\n  setup token: ${token}\n  open ${server.server?.url.toString() ?? "the console"} to finish setup\n\n`);
+  }
 
   /** Drain in-flight requests before exiting, so a deploy drops nothing. */
   // Idempotent: two signals in quick succession must not run this twice and

@@ -68,7 +68,17 @@ describe("GET /v1/whoami", () => {
   test("resolves the tenant from the key alone", async () => {
     const res = await get("/v1/whoami", { "x-api-key": key });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ...ids, scopes: ["send:text"] });
+    // Exact match, not a subset: whoami is the endpoint an integrator hits
+    // first, and a field appearing in it silently is a contract change.
+    expect(await res.json()).toEqual({
+      ...ids,
+      projectSlug: "grande",
+      projectName: "Grande",
+      environmentSlug: "production",
+      environmentKind: "live",
+      scopes: ["send:text"],
+      serverTimezone: "Asia/Jakarta",
+    });
   });
 
   test("rejects a request with no credential", async () => {
@@ -139,5 +149,51 @@ describe("admin API", () => {
     // It can mint keys and has no authentication yet, so the default must be
     // unreachable rather than relying on a reverse proxy.
     expect((await get("/admin/v1/projects")).status).toBe(404);
+  });
+});
+
+describe("instance settings are not a tenant's to change", () => {
+  /** Mint a key in the same environment with exactly these scopes. */
+  const keyWith = async (scopes: string[], label: string): Promise<string> => {
+    const database = createDatabase(join(dir, "t.sqlite"));
+    const minted = await ApiKeyStore.create(
+      { projectId: ids.projectId, environmentId: ids.environmentId, label, scopes },
+      database,
+    );
+    return minted.plaintext;
+  };
+
+  const put = (apiKey: string) =>
+    app.handle(
+      new Request("http://localhost/v1/settings", {
+        method: "PUT",
+        headers: { "x-api-key": apiKey, "content-type": "application/json" },
+        body: JSON.stringify({ instanceName: "seized" }),
+      }),
+    );
+
+  test("a project key cannot rename the instance for everyone else", async () => {
+    // The settings behind this route are one per process: the instance name is
+    // what WhatsApp lists *every* project's number under, and the timezone is
+    // the one the logs are written in. `manage:devices` is a scope an ordinary
+    // tenant is expected to hold — claiming a number needs it — and it used to
+    // be enough to do both to every other tenant on the deployment.
+    const tenant = await keyWith(["manage:devices", "send:text"], "tenant");
+    expect((await put(tenant)).status, "a tenant key changed an instance-wide setting").toBe(403);
+  });
+
+  test("reading them needs the same scope", async () => {
+    const tenant = await keyWith(["manage:devices"], "tenant-read");
+    const response = await app.handle(
+      new Request("http://localhost/v1/settings", { headers: { "x-api-key": tenant } }),
+    );
+    expect(response.status).toBe(403);
+  });
+
+  test("a key that holds manage:instance still works", async () => {
+    // The guard has to stop a tenant without locking the console out: its own
+    // key is minted with the full set.
+    const operator = await keyWith(["manage:instance"], "operator");
+    expect((await put(operator)).status).toBe(200);
   });
 });

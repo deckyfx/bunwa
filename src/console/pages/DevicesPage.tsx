@@ -7,6 +7,10 @@
  */
 import { useEffect } from "react";
 
+import { Smartphone } from "lucide-react";
+
+import { Card } from "../components/Card";
+
 import { StatusPill } from "../components/StatusPill";
 import { useDevices } from "../store/devices";
 import { useSession } from "../store/session";
@@ -20,10 +24,7 @@ export function DevicesPage() {
   }, [load, revision]);
 
   return (
-    <section aria-labelledby="devices" className="rounded-lg border border-slate-200 p-4 dark:border-slate-800">
-      <h2 id="devices" className="mb-3 text-lg font-semibold">
-        Devices
-      </h2>
+    <Card id="devices" title="Devices" icon={Smartphone}>
 
       {error !== null && (
         <p role="alert" className="text-sm text-rose-700 dark:text-rose-400">
@@ -60,6 +61,6 @@ export function DevicesPage() {
           </tbody>
         </table>
       )}
-    </section>
+    </Card>
   );
 }

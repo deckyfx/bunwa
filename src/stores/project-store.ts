@@ -6,10 +6,10 @@
  * a bug, and worth stating explicitly so the exception is not read as a
  * precedent by the stores below.
  */
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 
 import { db, type Database } from "../db";
-import { projects, type Project } from "../db/schema";
+import { environments, projects, type Project } from "../db/schema";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 
 import { KEY_SAFE_SLUG } from "../auth/api-key";
@@ -63,6 +63,37 @@ export class ProjectStore {
   static async findBySlug(slug: string, database: Database = db()): Promise<Project | null> {
     const [found] = await database.select().from(projects).where(eq(projects.slug, slug)).limit(1);
     return found ?? null;
+  }
+
+  /**
+   * The names behind a pair of ids, for anything a person reads.
+   *
+   * One join rather than two lookups, and only on the routes that display a
+   * tenant — putting it in the auth context would pay for it on every
+   * authenticated request to answer a question almost none of them ask.
+   *
+   * Both ids come from the resolved credential, never from the caller, so this
+   * cannot be pointed at someone else's tenant.
+   */
+  static async describeTenant(
+    projectId: string,
+    environmentId: string,
+    database: Database = db(),
+  ): Promise<{ projectSlug: string; projectName: string; environmentSlug: string; environmentKind: string }> {
+    const [row] = await database
+      .select({
+        projectSlug: projects.slug,
+        projectName: projects.displayName,
+        environmentSlug: environments.slug,
+        environmentKind: environments.kind,
+      })
+      .from(environments)
+      .innerJoin(projects, eq(environments.projectId, projects.id))
+      .where(and(eq(environments.id, environmentId), eq(projects.id, projectId)))
+      .limit(1);
+
+    if (row === undefined) throw new NotFoundError(`environment ${environmentId} not found`);
+    return row;
   }
 
   /** @crossTenant Operator view of every tenant. */

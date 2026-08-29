@@ -8,7 +8,14 @@
  */
 import { and, eq, isNull } from "drizzle-orm";
 
-import { DUMMY_KEY_HASH, generateApiKey, prefixOf, verifyApiKey } from "../auth/api-key";
+import {
+  bootstrapPrefix,
+  DUMMY_KEY_HASH,
+  generateApiKey,
+  isBootstrapCandidate,
+  prefixOf,
+  verifyApiKey,
+} from "../auth/api-key";
 import { db, type Database } from "../db";
 import { apiKeys, environments, projects, type ApiKey } from "../db/schema";
 import { NotFoundError, ValidationError } from "./errors";
@@ -29,6 +36,51 @@ export interface ResolvedKey {
  * costs an Argon2id verification.
  */
 const MAX_PREFIX_CANDIDATES = 5;
+
+/**
+ * Why a credential was turned away — in the log, never in the response.
+ *
+ * The API answers 401 for every failure on purpose: revoked, unknown, expired
+ * and malformed must be indistinguishable to a caller, or probing tells an
+ * attacker which guesses were close. That property costs the operator the one
+ * thing they need when a key they believe is correct is refused, and the log
+ * is where it can be paid back without giving anything away — reading it
+ * already requires access the attacker does not have.
+ *
+ * The prefix is logged because it is stored in the clear and is designed to
+ * identify a key; the presented secret never is. The length is, because
+ * "pasted with a trailing character" and "pasted the wrong thing entirely" are
+ * the two commonest causes and the length separates them.
+ */
+type RejectionReason =
+  | "malformed"
+  | "no-key-with-this-prefix"
+  | "prefix-matched-but-secret-did-not"
+  | "revoked"
+  | "expired"
+  | "tenant-not-active";
+
+function reject(reason: RejectionReason, prefix: string | null, presented: string): void {
+  log.warn("api key rejected", {
+    reason,
+    prefix,
+    presentedLength: presented.length,
+    hint: HINTS[reason],
+  });
+}
+
+/** What an operator should check first, for each way this fails. */
+const HINTS: Record<RejectionReason, string> = {
+  malformed:
+    "not shaped like a key this instance issues (bw_live_<project>_<secret>) and too short to be an API_KEY from the environment; check for a truncated paste",
+  "no-key-with-this-prefix":
+    "the key is well-formed but no row matches it; it was issued by a different database, or this one has been replaced since",
+  "prefix-matched-but-secret-did-not":
+    "a key with this prefix exists but the secret does not match; check for a partial paste or trailing whitespace",
+  revoked: "this key was revoked",
+  expired: "this key is past its expiry",
+  "tenant-not-active": "the key is valid but its project or environment is suspended",
+};
 
 export class ApiKeyStore {
   /**
@@ -80,10 +132,17 @@ export class ApiKeyStore {
    */
   /** @crossTenant Authentication itself: the credential is what establishes scope. */
   static async resolve(presented: string, database: Database = db()): Promise<ResolvedKey | null> {
-    const prefix = prefixOf(presented);
+    // A key this system minted is indexed by its own readable prefix; one an
+    // operator supplied through API_KEY is indexed by a derived value, because
+    // it does not carry our shape. Both are index selectors only — whichever
+    // row is selected still has to verify.
+    const prefix = prefixOf(presented) ?? (isBootstrapCandidate(presented) ? bootstrapPrefix(presented) : null);
     // Reject shape before touching the database: an unparseable credential must
     // not become a query on attacker-controlled text.
-    if (prefix === null) return null;
+    if (prefix === null) {
+      reject("malformed", null, presented);
+      return null;
+    }
 
     // Capped. The prefix includes six characters of the secret, so a legitimate
     // request selects one row; a large result set means someone is probing, and
@@ -99,6 +158,7 @@ export class ApiKeyStore {
       // makes an unknown prefix measurably faster than a known one, which tells
       // an attacker when a prefix guess is correct.
       await verifyApiKey(presented, await DUMMY_KEY_HASH);
+      reject("no-key-with-this-prefix", prefix, presented);
       return null;
     }
 
@@ -107,7 +167,10 @@ export class ApiKeyStore {
       // take indistinguishable time for an attacker probing prefixes.
       const matches = await verifyApiKey(presented, candidate.keyHash);
       if (!matches) continue;
-      if (!this.isUsable(candidate)) return null;
+      if (!this.isUsable(candidate)) {
+        reject(candidate.revokedAt !== null ? "revoked" : "expired", prefix, presented);
+        return null;
+      }
 
       const [env] = await database
         .select({ projectId: environments.projectId, envStatus: environments.status, projectStatus: projects.status })
@@ -117,7 +180,10 @@ export class ApiKeyStore {
         .limit(1);
       // A suspended project or environment authenticates nothing, whatever the
       // key's own state says.
-      if (env === undefined || env.envStatus !== "active" || env.projectStatus !== "active") return null;
+      if (env === undefined || env.envStatus !== "active" || env.projectStatus !== "active") {
+        reject("tenant-not-active", prefix, presented);
+        return null;
+      }
 
       return {
         apiKey: candidate,
@@ -127,6 +193,7 @@ export class ApiKeyStore {
       };
     }
 
+    reject("prefix-matched-but-secret-did-not", prefix, presented);
     return null;
   }
 

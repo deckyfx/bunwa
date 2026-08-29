@@ -15,13 +15,25 @@ import { Elysia } from "elysia";
 import type { ConsolePage } from "./types";
 
 /**
- * Mount the console at /app.
+ * Mount the console at /app, and send the root there.
  *
  * The wildcard is for client-side routing: the console owns everything under
  * /app, and a deep link must reach the same page rather than a 404.
+ *
+ * `/` redirected rather than serving the page directly, so the console has one
+ * address. Serving it at both would give every deep link two forms, and the
+ * one an operator bookmarked would be whichever they happened to land on.
+ *
+ * 302 rather than 301: a permanent redirect is cached by the browser
+ * indefinitely, so an instance later run headless would keep bouncing `/` to a
+ * page that no longer exists, with no way to clear it short of the user's
+ * cache.
  */
 export const consolePlugin = (page: ConsolePage) =>
-  new Elysia({ name: "console" }).get("/app", page).get("/app/*", page);
+  new Elysia({ name: "console" })
+    .get("/", ({ redirect }) => redirect("/app", 302))
+    .get("/app", page)
+    .get("/app/*", page);
 
 /**
  * What /app answers in a build without the console.
@@ -31,8 +43,18 @@ export const consolePlugin = (page: ConsolePage) =>
  * anything.
  */
 export const noConsolePlugin = new Elysia({ name: "console:absent" })
+  // Answered rather than left to 404, for the same reason /app is: someone
+  // opening the root of a headless deployment should learn what this is and
+  // that it has no console, not be told the address does not exist.
+  .get("/", () => rootNotice())
   .get("/app", () => headlessNotice())
   .get("/app/*", () => headlessNotice());
+
+const rootNotice = () =>
+  new Response("bunwa, running headless. The API is under /v1; this build serves no console.\n", {
+    status: 200,
+    headers: { "content-type": "text/plain" },
+  });
 
 const headlessNotice = () =>
   new Response("this build does not include the console; run `bun run dev` or the console image", {

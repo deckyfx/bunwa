@@ -16,11 +16,20 @@ import { client } from "../lib/api";
 
 const STORAGE_KEY = "bunwa.apiKey";
 
-export interface Identity {
-  projectId: string;
-  environmentId: string;
-  scopes: string[];
-}
+/**
+ * What the key resolves to, as the server describes it.
+ *
+ * Derived from the `whoami` route rather than written out here. The
+ * hand-written version was wrong twice before — nested objects the server does
+ * not send, and fields that do not exist — and each time the page rendered
+ * "undefined" against a live API rather than failing to compile. Two of these
+ * fields carry real meaning for a reader: the slugs and names are what a
+ * person calls this tenant, where the ids are for machines, and
+ * `serverTimezone` is the zone every rendered timestamp uses (see
+ * `useServerTimezone`).
+ */
+type Api = ReturnType<typeof client>;
+export type Identity = NonNullable<Awaited<ReturnType<Api["v1"]["whoami"]["get"]>>["data"]>;
 
 interface SessionState {
   apiKey: string;
@@ -29,10 +38,52 @@ interface SessionState {
   busy: boolean;
   /** Bumped by the event stream. Screens watch it to know something changed. */
   revision: number;
+  /**
+   * Whether the restored key has been checked yet.
+   *
+   * Distinct from `busy`, which is false both before a check starts and after
+   * it finishes. The shell needs "not yet asked" to be different from "asked
+   * and refused", or it renders the sign-in form during the gap and the
+   * operator sees an empty key field flash past on every reload.
+   */
+  hydrated: boolean;
 
   connect: (key: string) => Promise<void>;
   disconnect: () => void;
   bumpRevision: () => void;
+  /** Validate whatever key was restored from storage. Called once on mount. */
+  hydrate: () => Promise<void>;
+  /** The server stopped accepting the key mid-session. */
+  invalidate: (reason: string) => void;
+  /** Throw away the stored credential without complaining about it. */
+  forget: () => void;
+}
+
+/**
+ * What to say when connecting fails.
+ *
+ * "that key was not accepted" was said for every failure, including the ones
+ * where the server never answered — so an unreachable server, a crash and a
+ * genuinely wrong key all told the operator to go and check their key. Only
+ * one of those is about the key.
+ *
+ * The server cannot say *why* a key was refused: revoked, unknown and expired
+ * are deliberately indistinguishable to a caller, or probing tells an attacker
+ * which guesses were close. So the message points at the log, which is allowed
+ * to know and now says so.
+ */
+function describeFailure(status: number | undefined): string {
+  if (status === undefined || status === 0) {
+    // Eden reports a transport failure with no status at all, which is the
+    // case that was previously blamed on the key.
+    return "could not reach the server. Is it still running?";
+  }
+
+  if (status === 401) {
+    return "the server refused that key. It logs the reason — look for \"api key rejected\" in the server output.";
+  }
+  if (status >= 500) return `the server failed while checking the key (${String(status)}).`;
+  return `the server rejected the request (${String(status)}).`;
 }
 
 const readStoredKey = (): string => {
@@ -61,6 +112,8 @@ export const useSession = create<SessionState>((set, get) => ({
   error: null,
   busy: false,
   revision: 0,
+  // Nothing stored is nothing to check, so that case is already settled.
+  hydrated: readStoredKey() === "",
 
   connect: async (key: string) => {
     const trimmed = key.trim();
@@ -73,7 +126,7 @@ export const useSession = create<SessionState>((set, get) => ({
       } catch {
         /* nothing to clean up */
       }
-      set({ apiKey: "", identity: null, error: null, busy: false });
+      set({ apiKey: "", identity: null, error: null, busy: false, hydrated: true });
       return;
     }
 
@@ -87,7 +140,31 @@ export const useSession = create<SessionState>((set, get) => ({
     if (get().apiKey !== trimmed) return;
 
     if (error !== null) {
-      set({ identity: null, busy: false, error: "that key was not accepted" });
+      // Narrowed here rather than inside describeFailure, which now states
+      // what it needs. Eden types `status` loosely enough that the check has
+      // to happen somewhere; doing it at the boundary keeps the function's
+      // signature honest about the only thing it can use.
+      set({
+        identity: null,
+        busy: false,
+        error: describeFailure(typeof error.status === "number" ? error.status : undefined),
+      });
+      return;
+    }
+
+    // A success with no body is not a success.
+    //
+    // Eden allows `data` to be null alongside a null `error`, and storing that
+    // set `identity` to null while this path reported no failure — so the
+    // console sat signed out having just been told the key was accepted, with
+    // nothing on screen to say why. Cheaper to name it here than to debug it
+    // from a screen that shows nothing at all.
+    if (data === null) {
+      set({
+        identity: null,
+        busy: false,
+        error: "the server accepted the key but returned nothing. Check the server log.",
+      });
       return;
     }
 
@@ -104,7 +181,73 @@ export const useSession = create<SessionState>((set, get) => ({
     void get().connect("");
   },
 
+  /**
+   * Check the restored key before anything relies on it.
+   *
+   * Nothing did this, so a refresh left `apiKey` set and `identity` null: the
+   * pages stayed hidden until someone pressed connect again, while everything
+   * keyed on the raw key carried on as though the session were live.
+   */
+  hydrate: async () => {
+    const stored = get().apiKey;
+    if (stored === "" || get().identity !== null) {
+      set({ hydrated: true });
+      return;
+    }
+
+    await get().connect(stored);
+    // Whatever the answer, the question has now been asked — including when it
+    // was refused, which is precisely when the form should appear.
+    set({ hydrated: true });
+  },
+
+  /**
+   * Drop the identity but keep the key on screen.
+   *
+   * Called when the server rejects a credential that was working. The text is
+   * left in the field because the usual cause is the key being revoked or the
+   * database being replaced, and retyping it is not the fix — knowing it is no
+   * longer accepted is.
+   */
+  invalidate: (reason: string) => {
+    if (get().identity === null) return;
+    set({ identity: null, busy: false, error: reason });
+  },
+
+  /**
+   * Drop a stored key that cannot possibly work.
+   *
+   * Called when the instance reports it has no keys at all: whatever is in
+   * this browser was issued by a database that no longer exists, so presenting
+   * it can only produce a 401. It did — twice per load, with an alarming
+   * "api key rejected" in the server log while the operator was still reading
+   * the setup screen, and an error banner accusing a credential they had not
+   * typed.
+   *
+   * Silent, unlike `invalidate`: there is nothing here for the operator to act
+   * on. The key is gone because the instance it belonged to is gone.
+   */
+  forget: () => {
+    if (get().apiKey === "" && get().error === null) return;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch {
+      /* nothing to clean up */
+    }
+    set({ apiKey: "", identity: null, error: null, busy: false, hydrated: true });
+  },
+
   bumpRevision: () => {
     set((state) => ({ revision: state.revision + 1 }));
   },
 }));
+
+/**
+ * The zone to render timestamps in.
+ *
+ * The server's, not the browser's. A console showing the reader's local time
+ * while the logs show Jakarta means two people looking at the same incident
+ * read different clocks. UTC is the fallback for the moment before the
+ * identity has loaded, and is at least honestly labelled.
+ */
+export const useServerTimezone = (): string => useSession((s) => s.identity?.serverTimezone ?? "UTC");

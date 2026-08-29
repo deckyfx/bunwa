@@ -10,6 +10,8 @@
  * that creates it and is never recoverable afterwards.
  */
 
+import { config, MIN_API_KEY_LENGTH } from "../config/env";
+
 /** Bytes of randomness in the secret portion. 32 bytes is 256 bits. */
 const SECRET_BYTES = 32;
 
@@ -116,4 +118,56 @@ export async function verifyApiKey(presented: string, hash: string): Promise<boo
     // A malformed stored hash must fail closed, not throw into the request path.
     return false;
   }
+}
+
+/**
+ * Longest an operator-supplied key may be before it is not a credential.
+ *
+ * A bound exists so a huge body cannot be turned into a hashing cost.
+ */
+const MAX_BOOTSTRAP_LENGTH = 512;
+
+/**
+ * The index prefix for a key this system did not mint.
+ *
+ * `API_KEY` is chosen by whoever writes the deployment, so it does not carry
+ * our `bw_live_slug_secret` shape and `prefixOf` returns null for it. Rather
+ * than relax that parser — its strictness is what keeps a malformed credential
+ * from becoming a query on attacker text — such keys are indexed under a
+ * derived, fixed-width value. The prefix is an index selector, never a secret:
+ * the row it selects still verifies with Argon2id.
+ *
+ * **Keyed, because it sits in the same row as the Argon2id hash.** This was a
+ * bare SHA-256 of the presented key. Argon2id is chosen precisely because it is
+ * expensive to attack offline, and storing a fast unkeyed digest of the same
+ * secret beside it hands an attacker who reaches the database a cheaper target
+ * than the one the expensive hash exists to be. `API_KEY` is operator-written
+ * and only length-checked, so it carries no guaranteed entropy — a 32-character
+ * phrase someone composed is exactly what a dictionary attack is for.
+ *
+ * The HMAC key is the credential encryption secret, which lives in the
+ * environment rather than the database, so a leaked database no longer contains
+ * everything needed to attack the value. When it is unset the digest is
+ * unkeyed, which is no worse than what this replaced and is stated here rather
+ * than hidden: the deployment that most needs this — one holding WhatsApp
+ * credentials — is required to set that variable anyway.
+ *
+ * Deterministic either way, which `registerEnvKey` depends on to recognise the
+ * row it wrote for this key on the last start.
+ */
+export function bootstrapPrefix(presented: string): string {
+  const secret = config().credentialEncryptionKey;
+  const hasher =
+    secret === null ? new Bun.CryptoHasher("sha256") : new Bun.CryptoHasher("sha256", secret);
+  return `bw_boot_${hasher.update(presented).digest("hex").slice(0, 24)}`;
+}
+
+/**
+ * Whether a presented value could be an operator-supplied key.
+ *
+ * Keeps the "reject shape before touching the database" property: junk and
+ * oversized bodies are still turned away without a lookup.
+ */
+export function isBootstrapCandidate(presented: string): boolean {
+  return presented.length >= MIN_API_KEY_LENGTH && presented.length <= MAX_BOOTSTRAP_LENGTH;
 }

@@ -12,7 +12,12 @@ import {
   CANONICAL_FIELDS,
   type LogValue,
 } from "../logger";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { resetConfig } from "../../config/env";
+import { resetFileSink } from "../sinks";
 import { captureEnv } from "../../testing/env";
 
 /** Capture stdout/stderr for the duration of one call. */
@@ -82,6 +87,10 @@ describe("redaction", () => {
 
   test("covers common credential aliases", () => {
     const [line] = capture(() => log.info("y", { accessToken: "a", refreshToken: "b", cookie: "c" }));
+    // Asserted before it is inspected. Every check below is negative, and a
+    // negative check against `undefined` passes — so with nothing captured,
+    // this proved credentials were redacted by proving nothing was logged.
+    expect(line, "nothing was captured to redact").toBeDefined();
     expect(line).not.toContain('"a"');
     expect(line).not.toContain('"b"');
     expect(line).not.toContain('"c"');
@@ -93,6 +102,7 @@ describe("redaction", () => {
     const [line] = capture(() =>
       log.info("z", { clientSecret: "A", client_secret: "B", SigningKey: "C", refresh_token: "D" }),
     );
+    expect(line, "nothing was captured to redact").toBeDefined();
     for (const leaked of ['"A"', '"B"', '"C"', '"D"']) expect(line).not.toContain(leaked);
   });
 
@@ -126,11 +136,13 @@ describe("value-level redaction", () => {
   test("masks credentials quoted inside an error message and stack", () => {
     // Driver errors routinely echo the connection string they failed on.
     const [line] = capture(() => log.error("y", new Error("connect failed for postgres://bob:s3cret@db/x")));
+    expect(line, "nothing was captured to redact").toBeDefined();
     expect(line).not.toContain("s3cret");
   });
 
   test("masks bearer tokens and key=value pairs", () => {
     const [line] = capture(() => log.info("z", { header: "Authorization: Bearer abcdef0123456789" }));
+    expect(line, "nothing was captured to redact").toBeDefined();
     expect(line).not.toContain("abcdef0123456789");
   });
 
@@ -259,5 +271,137 @@ describe("a looping cause chain", () => {
     const [line] = capture(() => log.error("cyclic", outer));
     expect(line).toContain("max cause depth");
     expect(line).toContain("outer");
+  });
+});
+
+describe("the file sink", () => {
+  let dir: string;
+  // Captured so afterEach can put the environment back. Without this the block
+  // left LOG_DIR pointing at a directory it had just deleted and pinned
+  // SERVER_TIMEZONE for the rest of the process — every later test that read
+  // config inherited both, and the sink logged "disabled after a write error:
+  // ENOTDIR" from tests that had nothing to do with files.
+  let priorLogDir: string | undefined;
+  let priorTimezone: string | undefined;
+
+  beforeEach(() => {
+    priorLogDir = Bun.env["LOG_DIR"];
+    priorTimezone = Bun.env["SERVER_TIMEZONE"];
+    dir = mkdtempSync(join(tmpdir(), "bunwa-logger-"));
+    Bun.env["LOG_DIR"] = dir;
+    Bun.env["SERVER_TIMEZONE"] = "Asia/Jakarta";
+    resetConfig();
+    resetFileSink();
+  });
+
+  afterEach(() => {
+    // Deleted, not set to "": an empty value is a value, and the config reader
+    // distinguishes absent from blank.
+    if (priorLogDir === undefined) delete Bun.env["LOG_DIR"];
+    else Bun.env["LOG_DIR"] = priorLogDir;
+    if (priorTimezone === undefined) delete Bun.env["SERVER_TIMEZONE"];
+    else Bun.env["SERVER_TIMEZONE"] = priorTimezone;
+
+    // The sink first, then the directory, then the config it was built from.
+    // The comment has said "sink first" all along while the rmSync sat above
+    // it, so the directory was removed with the sink still holding a handle to
+    // it — which is the write error this ordering exists to avoid.
+    resetFileSink();
+    rmSync(dir, { recursive: true, force: true });
+    resetConfig();
+  });
+
+  /** Everything written to the log directory during this test, as lines. */
+  const written = (): string[] =>
+    readdirSync(dir)
+      .flatMap((f) => readFileSync(join(dir, f), "utf8").split("\n"))
+      .filter((l) => l !== "");
+
+  test("writes logfmt", () => {
+    // Asserted through the logger rather than by calling the formatter, because
+    // the regression to guard against is the logger handing the file the wrong
+    // thing — which a test that formats its own line would never see.
+    capture(() => log.info("device paired", { deviceId: "d1" }));
+
+    const [line = ""] = written();
+    // RFC 3339 with the configured offset, so the file cannot be misread as UTC.
+    expect(line).toMatch(/^time=\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+07:00 /);
+    expect(line).toContain("level=info");
+    // Quoted because it contains a space; a bare value would end the pair early.
+    expect(line).toContain('msg="device paired"');
+    // Its own key, not buried in a blob, which is the point of the format.
+    expect(line).toContain("deviceId=d1");
+  });
+
+  test("quotes only what would otherwise break the parse", () => {
+    capture(() => log.info("m", { bare: "abc-1.2/x", spaced: "two words", quoted: 'say "hi"', n: 3, ok: true }));
+
+    const [line = ""] = written();
+    expect(line, "a bare token stays bare, which is what keeps it readable").toContain("bare=abc-1.2/x");
+    expect(line).toContain('spaced="two words"');
+    expect(line, "an embedded quote is escaped, not dropped").toContain('quoted="say \\"hi\\""');
+    expect(line, "numbers and booleans are unquoted so a parser types them").toContain("n=3 ");
+    expect(line).toContain("ok=true");
+  });
+
+  test("one event stays one line, even with a stack trace", () => {
+    // A multi-line value would otherwise become several unparseable lines, and
+    // an error is exactly the entry most worth reading.
+    const err = new Error("kaboom");
+    err.stack = "Error: kaboom\n    at one\n    at two";
+    capture(() => log.error("boom", err));
+
+    const lines = written();
+    expect(lines, "a newline inside a value must not split the record").toHaveLength(1);
+    expect(lines[0]).toContain("at one");
+    // Flattened rather than one JSON blob, so each part is its own key.
+    expect(lines[0]).toContain('error.message=kaboom');
+    expect(lines[0], "the newline is escaped rather than literal").not.toContain("\n    at");
+  });
+
+  test("stays readable in production, where the console is JSON", () => {
+    // The two sinks diverge on purpose: stdout is scraped, the file is read.
+    const [consoleLine] = capture(() => log.info("started"));
+    expect(consoleLine, "console").toMatch(/^\{/);
+    const [fileLine] = written();
+    expect(fileLine, "the file sink wrote nothing").toBeDefined();
+    expect(fileLine, "file").not.toMatch(/^\{/);
+  });
+
+  test("redaction applies to the file too", () => {
+    // The file outlives the terminal, so a credential reaching it is the worse
+    // of the two leaks.
+    capture(() => log.info("auth", { apiKey: "bw_live_secret" }));
+    const [line] = written();
+    // Asserted before it is inspected. `written()` returning nothing gives
+    // `undefined` here, and `expect(undefined).not.toContain(...)` passes — so
+    // this read as proof of redaction while proving only that no file was
+    // written, which is the one outcome it must not accept.
+    expect(line, "the file sink wrote nothing to redact").toBeDefined();
+    expect(line).not.toContain("bw_live_secret");
+  });
+
+  test("carries no escape codes", () => {
+    const original = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    try {
+      capture(() => log.error("boom"));
+      const [line] = written();
+      expect(line, "the file sink wrote nothing").toBeDefined();
+      expect(line).not.toContain("\u001b");
+    } finally {
+      if (original === undefined) delete (process.stdout as { isTTY?: boolean }).isTTY;
+      else Object.defineProperty(process.stdout, "isTTY", original);
+    }
+  });
+
+  test("nested fields become dotted keys rather than a nested blob", () => {
+    // A blob would need a second parse to query, and reads as escaped quotes
+    // inside escaped quotes.
+    capture(() => log.info("webhook", { target: { host: "example.com", attempt: 2 } }));
+
+    const [line = ""] = written();
+    expect(line).toContain("target.host=example.com");
+    expect(line).toContain("target.attempt=2");
   });
 });

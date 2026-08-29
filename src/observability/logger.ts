@@ -9,6 +9,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 
 import { config, type LogLevel } from "../config/env";
+import { formatIso } from "../time/format";
+import { formatForConsole, formatForFile, writeToFile } from "./sinks";
 
 /** Ordering used to decide whether a line clears the configured floor. */
 const SEVERITY: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
@@ -144,6 +146,7 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
   // a request context — precisely where one is most likely to be put — reached
   // the log verbatim while a directly-logged one was masked.
   const context = storage.getStore();
+  const at = new Date();
   const line: Record<string, LogValue> = {
     // Caller data first and stripped of canonical keys; the logger's own values
     // last. Both guards are deliberate: the strip stops a caller shadowing a
@@ -151,23 +154,32 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
     ...withoutCanonical(redact(context ?? {}) as Record<string, LogValue>),
     ...withoutCanonical(redact(fields) as Record<string, LogValue>),
     level,
-    time: new Date().toISOString(),
+    // Rendered in the server's timezone and carrying its offset, so the line
+    // reads the same as the dashboard while staying unambiguous to a parser.
+    time: formatIso(at),
     message,
     ...(context === undefined ? {} : { correlationId: context.correlationId }),
   };
 
+  const rawId = line["correlationId"];
+  const id = typeof rawId === "string" ? rawId : undefined;
+  const extra = Object.entries(line).filter(([k]) => !(CANONICAL_FIELDS as readonly string[]).includes(k));
+  const rest = extra.length === 0 ? "" : JSON.stringify(Object.fromEntries(extra));
+
+  // The file gets logfmt: readable by eye, and parsed out of the box by the
+  // tooling that would be pointed at it. The fields go in as a record rather
+  // than a pre-rendered blob, so each becomes its own queryable key.
+  writeToFile(formatForFile(level, at, id, message, Object.fromEntries(extra)), at);
+
   const out = level === "error" || level === "warn" ? console.error : console.log;
+
+  // Production stdout stays JSON: it is scraped by a collector, not read.
   if (cfg.isProduction) {
     out(JSON.stringify(line));
     return;
   }
-  // Development: one readable line, with the correlation id kept short.
-  const rawId = line["correlationId"];
-  const id = typeof rawId === "string" ? rawId.slice(0, 8) : "--------";
-  const rest = Object.entries(line).filter(([k]) => !["level", "time", "message", "correlationId"].includes(k));
-  const time = typeof line["time"] === "string" ? line["time"] : new Date().toISOString();
-  out(`${time.slice(11, 23)} ${level.toUpperCase().padEnd(5)} [${id}] ${message}` +
-      (rest.length ? ` ${JSON.stringify(Object.fromEntries(rest))}` : ""));
+
+  out(formatForConsole(level, at, id, message, rest));
 }
 
 /**

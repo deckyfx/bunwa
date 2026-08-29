@@ -10,6 +10,11 @@ import { Elysia, t } from "elysia";
 import { requireApiKey, requireScope } from "../../auth/middleware";
 import { DeliveryStore } from "../../stores/delivery-store";
 import { WebhookStore } from "../../stores/webhook-store";
+import { serverTimezone, setServerTimezone } from "../../time/format";
+import { ProjectStore } from "../../stores/project-store";
+import { SettingsStore, type SettingKey } from "../../stores/settings-store";
+import { ValidationError } from "../../stores/errors";
+import { log } from "../../observability/logger";
 
 export const projectRoutes = new Elysia({ prefix: "/v1" })
   .use(requireApiKey)
@@ -20,11 +25,92 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
    * an integrator hits: it confirms the credential works and shows exactly
    * which environment it acts on, before anything is sent to a real number.
    */
-  .get("/whoami", ({ auth }) => ({
+  .get("/whoami", async ({ auth }) => ({
     projectId: auth.projectId,
     environmentId: auth.environmentId,
+    // The names a person uses. The ids are stable and unambiguous, which is
+    // why they are here for machines, but a console header showing
+    // "7f30cbb0 / fff9c296" tells an operator nothing about which project or
+    // environment they are acting on — and that is the one thing a header in
+    // front of a live WhatsApp connection has to make obvious.
+    ...(await ProjectStore.describeTenant(auth.projectId, auth.environmentId)),
     scopes: auth.scopes,
+    // The zone every timestamp the server renders is in. Returned here so the
+    // console shows the same wall clock as the logs rather than the reader's
+    // own — an operator in another country comparing a screen against a log
+    // file must not be silently seven hours out.
+    serverTimezone: serverTimezone(),
   }))
+
+  /**
+   * Instance settings, and where each value comes from.
+   *
+   * Authenticated, unlike the setup screen's copy: setup answers before a
+   * credential exists and closes once one does, so without this the instance
+   * name could only ever be chosen during first run and never corrected.
+   *
+   * Behind `manage:instance`, not merely behind a key. These are not this
+   * tenant's settings — there is one instance name and one server timezone,
+   * shared by every project on the deployment — so "authenticated" was the
+   * wrong bar. Any key with `manage:devices` could read them, and the handler
+   * below could change them for everyone.
+   */
+  .get("/settings", ({ auth, path }) => {
+    requireScope(auth, "manage:instance", path);
+    return SettingsStore.all();
+  })
+
+  .put(
+    "/settings",
+    ({ body, path, auth }) => {
+      // `manage:instance`, not `manage:devices`. This writes values that are
+      // one per process: the instance name reaches WhatsApp through the
+      // Baileys handshake and is what every other project's number is listed
+      // under, and setServerTimezone below mutates the zone every rendered
+      // timestamp uses, logs included. A tenant holding an ordinary project
+      // key was able to do both to every other tenant on the deployment.
+      requireScope(auth, "manage:instance", path);
+
+      // Everything is checked before anything is written.
+      //
+      // One pass that validated and wrote as it went left a valid instance
+      // name persisted and a rejected timezone unwritten, then answered 400 —
+      // so the caller was told the request failed while half of it had already
+      // taken effect, and the console showed a name it had been told was not
+      // saved.
+      const pending: Array<{ setting: SettingKey; value: string }> = [];
+      for (const [key, value] of Object.entries(body)) {
+        if (value === undefined || value.trim() === "") continue;
+        const setting = key as SettingKey;
+
+        if (SettingsStore.resolve(setting).source === "environment") {
+          // Refused rather than ignored: silently dropping it leaves the
+          // console showing a value the deployment overrides, which is the
+          // failure the precedence rule exists to prevent.
+          throw new ValidationError(`${setting} is set in the environment and cannot be changed here`, setting);
+        }
+
+        // Throws on a bad value, before any write has happened.
+        pending.push({ setting, value: SettingsStore.validate(setting, value) });
+      }
+
+      for (const { setting, value } of pending) {
+        const applied = SettingsStore.set(setting, value);
+        // Rendering reads a cached zone, so a write that did not update it
+        // would take effect only after a restart.
+        if (setting === "serverTimezone") setServerTimezone(applied);
+        log.info("setting changed", { setting, value: applied });
+      }
+
+      return SettingsStore.all();
+    },
+    {
+      body: t.Object({
+        instanceName: t.Optional(t.String({ maxLength: 200 })),
+        serverTimezone: t.Optional(t.String({ maxLength: 100 })),
+      }),
+    },
+  )
 
   /** Where this environment's events are delivered. The secret is never returned. */
   .get("/webhook", async ({ auth }) => WebhookStore.describe(auth.projectId, auth.environmentId))
