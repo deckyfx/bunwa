@@ -10,6 +10,7 @@ import { Elysia, t } from "elysia";
 import { requireApiKey, requireScope, requireWithinLimit } from "../../auth/middleware";
 import { LIMITS } from "../../ops/rate-limit";
 import { DeviceStore } from "../../stores/device-store";
+import { retireDevice } from "../../ops/retire-device";
 import { problem } from "../server";
 import type { EngineRegistry } from "../../engine/registry";
 import { EngineError } from "../../engine/types";
@@ -212,6 +213,61 @@ export function deviceRoutes(registry: EngineRegistry) {
         await registry.get(poolId).engine.logout(binding.device.id);
         set.status = 204;
         return null;
+      },
+      { params: t.Object({ ref: t.String() }) },
+    )
+
+    /**
+     * Let this project go of a number.
+     *
+     * Two different things behind one button, because from the operator's side
+     * it is one intention — "we are done with this number" — and what it costs
+     * depends on something they cannot see: whether anyone else is using it.
+     *
+     * If another project still holds the device, this unsubscribes and stops
+     * there. The binding and the consent end, events stop reaching this
+     * environment, and the number carries on serving the projects that still
+     * have a claim. Logging it out would take a working number away from
+     * tenants who never asked for anything.
+     *
+     * If this was the last claim, the device is retired: unlinked from
+     * WhatsApp, its credentials and Signal keys destroyed, and its history
+     * erased. Leaving a paired socket with nobody attached to it means holding
+     * account-takeover material for an account nothing is using.
+     *
+     * The response says which happened, because the two are not equally
+     * reversible and the operator deserves to know which one they just did.
+     */
+    .delete(
+      "/devices/:ref",
+      async ({ auth, params, set, path }) => {
+        requireScope(auth, "manage:devices", path);
+
+        const binding = await DeviceStore.findBinding(auth.environmentId, params.ref);
+        if (binding === null) {
+          set.status = 404;
+          return problem(404, "not-found", "Device not found", undefined, path, currentCorrelationId());
+        }
+
+        await DeviceStore.revokeConsent(binding.device.id, auth.projectId, "operator");
+
+        // Asked after the revocation, not before. Before, this project's own
+        // binding would still count as a holder and nothing would ever be the
+        // last one.
+        const holders = await DeviceStore.projectsHolding(binding.device.id);
+        if (holders.length > 0) {
+          set.status = 200;
+          return { outcome: "released" as const, stillHeldBy: holders.length };
+        }
+
+        const retired = await retireDevice(binding.device.id, registry);
+        set.status = 200;
+        return {
+          outcome: "retired" as const,
+          stillHeldBy: 0,
+          hadSession: retired.hadSession,
+          messagesErased: retired.messagesErased,
+        };
       },
       { params: t.Object({ ref: t.String() }) },
     )

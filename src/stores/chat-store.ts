@@ -11,7 +11,7 @@
 import { and, desc, eq, lt, sql } from "drizzle-orm";
 
 import { db, type Database } from "../db";
-import { chatMessages, chatThreads, virtualDevices } from "../db/schema";
+import { chatMedia, chatMessages, chatThreads, virtualDevices } from "../db/schema";
 import { ValidationError } from "./errors";
 import { withTransaction } from "../db/transaction";
 
@@ -293,5 +293,37 @@ export const ChatStore = {
 
     const removed = await database.delete(chatMessages).where(where).returning({ id: chatMessages.id });
     return removed.length;
+  },
+
+  /**
+   * Erase everything this device ever saw.
+   *
+   * Part of retiring a device rather than a retention rule: the account is
+   * being unlinked and its credentials destroyed, so the history is about a
+   * WhatsApp identity this instance can no longer reach and no longer has any
+   * claim to hold.
+   *
+   * Keyed on the device, not the environment, and that is the point. Several
+   * projects can have been bound to one number, so scoping this to the caller
+   * would leave the other tenants' copies of the same conversations behind
+   * after the thing they were about had gone.
+   *
+   * Media rows go with the messages. Nothing writes `storage_path` to disk
+   * yet, so there is no file to unlink — when something does, it belongs here.
+   */
+  async forgetDevice(deviceId: string, database: Database = db()): Promise<{ messages: number; threads: number }> {
+    const messages = await database
+      .delete(chatMessages)
+      .where(eq(chatMessages.deviceId, deviceId))
+      .returning({ id: chatMessages.id });
+
+    await database.delete(chatMedia).where(eq(chatMedia.deviceId, deviceId));
+
+    const threads = await database
+      .delete(chatThreads)
+      .where(eq(chatThreads.deviceId, deviceId))
+      .returning({ id: chatThreads.id });
+
+    return { messages: messages.length, threads: threads.length };
   },
 };

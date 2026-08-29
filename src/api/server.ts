@@ -334,7 +334,7 @@ export function createApp(registry?: EngineRegistry, mode: ServerMode = "headles
     // conditional mount made the app type a union of "these routes exist" and
     // "they do not", which is how Eden lost every device and message call
     // once already — and had lost `admin` entirely for the console.
-    .use(adminRoutes);
+    .use(adminRoutes(registry ?? new EngineRegistry()));
 
   return app;
 }

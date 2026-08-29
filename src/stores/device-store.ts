@@ -7,20 +7,11 @@
  * Those two sentences are the whole design, and `claim()` below is where they
  * are enforced.
  */
-import { and, count as drizzleCount, eq, or } from "drizzle-orm";
+import { and, count as drizzleCount, eq, ne, or } from "drizzle-orm";
 import type { EngineKind } from "../engine/types";
 
 import { db, type Database } from "../db";
-import {
-  consentEvents,
-  deviceConsents,
-  devices,
-  environments,
-  virtualDevices,
-  type Device,
-  type DeviceConsent,
-  type VirtualDevice,
-} from "../db/schema";
+import { consentEvents, deviceConsents, devices, environments, projects, type Device, type DeviceConsent, type VirtualDevice, virtualDevices } from "../db/schema";
 import { withTransaction } from "../db/transaction";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 
@@ -490,6 +481,49 @@ export class DeviceStore {
     }
   }
 
+  /**
+   * Which projects still have a live claim on this device.
+   *
+   * "Live" means a binding that has not been revoked. A revoked one is a
+   * project that used to hold the number, and a suspended one is a tenant
+   * whose access is paused rather than ended — the number is still theirs, so
+   * unlinking it from WhatsApp underneath them would be the wrong answer.
+   *
+   * The question this exists for: when one project lets a shared number go,
+   * is anyone else still using it? If so the device carries on and only that
+   * project's binding ends; if not there is nothing left the credentials serve.
+   */
+  static async projectsHolding(deviceId: string, database: Database = db()): Promise<string[]> {
+    const rows = await database
+      .selectDistinct({ projectId: environments.projectId })
+      .from(virtualDevices)
+      .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .where(and(eq(virtualDevices.deviceId, deviceId), ne(virtualDevices.status, "revoked")));
+
+    return rows.map((row) => row.projectId);
+  }
+
+  /**
+   * Mark a device as holding no session, after its credentials have gone.
+   *
+   * Separate from the engine work so the row and the socket cannot disagree
+   * about what happened: the caller ends the session first and records it
+   * here, rather than this method implying anything about a live connection.
+   */
+  static async markRetired(deviceId: string, database: Database = db(), now: Date = new Date()): Promise<void> {
+    await database
+      .update(devices)
+      .set({
+        state: "unpaired",
+        stateReason: "retired: credentials destroyed, the device must pair again",
+        enginePoolId: null,
+        engineDeviceId: null,
+        jid: null,
+        updatedAt: now,
+      })
+      .where(eq(devices.id, deviceId));
+  }
+
   private static async activateBindingsFor(
     deviceId: string,
     projectId: string,
@@ -570,6 +604,89 @@ export class DeviceStore {
       .from(virtualDevices)
       .innerJoin(devices, eq(virtualDevices.deviceId, devices.id))
       .where(eq(virtualDevices.environmentId, environmentId));
+  }
+
+  /**
+   * Every device on the instance, with who is using it.
+   *
+   * The operator's view, and the one thing a project key can never assemble:
+   * a number can be shared, so "which tenants does this device serve?" is a
+   * question only somebody outside all of them can ask. It is also the
+   * question that decides whether retiring a device is a small act or a large
+   * one.
+   *
+   * The msisdn is included because for an operator it *is* the device's name —
+   * ids identify, phone numbers are what a support conversation is about.
+   */
+  static async listAll(database: Database = db()) {
+    const rows = await database
+      .select({
+        deviceId: devices.id,
+        msisdn: devices.msisdn,
+        state: devices.state,
+        stateReason: devices.stateReason,
+        lastSeenAt: devices.lastSeenAt,
+        enginePoolId: devices.enginePoolId,
+        bindingStatus: virtualDevices.status,
+        alias: virtualDevices.alias,
+        projectId: projects.id,
+        projectName: projects.displayName,
+        environmentSlug: environments.slug,
+      })
+      .from(devices)
+      .leftJoin(virtualDevices, eq(virtualDevices.deviceId, devices.id))
+      .leftJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .leftJoin(projects, eq(environments.projectId, projects.id));
+
+    // Folded here rather than in the query: one row per device with its
+    // holders nested is what the screen renders, and a join returns one row
+    // per binding. Doing it in SQL would mean string-aggregating names, which
+    // is harder to read and no faster at this size.
+    const byDevice = new Map<string, {
+      deviceId: string;
+      msisdn: string;
+      state: string;
+      stateReason: string | null;
+      lastSeenAt: Date | null;
+      enginePoolId: string | null;
+      heldBy: Array<{ projectId: string; projectName: string; environmentSlug: string; alias: string; status: string }>;
+    }>();
+
+    for (const row of rows) {
+      const existing = byDevice.get(row.deviceId) ?? {
+        deviceId: row.deviceId,
+        msisdn: row.msisdn,
+        state: row.state,
+        stateReason: row.stateReason,
+        lastSeenAt: row.lastSeenAt,
+        enginePoolId: row.enginePoolId,
+        heldBy: [],
+      };
+
+      // A revoked binding is a project that used to hold this number. Listing
+      // it as a holder would make a device look shared when it is not, and
+      // that is the number the retire decision turns on.
+      if (
+        row.projectId !== null &&
+        row.projectName !== null &&
+        row.environmentSlug !== null &&
+        row.alias !== null &&
+        row.bindingStatus !== null &&
+        row.bindingStatus !== "revoked"
+      ) {
+        existing.heldBy.push({
+          projectId: row.projectId,
+          projectName: row.projectName,
+          environmentSlug: row.environmentSlug,
+          alias: row.alias,
+          status: row.bindingStatus,
+        });
+      }
+
+      byDevice.set(row.deviceId, existing);
+    }
+
+    return [...byDevice.values()];
   }
 
   /**

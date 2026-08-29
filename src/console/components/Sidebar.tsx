@@ -23,7 +23,14 @@ import {
 
 import { ThemeToggle } from "./ThemeToggle";
 
-export type SectionId = "claim" | "devices" | "chats" | "deliveries" | "projects" | "settings";
+export type SectionId =
+  | "claim"
+  | "devices"
+  | "chats"
+  | "deliveries"
+  | "projects"
+  | "fleet"
+  | "settings";
 
 /**
  * Every section, and the scope that makes it worth showing.
@@ -60,6 +67,7 @@ export const SECTIONS: Section[] = [
   // Instance-level. What an operator manages: who the tenants are, what
   // credentials exist, and the values shared by every project on the box.
   { id: "projects", label: "Projects", icon: FolderKanban, level: "admin", scope: "manage:projects" },
+  { id: "fleet", label: "Devices", icon: Smartphone, level: "admin", scope: "manage:projects" },
   { id: "settings", label: "Settings", icon: SlidersHorizontal, level: "admin", scope: "manage:instance" },
 
   // Project-level. What a tenant does with the number it holds.

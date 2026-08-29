@@ -18,19 +18,31 @@
 import { Elysia, t } from "elysia";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
+import { EngineRegistry } from "../../engine/registry";
 import { requireAdminKey, requireScope } from "../../auth/middleware";
 import { SettingsStore, type SettingKey } from "../../stores/settings-store";
+import { retireDevice } from "../../ops/retire-device";
 import { serverTimezone, setServerTimezone } from "../../time/format";
 import { isProjectScope, PROJECT_SCOPES } from "../../auth/scopes";
 import type { ApiKey } from "../../db/schema";
 import { ValidationError } from "../../stores/errors";
+import { DeviceStore } from "../../stores/device-store";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ProjectStore } from "../../stores/project-store";
 import { log } from "../../observability/logger";
 import { config } from "../../config/env";
 import { problem } from "../server";
 
-export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
+/**
+ * The instance surface.
+ *
+ * A factory rather than a value because retiring a device has to reach the
+ * engine that holds its socket — the same reason `deviceRoutes` is one. The
+ * registry is passed in rather than imported so a test can drive these routes
+ * against a stub engine instead of opening a WhatsApp connection.
+ */
+export const adminRoutes = (registry: EngineRegistry) =>
+  new Elysia({ prefix: "/admin/v1" })
   /*
    * The flag is enforced here rather than by mounting conditionally.
    *
@@ -163,6 +175,57 @@ export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
         serverTimezone: t.Optional(t.String({ maxLength: 100 })),
       }),
     },
+  )
+
+  /**
+   * Every device on the instance, and which projects are using it.
+   *
+   * The fleet view. A project key sees the numbers bound to its own
+   * environment; only a credential outside every tenant can answer "who else
+   * has this number?" — which is the question that decides what retiring one
+   * actually costs.
+   */
+  .get("/devices", () => DeviceStore.listAll())
+
+  /**
+   * Retire a device, whoever is using it.
+   *
+   * The operator's version of release, and deliberately not the same
+   * operation. A project letting go of a shared number unsubscribes and leaves
+   * it working for everyone else; an operator doing this is saying the number
+   * itself is finished — so it unlinks from WhatsApp, destroys the credentials
+   * and Signal keys, erases the history, and revokes every project's binding.
+   *
+   * There is no "unless someone is using it" here on purpose. An operator can
+   * see who holds it before pressing this, and a retire that quietly declined
+   * because a tenant still had a binding would be a button that does nothing
+   * in the case it exists for.
+   */
+  .delete(
+    "/devices/:deviceId",
+    async ({ params, set }) => {
+      const holders = await DeviceStore.projectsHolding(params.deviceId);
+      for (const projectId of holders) {
+        await DeviceStore.revokeConsent(params.deviceId, projectId, "operator");
+      }
+
+      const retired = await retireDevice(params.deviceId, registry);
+
+      log.info("device retired by operator", {
+        deviceId: params.deviceId,
+        revokedFrom: holders.length,
+        hadSession: retired.hadSession,
+      });
+
+      set.status = 200;
+      return {
+        outcome: "retired" as const,
+        revokedFrom: holders.length,
+        hadSession: retired.hadSession,
+        messagesErased: retired.messagesErased,
+      };
+    },
+    { params: t.Object({ deviceId: t.String() }) },
   )
 
   .post(

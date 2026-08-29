@@ -21,6 +21,7 @@ import { ChatsPage } from "./pages/ChatsPage";
 import { ClaimPage } from "./pages/ClaimPage";
 import { DeliveriesPage } from "./pages/DeliveriesPage";
 import { DevicesPage } from "./pages/DevicesPage";
+import { FleetPage } from "./pages/FleetPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
@@ -49,6 +50,7 @@ function StreamIcon({ state }: { state: ReturnType<typeof useEventStream> }) {
 /** The selected section. One at a time, so each gets the whole page. */
 function Section({ id }: { id: SectionId }) {
   if (id === "devices") return <DevicesPage />;
+  if (id === "fleet") return <FleetPage />;
   if (id === "chats") return <ChatsPage />;
   if (id === "claim") return <ClaimPage />;
   if (id === "deliveries") return <DeliveriesPage />;
