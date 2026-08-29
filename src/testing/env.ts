@@ -50,4 +50,8 @@ export const FIXTURE_ENV_KEYS = [
   // Bun shares one process across test files, so an env key one fixture writes
   // is an env key every later fixture has.
   "ADMIN_API_ENABLED",
+  // Same hazard, and worse: a leaked API_KEY makes every later fixture come up
+  // already configured, so a test asserting a blank instance sees a credential
+  // it never created.
+  "API_KEY",
 ] as const;

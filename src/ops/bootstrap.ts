@@ -12,13 +12,14 @@
  * offer to mint another. When it is not, the setup screen mints one and shows
  * it once.
  */
-import { and, eq, gt, isNull, or } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
 
 import { apiKeys, environments, projects } from "../db/schema";
 import { ALL_SCOPES } from "../auth/scopes";
 import { bootstrapPrefix } from "../auth/api-key";
 import { config } from "../config/env";
 import { db, type Database } from "../db";
+import { withTransaction } from "../db/transaction";
 import { log } from "../observability/logger";
 import { SettingsStore } from "../stores/settings-store";
 import { setServerTimezone } from "../time/format";
@@ -78,61 +79,87 @@ async function findDefaults(
 async function registerEnvKey(database: Database, presented: string): Promise<void> {
   const prefix = bootstrapPrefix(presented);
 
-  // Identified by its prefix and its label, not by an environment: this key
-  // has none. The prefix is derived from the key itself, so it is stable for a
-  // given API_KEY and changes the moment the variable does — which is what
-  // makes the registration idempotent across restarts and a rotation visible.
-  const existing = await database
-    .select()
+  // Every bootstrap row, newest first. Identified by label rather than by an
+  // environment: this key has none. The prefix is derived from the key itself,
+  // so it is stable for a given API_KEY and changes the moment the variable
+  // does — which is what makes the registration idempotent across restarts and
+  // a rotation visible.
+  const history = await database
+    .select({ prefix: apiKeys.keyPrefix, revokedAt: apiKeys.revokedAt })
     .from(apiKeys)
-    .where(and(eq(apiKeys.keyPrefix, prefix), eq(apiKeys.label, BOOTSTRAP_KEY_LABEL)))
-    .limit(1);
+    .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL))
+    .orderBy(desc(apiKeys.createdAt));
 
-  if (existing[0] !== undefined) {
-    // Already registered, and possibly revoked by hand. Un-revoking on restart
-    // would make revocation useless for the one key an operator cannot rotate
-    // without a redeploy, so it is left exactly as found.
+  const current = history[0];
+
+  if (current !== undefined && current.prefix === prefix) {
+    // This key is the current registration, and it stays exactly as found —
+    // including revoked. Un-revoking on restart would make revocation useless
+    // for the one key an operator cannot rotate without a redeploy.
     return;
   }
 
+  // Falling through with an older row for this prefix is deliberate. Rotating
+  // X → Y → X used to find X's superseded row, take it for an existing
+  // registration and return, leaving the operator's key revoked and no way to
+  // tell why: rolling a deployment back to a previous API_KEY silently locked
+  // them out. A row that something newer superseded is history, not a
+  // registration, so the key is registered again.
+  //
+  // The distinction is positional rather than recorded: a hand-revoked key is
+  // still the newest bootstrap row, a superseded one is not.
+
   const now = new Date();
 
-  // The previous API_KEY stops working here, which is what the docstring above
-  // has always claimed and what the code did not do. Rotating the variable
-  // registered the new key and left the old row active, so a credential the
-  // operator believed they had replaced still authenticated — and the only way
-  // to find it was to know it was there. Rotation has to mean the old one is
-  // finished.
+  // Hashed before anything is written. Argon2 is the slow, throwing part of
+  // this function, and doing it after the revocation put a failure exactly
+  // where it costs most.
+  const keyHash = await Bun.password.hash(presented, { algorithm: "argon2id" });
+
+  // Revocation and replacement together, or neither.
   //
-  // Scoped to bootstrap rows by their label: keys minted through the console
-  // or the CLI are not superseded by an environment variable changing.
-  const superseded = await database
-    .update(apiKeys)
-    .set({ revokedAt: now, updatedAt: now })
-    .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)))
-    .returning({ prefix: apiKeys.keyPrefix });
+  // Separately, a crash between them left the old key revoked and no new row
+  // written — the operator locked out of their own instance by a restart, with
+  // the only credential they had just been told was superseded.
+  const superseded = await withTransaction(database, async (tx) => {
+    // The previous API_KEY stops working here, which is what the docstring
+    // above has always claimed and what the code did not do. Rotating the
+    // variable registered the new key and left the old row active, so a
+    // credential the operator believed they had replaced still authenticated —
+    // and the only way to find it was to know it was there.
+    //
+    // Scoped to bootstrap rows by their label: keys minted through the console
+    // or the CLI are not superseded by an environment variable changing.
+    const revoked = await tx
+      .update(apiKeys)
+      .set({ revokedAt: now, updatedAt: now })
+      .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)))
+      .returning({ prefix: apiKeys.keyPrefix });
+
+    // Registered as an admin key, like the one setup mints.
+    //
+    // API_KEY and the setup screen are two ways to obtain the same thing — the
+    // operator's credential — so they must produce the same kind of key.
+    // Leaving this one a tenant credential would mean the powers you got
+    // depended on which door you came through, and the one that made you a
+    // tenant let you send WhatsApp messages as that project.
+    await tx.insert(apiKeys).values({
+      level: "admin",
+      environmentId: null,
+      keyHash,
+      keyPrefix: prefix,
+      label: BOOTSTRAP_KEY_LABEL,
+      scopes: [...ALL_SCOPES],
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return revoked;
+  });
 
   if (superseded.length > 0) {
     log.info("revoked the previous API_KEY registration", { revoked: superseded.length });
   }
-
-  // Registered as an admin key, like the one setup mints.
-  //
-  // API_KEY and the setup screen are two ways to obtain the same thing — the
-  // operator's credential — so they must produce the same kind of key. Leaving
-  // this one a tenant credential would mean the powers you got depended on
-  // which door you came through, and the one that made you a tenant let you
-  // send WhatsApp messages as that project.
-  await database.insert(apiKeys).values({
-    level: "admin",
-    environmentId: null,
-    keyHash: await Bun.password.hash(presented, { algorithm: "argon2id" }),
-    keyPrefix: prefix,
-    label: BOOTSTRAP_KEY_LABEL,
-    scopes: [...ALL_SCOPES],
-    createdAt: now,
-    updatedAt: now,
-  });
 
   log.info("registered the API_KEY from the environment", { level: "admin", scopes: ALL_SCOPES.length });
 }
