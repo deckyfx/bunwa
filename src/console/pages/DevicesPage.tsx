@@ -13,11 +13,13 @@ import { Card } from "../components/Card";
 
 import { StatusPill } from "../components/StatusPill";
 import { useDevices } from "../store/devices";
+import { useNotice } from "../store/notice";
 import { useSession } from "../store/session";
 
 export function DevicesPage() {
   const revision = useSession((s) => s.revision);
-  const { devices, error, load } = useDevices();
+  const { devices, error, busy, load, release } = useDevices();
+  const showNotice = useNotice((s) => s.show);
 
   useEffect(() => {
     void load();
@@ -44,6 +46,7 @@ export function DevicesPage() {
               <th scope="col">Number</th>
               <th scope="col">Binding</th>
               <th scope="col">Device</th>
+              <th scope="col" className="text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -56,6 +59,30 @@ export function DevicesPage() {
                     binding is whether this project may use the number, and the
                     device is whether WhatsApp is connected at all. */}
                 <td><StatusPill state={device.deviceState} /></td>
+                <td className="py-2 text-right">
+                  {/* "Release", not "disconnect". What this does depends on
+                      whether anyone else holds the same number — it either
+                      unsubscribes this project or ends the device entirely —
+                      and a word that promised the second would be a lie half
+                      the time. The notice afterwards says which happened. */}
+                  <button
+                    type="button"
+                    disabled={busy || device.status === "revoked"}
+                    onClick={() => {
+                      void release(device.alias).then((outcome) => {
+                        if (outcome === null) return;
+                        showNotice(
+                          outcome.outcome === "retired"
+                            ? `${device.alias} was the last claim on that number, so it has been unlinked and its data erased.`
+                            : `${device.alias} released. The number is still in use by ${String(outcome.stillHeldBy)} other project(s).`,
+                        );
+                      });
+                    }}
+                    className="rounded-md border border-slate-300 px-2 py-1 text-xs font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  >
+                    release
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

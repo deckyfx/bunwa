@@ -138,7 +138,37 @@ function withoutCanonical(fields: Record<string, LogValue>): Record<string, LogV
 }
 
 /** Emit one line, if it clears the configured severity floor. */
-function emit(level: LogLevel, message: string, fields: Record<string, LogValue> = {}): void {
+/**
+ * How a line should be rendered where a person reads it.
+ *
+ * `summarised` means the message already says what the fields say, so the
+ * console prints the message alone. The fields still reach the file and the
+ * production JSON, because those are parsed rather than read — a request line
+ * wants `status=404` as a queryable key and a person wants "REQ 404 GET /nope",
+ * and printing both to a terminal is the same fact twice.
+ *
+ * Only for lines whose message is genuinely a summary of its fields. Anywhere
+ * else this hides detail from the one sink a human is actually looking at.
+ */
+interface EmitOptions {
+  summarised?: boolean;
+  /**
+   * What the terminal shows instead of `message`.
+   *
+   * The file and the production JSON always get `message`, which is why colour
+   * can live here at all: an escape code reaches a terminal and nothing else.
+   * Putting it in `message` would paint the file, which the sink is asserted
+   * never to be.
+   */
+  consoleMessage?: string;
+}
+
+function emit(
+  level: LogLevel,
+  message: string,
+  fields: Record<string, LogValue> = {},
+  options: EmitOptions = {},
+): void {
   const cfg = config();
   if (SEVERITY[level] < SEVERITY[cfg.logLevel]) return;
 
@@ -164,7 +194,8 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
   const rawId = line["correlationId"];
   const id = typeof rawId === "string" ? rawId : undefined;
   const extra = Object.entries(line).filter(([k]) => !(CANONICAL_FIELDS as readonly string[]).includes(k));
-  const rest = extra.length === 0 ? "" : JSON.stringify(Object.fromEntries(extra));
+  const rest =
+    extra.length === 0 || options.summarised === true ? "" : JSON.stringify(Object.fromEntries(extra));
 
   // The file gets logfmt: readable by eye, and parsed out of the box by the
   // tooling that would be pointed at it. The fields go in as a record rather
@@ -179,7 +210,7 @@ function emit(level: LogLevel, message: string, fields: Record<string, LogValue>
     return;
   }
 
-  out(formatForConsole(level, at, id, message, rest));
+  out(formatForConsole(level, at, id, options.consoleMessage ?? message, rest));
 }
 
 /**
@@ -194,6 +225,20 @@ export const log = {
   debug: (message: string, fields?: Record<string, LogValue>) => emit("debug", message, fields),
   /** A thing the service did that an operator would expect to see. */
   info: (message: string, fields?: Record<string, LogValue>) => emit("info", message, fields),
+  /**
+   * A line whose message already summarises its own fields.
+   *
+   * The console prints the message alone; the file and the production JSON
+   * still get every field. For request logging, where "REQ 200 GET /devices"
+   * is what a person wants and `status=200 path=/devices` is what a query
+   * wants, and repeating both in a terminal helps nobody.
+   */
+  summary: (
+    level: LogLevel,
+    message: string,
+    fields?: Record<string, LogValue>,
+    consoleMessage?: string,
+  ) => emit(level, message, fields, { summarised: true, consoleMessage }),
   /** Degraded but serving — something a human should look at, not tonight. */
   warn: (message: string, fields?: Record<string, LogValue>) => emit("warn", message, fields),
   /**

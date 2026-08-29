@@ -38,4 +38,20 @@ export function captureEnv(keys: readonly string[]): () => void {
 }
 
 /** The four a test fixture almost always sets. */
-export const FIXTURE_ENV_KEYS = ["NODE_ENV", "LOG_LEVEL", "RUNTIME_DIR", "DATABASE_PATH"] as const;
+export const FIXTURE_ENV_KEYS = [
+  "NODE_ENV",
+  "LOG_LEVEL",
+  "RUNTIME_DIR",
+  "DATABASE_PATH",
+  // Leaked out of one fixture and broke a dozen unrelated tests in another
+  // file: config() refuses ADMIN_API_ENABLED in production, so a suite that
+  // sets NODE_ENV=production inherited a ConfigError and logged nothing, and
+  // every assertion about a log line failed somewhere it was never set.
+  // Bun shares one process across test files, so an env key one fixture writes
+  // is an env key every later fixture has.
+  "ADMIN_API_ENABLED",
+  // Same hazard, and worse: a leaked API_KEY makes every later fixture come up
+  // already configured, so a test asserting a blank instance sees a credential
+  // it never created.
+  "API_KEY",
+] as const;

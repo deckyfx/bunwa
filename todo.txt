@@ -1,326 +1,179 @@
 # bunwa — deferred work
 
-Things known to be incomplete, with enough context to act on later without
-re-deriving why. Roadmap items live in docs/08; this file is for what was
-noticed in passing and deliberately not done at the time.
+What is not done, with enough context to act on it later without re-deriving
+why. Roadmap items live in docs/08; this file is for what was noticed in
+passing and deliberately left.
 
-Part A is this branch. Part B is what was already here, carried forward
-unchanged — the file was rewritten rather than appended to, and dropping those
-would have quietly retired real findings, one of which is a stage-1 exit
-criterion.
+Finished work is not recorded here. Git history is the record of what was done.
 
 
-# PART A — stage-5 branch: unfinished
+## 1. The consent challenge is never sent, and no reply is ever parsed
 
-## A1. Split this branch before review
+Blocks stage-1 exit criterion 2.
 
-Status: blocking the CodeRabbit session
-Size: 28 commits, 174 files, ~13.9k insertions
+`POST /v1/devices/claim` answers 202 when a number belongs to another project.
+It creates the consent row and its challenge token, and stops there.
+`DeviceStore.respondToConsent` exists, is tested, and has no caller outside
+those tests. Nothing sends the WhatsApp message and nothing watches for a
+reply. The response carries `consentDelivery: "not_implemented"` so a client
+can branch on it rather than parse prose.
 
-Too large to review as one change, and the risk is not the volume but the
-mixture: a security fix and a stylesheet in the same diff get the same amount
-of attention, which is the wrong amount for one of them.
+A second project cannot obtain a number a first project holds, except by an
+operator approving it directly.
 
-Proposed split, in dependency order. Each is a branch off the previous, so the
-security work can be reviewed and merged without waiting for the console.
-
-  1. observability + time
-       bee1d38  timezone, dual log sink
-       650ca01  logfmt in the file
-     Self-contained. Touches src/time, src/observability, .env*.
-
-  2. server shape
-       7500e7d  serverMode, Elysia onStart/onStop, root route
-     Depends on nothing above; small.
-
-  3. settings + first run (backend only)
-       deb92d5  settings table, instance name, precedence rule
-       3fa3dca  setup route, bootstrap, API_KEY
-     The migration lives here (0006_settings). Note it also rebuilds `devices`
-     to drop the two engine kinds gowa left behind — pending drift that had to
-     land with the next migration whatever it was. Worth calling out in the PR
-     body so a reviewer does not read it as scope creep.
-
-  4. authorisation
-       109af7b  manage:instance — instance settings were reachable with a
-                tenant key
-       5a8fe49  manage:projects — the tenant-creating API had no auth at all
-       6dded30  key:grant, key:list missing-scope reporting
-     The one a reviewer should spend their attention on. Two real privilege
-     bugs, both mine. Keep it separate and small for exactly that reason.
-
-  5. console shell
-       4ebdb0f  fonts, icons (another agent)
-       02f4eb2  timezone picker, cards, sticky ribbon, placeholders
-       082f6ee  left panel, theme switcher, names instead of UUIDs
-       590f16e  hash routing
-       cf58f87  the checking state on reload
-
-  6. console — setup and tenancy
-       809635f  setup screen
-       d417f42  suggestions
-       3412b80  the minted key was destroyed by its own render
-       ce42626  stale credential from a replaced database
-       368e1b6  projects, project keys, scope-aware navigation
-       aca3ddd  bootstrap project badged
-
-  7. test-infrastructure fixes, foldable into whichever branch they touch
-       4901568  explicit Testing Library cleanup
-       e902c59  the ticket request loop
-
-Not yet decided: whether to rebase into these branches (clean history, loses
-the exact sequence in which the bugs were found) or cherry-pick onto branches
-off main (keeps the commits verbatim, risks conflicts in src/console/App.tsx,
-which nearly every console commit touches). Recommend cherry-pick in the order
-above; App.tsx conflicts resolve in favour of the later commit each time.
+To close: somewhere to send from — the holding project's own device — plus an
+inbound rule that recognises the reply and calls respondToConsent with the
+token. The engine consumer already receives inbound messages and the rules
+engine already matches them; what is missing is the flow between them, and a
+decision about what happens when the holder never replies.
 
 
-## A2. A super-admin key that is not also a project key
+## 2. Re-measure the blind window against Baileys
 
-Status: asked, not built. Answer is yes, with a schema change.
+The 203-second gap between a silent disconnect and the engine admitting it is a
+*gowa* measurement (docs/12). It is why a send is confirmed by a delivery ack
+rather than by the engine accepting it, and why `sweepUnacked` exists.
 
-Today the operator key is minted into `default/production`, so it is
-simultaneously the instance admin and a tenant credential able to send
-messages as that project. `default/production` is created on every boot for
-this reason alone.
-
-The constraint is one column: `api_keys.environment_id` is NOT NULL with a
-foreign key to `environments`. A key must belong to an environment, so an
-environment must exist before setup can mint anything.
-
-Two ways out, and they are not equally cheap:
-
-  (a) Make `environment_id` nullable and let a key with instance scopes have
-      no tenant. Every route derives its tenant from the credential — that is
-      the invariant the whole auth design rests on, stated in
-      src/auth/middleware.ts — so `AuthContext.projectId` becomes nullable and
-      every handler has to answer "what if there is no tenant". Most would
-      answer 403, which is correct but is a change to ~15 handlers and their
-      types. The tenant-derived-from-credential property survives; it just
-      gains a null case that project routes must reject.
-
-  (b) A separate `operator_keys` table with its own resolver and its own
-      middleware. Leaves `api_keys` untouched and the invariant intact, at the
-      cost of two authentication paths — and stream tickets reference
-      `api_keys.id`, so an operator opening the console's event stream would
-      need that FK relaxed anyway.
-
-Recommend (a): one nullable column and a null case handlers must reject beats
-two auth paths that can drift. Not done here because it is a schema and type
-change across the whole API surface, and this branch is already too large.
-
-Until then: the bootstrap project is badged "instance" in the projects list so
-it does not read as a tenant someone created.
+A real device has now paired, so this is finally measurable. It is the oldest
+unverified assumption in the project and the delivery design rests on it.
 
 
-## A3. Operator cannot act on a tenant's devices
-
-Status: decided, worth revisiting
-
-An operator manages projects and mints keys; to claim a number or read a
-conversation for a tenant, you sign in with that tenant's key. Clean boundary,
-and it means debugging a tenant requires their credential — which an operator
-can mint, but only by creating a key that then exists.
-
-Alternative: let an operator select a project and act within it. That is a
-tenant-scoping change on every project route (the scope would come from a
-parameter rather than only from the credential), which is exactly the thing
-the current design refuses to do. Wants deliberate thought, not a flag.
-
-
-## A4. Warn at startup when the operator key is behind the current scope set
-
-Status: not done, hit twice in one session
-
-Adding a scope leaves every existing key short of it, and the symptom is a
-screen that 403s or a menu item that silently disappears. `key:list` reports
-missing scopes, but only if someone runs it. A line at boot — "the operator
-key is missing manage:projects; run bun run key:grant <prefix>" — would have
-caught both occurrences before they were noticed as bugs.
-
-
-## A5. Console work not done
-
-  - No Projects screen coverage beyond the store: ProjectsPage itself has no
-    component test. The store and the routes are tested; the page is not.
-  - Environments cannot be created from the console. The admin API supports
-    it; the UI only lists them, so a project created in the console has no
-    environment until one is added over HTTP. This makes the create-project
-    flow incomplete in practice — a project with no environment cannot issue
-    keys, which the UI says but does not let you fix.
-  - Deleting or suspending a project is not exposed anywhere.
-
-
-## A6. Still outstanding from earlier in the session
-
-  - docs/ cleanup and .coderabbit.yaml revision after the gowa removal and the
-    console rework. DOCS-HANDOVER.md holds the brief; delegatable.
-  - The audit of "which components should be using Elysia and are not" was
-    asked for after the SSE fix and never completed. SSE and the console
-    plugin were fixed; nothing systematically checked the rest.
-  - No real device has ever paired. Everything in the engine path is tested
-    against a stub socket.
-
-
-# PART B — carried forward, unchanged
-
-## 1. Run tenant regex matching in a terminable worker
-
-Status: deferred to stage 2 (also listed in docs/08)
-Raised by: CodeRabbit, repeatedly, across four review passes
+## 3. Run tenant regex matching in a terminable worker
 
 Static analysis of a regex cannot be complete, and JavaScript cannot pre-empt a
-running match. Today's budget therefore *detects* a slow pattern rather than
-preventing it: one pathological regex can occupy the event loop on every event
-that reaches it, not once. The "disabled after three breaches" mitigation this
-paragraph used to assume was never wired — see the section at the end.
+running match. The budget therefore *detects* a slow pattern rather than
+preventing it: one pathological regex occupies the event loop on every event
+that reaches it, not once.
 
-In place now:
-  - RE2-only syntax (no backreferences, no lookaround)
-  - nested quantifiers refused, at any depth
-  - quantified alternations refused when branches can overlap
-  - subject truncated to 4KB before matching
-  - a per-match time budget, breaches logged
-
-Listed here until now, and untrue: "a rule disabled after three budget
-breaches". The breaker was written and never called, so this risk note has
-been crediting a defence that did not exist. Corrected rather than quietly
-dropped, because the judgement that the remaining gap was acceptable was made
-partly on the strength of it.
+In place: RE2-only syntax, nested quantifiers refused at any depth, quantified
+alternations refused when branches overlap, subject truncated to 4KB, a
+per-match time budget whose breaches are logged.
 
 Missing: the ability to kill a match in progress, which needs it running
 somewhere killable — a Worker, with the match sent across and a hard timeout on
 the host side.
 
-Why it matters more than the count suggests: four consecutive review passes
-found a gap in the static analysis, each narrower than the last (`?` vs group
-prefixes, blanket alternation refusal, top-level-only scanning, escaped
-brackets in classes). That is convergence, but it is also evidence that this
-approach is hard to get exhaustively right. The worker makes all of the above
-defence-in-depth instead of the primary guard, which is the real fix.
+Four review passes each found a gap in the static analysis, each narrower than
+the last. That is convergence, and also evidence the approach is hard to get
+exhaustively right. The worker makes all of the above defence-in-depth rather
+than the primary guard.
 
 
-## 2. Close the DNS rebinding window
+## 4. A rule that blows its match budget is never switched off
 
-Status: deferred to stage 2 (also listed in docs/08)
-Raised by: CodeRabbit, twice — once for the delivery sender, once for the gowa
-adapter forwarding tenant-supplied URLs
+`evaluate()` reports `timedOut` rule ids, the consumer logs a warning, and the
+rule runs again on the next event and blows its budget again, for ever.
+Patterns are RE2-compiled so there is no catastrophic backtracking, but a
+tenant can leave a permanently slow rule in place and every inbound message
+pays for it.
 
-Webhook and media URLs are supplied by tenants, so every outbound request goes
-to an address a customer controls. Stage 1 validates the *resolved* address
-immediately before each request and refuses if any answer is blocked (private,
-loopback, link-local, cloud metadata).
+To close: count consecutive breaches per rule id, disable the rule through
+RuleStore once it passes a threshold, reset on any clean evaluation, and emit
+an event so the tenant learns their rule was switched off rather than
+discovering it silently stopped matching.
+
+
+## 5. Close the DNS rebinding window
+
+Webhook and media URLs are tenant-supplied, so every outbound request goes to
+an address a customer controls. The resolved address is validated immediately
+before each request and refused if any answer is blocked (private, loopback,
+link-local, cloud metadata).
 
 The gap: Bun's fetch cannot bind a connection to an already-validated IP while
 preserving the Host header and TLS SNI. A resolver that returns a public
-address to our check and a private one to the connect is still followed.
+address to the check and a private one to the connect is still followed.
 
 Closing it needs an HTTP client over `Bun.connect` — connect to the pinned
-address, set Host and SNI from the original URL. That is a meaningful amount of
-security-critical code to own, which is why it is hardening work rather than
-something to improvise inside stage 1.
-
-Note this applies twice over: bunwa's own sender, and URLs bunwa hands to gowa,
-which then does its own resolution entirely outside our control. The second may
-only be closeable by fetching the media ourselves and passing gowa a local
-reference.
-
----
-
-## A rule that blows its match budget is never switched off
-
-Found by sweeping for "written but never called" after that class produced
-four separate bugs on stage-2 (three housekeeping sweeps, LIMITS.request).
-
-src/engine/consumer.ts carried `TIMEOUT_BREACHES_BEFORE_DISABLE = 3` and a
-per-rule `timeoutCounts` map, both fully documented — including a considered
-note on why the count is deliberately not persisted — and referenced by
-nothing. Zero call sites.
-
-What actually happens today: evaluate() reports `timedOut` rule ids, the
-consumer logs a warning, and the rule runs again on the next event and blows
-its budget again, for ever. Patterns are RE2-compiled so there is no
-catastrophic backtracking, but a tenant can still leave a permanently slow
-rule in place and every inbound message pays for it.
-
-The dead declarations have been removed rather than left looking like a
-protection. Wiring the breaker is a behaviour change, not a review fix, so it
-is deferred deliberately rather than done mid-cycle.
-
-To close it: count consecutive breaches per rule id, disable the rule through
-RuleStore once it passes the threshold, reset the count on any clean
-evaluation, and emit an event so the tenant learns their rule was switched off
-rather than discovering it silently stopped matching.
-
----
-
-## The delivery queue is per environment; the design says per virtual device
-
-docs/05-events-and-rules.md:162 specifies "actions → delivery queue (per
-virtual device)", and docs/03-architecture.md repeats the per-device scope.
-The implementation does not do this and never has.
-
-`deliveries` has no virtual-device column. DeliveryStore.enqueue takes an
-environmentId, and the worker caps in-flight work per environment
-(delivery/worker.ts, seenPerEnvironment). Two virtual devices in one
-environment therefore share a queue.
-
-What that costs: a webhook endpoint that is slow or failing for one device
-delays events for every other device in the same environment. Per-device
-queueing exists precisely to stop that head-of-line blocking, and the design
-called for it deliberately.
-
-Not a regression — no version of this queued per device. Found by checking
-whether a review finding about sweepUnacked's enqueue was really about my
-code, and discovering the contract it named was unmet everywhere.
-
-To close it: add virtual_device_id to deliveries (nullable, since some events
-are environment-scoped rather than device-scoped), migrate, key the worker's
-cap on it, and fall back to the environment for rows without one. The
-CodeRabbit path instruction for src/delivery/** already states the
-requirement, so it will keep being reported until the schema matches it.
+address, set Host and SNI from the original URL. Security-critical code to own,
+which is why it is hardening work rather than something to improvise.
 
 
-## The consent challenge is never sent, and no reply is ever parsed
+## 6. The delivery queue is per environment; the design says per virtual device
 
-`POST /v1/devices/claim` answers 202 when a number belongs to another project.
-It creates the consent row and its challenge token, and there it stops.
-`DeviceStore.respondToConsent` exists, is tested, and has no caller outside
-those tests. Nothing sends the WhatsApp message, and nothing watches for a
-reply.
+docs/05 specifies "actions → delivery queue (per virtual device)" and docs/03
+repeats the per-device scope. `deliveries` has no virtual-device column,
+`DeliveryStore.enqueue` takes an environmentId, and the worker caps in-flight
+work per environment. Two virtual devices in one environment share a queue.
 
-**Why it matters:** the response used to say "The phone holder has been asked
-to confirm" and nobody was asked. That is the one place this API stated an
-action it does not take, which is worse than admitting a gap — a caller who
-believes the message stops looking for the problem. The wording now says what
-actually happens, and the response carries `consentDelivery:
-"not_implemented"` so a client can branch on it rather than parse prose.
+A webhook endpoint that is slow or failing for one device therefore delays
+events for every other device in the same environment — the head-of-line
+blocking per-device queueing exists to prevent. Not a regression; no version
+ever queued per device.
 
-**What it blocks:** stage 1 exit criterion 2. A second project cannot obtain a
-number that a first project holds, except by an operator approving it directly.
-
-**What wiring it needs:** somewhere to send from — the holding project's own
-device — plus an inbound rule that recognises the reply and calls
-respondToConsent with the token. The engine consumer already receives inbound
-messages and the rules engine already matches them, so the pieces exist; what
-is missing is the flow that connects them, and a decision about what happens
-when the holder never replies.
+To close: add virtual_device_id to deliveries (nullable, since some events are
+environment-scoped), migrate, key the worker's cap on it, fall back to the
+environment for rows without one. The CodeRabbit path instruction for
+src/delivery/** already states the requirement, so it will keep being reported
+until the schema matches it.
 
 
-## An unexplained test failure, once, never reproduced
+## 7. Operator cannot act inside a tenant
 
-Seen once during the PR #8 review loop: a full `bun test` run reported
-`547 pass / 1 fail` where every run before and after reported 0 failures. The
-output carried no `(fail)` line and named no test, so there is nothing to point
-at.
+An operator can now see every device on the instance and retire any of them:
+key levels landed, `api_keys.environment_id` is nullable, and the admin device
+routes revoke a tenant's binding and end the number.
 
-Not reproduced since, across thirteen full runs and every CI run on the branch.
-Recorded rather than dropped because "it went away" and "it is rare" are the
-same observation, and the next person to see one failure in a green suite
-should know it has happened before rather than assume they broke it.
+What is still true is narrower. To claim a number *for* a tenant, or read one
+of their conversations, you sign in with that tenant's key. Clean boundary, and
+it means debugging a tenant requires their credential — which an operator can
+mint, but only by creating a key that then exists.
+
+Alternative: let an operator select a project and act within it. That is a
+tenant-scoping change on every project route, with scope coming from a
+parameter rather than only from the credential — exactly what the current
+design refuses to do. Wants deliberate thought, not a flag.
+
+
+## 8. Warn at startup when the operator key is behind the current scope set
+
+Adding a scope leaves every existing key short of it, and the symptom is a
+screen that 403s or a menu item that silently disappears. `key:list` reports
+missing scopes, but only if someone runs it. A line at boot — "the operator key
+is missing manage:projects; run bun run key:grant <prefix>" — would have caught
+both occurrences in one session before either was noticed as a bug.
+
+
+## 9. The claim flow beyond the first fix
+
+The claim screen now watches the binding it started, says it is waiting while
+the code is outstanding, and announces the device and moves to Devices when it
+connects.
+
+The rest of the flow has not been looked at. Worth walking end to end with a
+real phone and writing down each place the screen cannot answer the question
+the operator has, rather than guessing from the code.
+
+
+## 10. Console gaps
+
+  - No ProjectsPage component test. The store and the routes are tested; the
+    page is not.
+  - Environments cannot be created from the console. The admin API supports it;
+    the UI only lists them, so a project created in the console has no
+    environment until one is added over HTTP — and a project with no
+    environment cannot issue keys, which the UI says but does not let you fix.
+  - Deleting or suspending a project is not exposed anywhere.
+
+
+## 11. The Elysia audit
+
+"Which components should be using Elysia and are not" was asked for after the
+SSE fix and never completed. SSE and the console plugin were fixed; nothing
+systematically checked the rest.
+
+
+## Open question: one unexplained test failure
+
+A full `bun test` run once reported 1 failure where every run before and after
+reported none. The output carried no `(fail)` line and named no test. Not
+reproduced since, across many full runs and every CI run.
+
+Kept because "it went away" and "it is rare" are the same observation, and the
+next person to see one failure in a green suite should know it has happened
+before rather than assume they broke it.
 
 If it recurs: capture the whole run output rather than the tail, since the
 identifying line is what was missing. Bun's runner shares one process across
-files, so the first suspects are the module-level singletons the console
-stores use and the env-var save/restore in the logger and setup suites — the
-places where one test file can leave state behind for another.
+files, so the first suspects are the module-level singletons the console stores
+use and the env-var save/restore in the logger and setup suites.

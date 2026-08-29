@@ -28,7 +28,12 @@ import { Elysia, t } from "elysia";
 import { ALL_SCOPES } from "../../auth/scopes";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { config } from "../../config/env";
+import { db } from "../../db";
+import { withTransaction } from "../../db/transaction";
 import { ensureBootstrap } from "../../ops/bootstrap";
+import { EnvironmentStore } from "../../stores/environment-store";
+import { ProjectStore } from "../../stores/project-store";
+import { slugFromName } from "../../stores/slug";
 import { log } from "../../observability/logger";
 import {
   SettingsStore,
@@ -160,11 +165,79 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
           pending.push({ key, value: SettingsStore.validate(key, value) });
         }
 
-        const applied: Partial<Record<SettingKey, string>> = {};
-        for (const { key, value } of pending) applied[key] = SettingsStore.set(key, value);
+        // The first project is resolved in the same pass, for the same reason.
+        // Validating it after the settings were written meant a name that
+        // reduces to no usable slug answered 400 having already persisted the
+        // instance name and moved the server clock — half of a request the
+        // operator was told had failed.
+        //
+        // Optional because the two things setup does are independent: the
+        // credential is what makes the instance usable, and a project is what
+        // makes it useful. An operator who only wants the key can add projects
+        // afterwards, and one who names a project here does not have to visit
+        // a second screen to get a working tenant.
+        let plannedProject: { slug: string; displayName: string } | null = null;
+        if (body.projectName !== undefined && body.projectName.trim() !== "") {
+          const displayName = body.projectName.trim();
+          const supplied = body.projectSlug?.trim();
+          const slug = supplied !== undefined && supplied !== "" ? supplied : slugFromName(displayName);
 
-        if (applied.serverTimezone !== undefined)
-          setServerTimezone(applied.serverTimezone);
+          if (slug === null) {
+            throw new ValidationError(
+              `"${displayName}" has no usable slug; give one explicitly`,
+              "projectSlug",
+            );
+          }
+          plannedProject = { slug, displayName };
+        }
+
+        // Everything that touches the database goes in together.
+        //
+        // Settings were written first and the project created after, so a slug
+        // already taken — which only the write can discover — answered 409 with
+        // the instance name and timezone already persisted. Creating the
+        // project first would only have swapped which half survived. The
+        // credential is in here too: minting it outside meant a failure there
+        // left a project committed, and the retry the operator was invited to
+        // make then collided with the project their first attempt had created.
+        //
+        // The timezone is applied after the commit, not inside: it is a
+        // process-level change, and a rollback cannot take it back.
+        const outcome = await withTransaction(db(), async (tx) => {
+          const applied: Partial<Record<SettingKey, string>> = {};
+          for (const { key, value } of pending) applied[key] = SettingsStore.set(key, value, tx);
+
+          if (state.configured) {
+            return { applied, firstProject: null, plaintext: null };
+          }
+
+          let firstProject: { id: string; slug: string; displayName: string } | null = null;
+          if (plannedProject !== null) {
+            const project = await ProjectStore.create(plannedProject, tx);
+            await EnvironmentStore.create({ projectId: project.id, slug: "production", kind: "live" }, tx);
+            firstProject = { id: project.id, slug: project.slug, displayName: project.displayName };
+          }
+
+          // An admin key, not a tenant key that happens to hold every scope.
+          //
+          // The first credential belongs to whoever is setting the instance up,
+          // and what they need is the instance: projects, environments, keys,
+          // devices. Minting it into `default/production` made it
+          // simultaneously a credential that could send WhatsApp messages as
+          // that project, which is a tenant power an operator never asked for.
+          //
+          // Tenant keys are minted per project afterwards, from the Projects
+          // screen, which is where deciding what a project may do belongs.
+          const { plaintext } = await ApiKeyStore.createAdmin(
+            { label: "console (setup)", scopes: [...ALL_SCOPES] },
+            tx,
+          );
+
+          return { applied, firstProject, plaintext };
+        });
+
+        if (outcome.applied.serverTimezone !== undefined)
+          setServerTimezone(outcome.applied.serverTimezone);
 
         if (state.configured) {
           // The token is spent here too, and that is the whole point of it being
@@ -182,38 +255,31 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
           };
         }
 
-        if (state.environmentId === null || state.projectId === null) {
-          throw new Error(
-            "bootstrap did not produce an environment to mint against",
-          );
-        }
-
-        const { plaintext } = await ApiKeyStore.create({
-          projectId: state.projectId,
-          environmentId: state.environmentId,
-          label: "console (setup)",
-          scopes: [...ALL_SCOPES],
-        });
+        const firstProject = outcome.firstProject;
 
         // The window is closed the moment it is used, not when the operator
         // navigates away.
         clearSetupToken();
         log.info("setup completed; the first API key was minted", {
-          environmentId: state.environmentId,
           scopes: ALL_SCOPES.length,
+          project: firstProject?.slug ?? null,
         });
 
         set.status = 201;
         return {
           settings: SettingsStore.all(),
-          apiKey: plaintext,
+          apiKey: outcome.plaintext,
           apiKeySource: "database" as const,
+          project: firstProject,
         };
       }),
     {
       body: t.Object({
         instanceName: t.Optional(t.String({ maxLength: 200 })),
         serverTimezone: t.Optional(t.String({ maxLength: 100 })),
+        /** The first project's name. Its slug is derived unless one is given. */
+        projectName: t.Optional(t.String({ maxLength: 200 })),
+        projectSlug: t.Optional(t.String({ maxLength: 40 })),
       }),
     },
   );

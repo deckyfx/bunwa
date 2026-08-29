@@ -21,10 +21,12 @@ import { ChatsPage } from "./pages/ChatsPage";
 import { ClaimPage } from "./pages/ClaimPage";
 import { DeliveriesPage } from "./pages/DeliveriesPage";
 import { DevicesPage } from "./pages/DevicesPage";
+import { FleetPage } from "./pages/FleetPage";
 import { ProjectsPage } from "./pages/ProjectsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { useEventStream } from "./hooks/useEventStream";
+import { useNotice } from "./store/notice";
 import { useSession } from "./store/session";
 import { useRoute } from "./store/route";
 import { useSetup } from "./store/setup";
@@ -48,6 +50,7 @@ function StreamIcon({ state }: { state: ReturnType<typeof useEventStream> }) {
 /** The selected section. One at a time, so each gets the whole page. */
 function Section({ id }: { id: SectionId }) {
   if (id === "devices") return <DevicesPage />;
+  if (id === "fleet") return <FleetPage />;
   if (id === "chats") return <ChatsPage />;
   if (id === "claim") return <ClaimPage />;
   if (id === "deliveries") return <DeliveriesPage />;
@@ -62,6 +65,9 @@ export function App() {
   const refreshSetup = useSetup((s) => s.refresh);
   const watchSystem = useTheme((s) => s.watchSystem);
   const stream = useEventStream();
+  const notice = useNotice((s) => s.message);
+  const noticeTone = useNotice((s) => s.tone);
+  const dismissNotice = useNotice((s) => s.dismiss);
 
   const [draft, setDraft] = useState(apiKey);
 
@@ -162,7 +168,7 @@ export function App() {
    */
   useEffect(() => {
     if (identity === null) return;
-    const allowed = sectionsFor(identity.scopes);
+    const allowed = sectionsFor(identity.level, identity.scopes);
     if (allowed.some((section) => section.id === route.section)) return;
 
     const fallback = allowed[0];
@@ -201,6 +207,14 @@ export function App() {
                 // a live WhatsApp connection has to make obvious. The ids are
                 // still available on the panel for anyone quoting one in a
                 // support ticket.
+                identity.level === "admin" ? (
+                  <p className="text-[11px] text-slate-500">
+                    instance
+                    <span className="ml-1.5 rounded bg-slate-200 px-1 py-px text-[10px] font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                      admin
+                    </span>
+                  </p>
+                ) : (
                 <p className="text-[11px] text-slate-500">
                   {identity.projectName}
                   <span className="mx-1 text-slate-300 dark:text-slate-700">/</span>
@@ -213,6 +227,7 @@ export function App() {
                     </span>
                   )}
                 </p>
+                )
               )}
             </div>
           </div>
@@ -257,7 +272,10 @@ export function App() {
             active={route.section}
             onSelect={navigate}
             onSignOut={signOut}
-            identity={identity}
+            // An admin key has no tenant to name in the panel, and the level
+            // is what decides which sections exist at all.
+            identity={identity.level === "tenant" ? identity : null}
+            level={identity.level}
             scopes={identity.scopes}
           />
 
@@ -267,6 +285,35 @@ export function App() {
                 {error}
               </p>
             )}
+
+            {/* In the shell rather than on a page, because what raises a
+                notice and what shows it are usually different screens: pairing
+                finishes on the claim page and the operator is sent to the
+                device list to read about it. Dismissed by hand, not on a
+                timer — this is the explanation for a navigation the operator
+                did not ask for, and it should still be there if they looked
+                away. */}
+            {notice !== null && (
+              <div
+                role="status"
+                className={`mb-3 flex items-start justify-between gap-3 rounded-md p-3 text-sm ${
+                  noticeTone === "bad"
+                    ? "bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-200"
+                    : "bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100"
+                }`}
+              >
+                <span>{notice}</span>
+                <button
+                  type="button"
+                  onClick={dismissNotice}
+                  aria-label="Dismiss"
+                  className="shrink-0 rounded px-1 opacity-60 hover:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+
             <Section id={route.section} />
           </main>
         </div>

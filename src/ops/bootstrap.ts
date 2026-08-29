@@ -19,9 +19,8 @@ import { ALL_SCOPES } from "../auth/scopes";
 import { bootstrapPrefix } from "../auth/api-key";
 import { config } from "../config/env";
 import { db, type Database } from "../db";
-import { EnvironmentStore } from "../stores/environment-store";
+import { withTransaction } from "../db/transaction";
 import { log } from "../observability/logger";
-import { ProjectStore } from "../stores/project-store";
 import { SettingsStore } from "../stores/settings-store";
 import { setServerTimezone } from "../time/format";
 
@@ -42,7 +41,14 @@ export interface InstanceState {
   environmentId: string | null;
 }
 
-/** Find the single-instance project and environment, if they exist yet. */
+/**
+ * The project and environment the CLI acts in, if one exists yet.
+ *
+ * Still keyed on the `default` slug, which is now a convention rather than a
+ * guarantee: nothing creates it, so an instance set up through the console has
+ * whatever the operator named instead and this returns null. Callers that need
+ * a tenant must say which one.
+ */
 async function findDefaults(
   database: Database,
 ): Promise<{ projectId: string; environmentId: string } | null> {
@@ -56,31 +62,24 @@ async function findDefaults(
   return row ?? null;
 }
 
-/** Create the single-instance project and environment, or return the existing. */
-async function ensureDefaults(database: Database): Promise<{ projectId: string; environmentId: string }> {
-  const existing = await findDefaults(database);
-  if (existing !== null) return existing;
 
-  const project = await ProjectStore.create(
-    { slug: DEFAULT_PROJECT_SLUG, displayName: "Default" },
-    database,
-  );
-  const environment = await EnvironmentStore.create(
-    // Explicitly live. The store defaults to "test", which is the right
-    // default for an environment someone is adding to an existing project and
-    // the wrong one for the only environment a single-instance deployment has
-    // — every key it ever mints would read `bw_test_`, and the prefix is meant
-    // to be the thing that stops a test credential being mistaken for a real
-    // one at a glance.
-    { projectId: project.id, slug: DEFAULT_ENVIRONMENT_SLUG, kind: "live" },
-    database,
-  );
-
-  log.info("created the default project and environment", {
-    projectId: project.id,
-    environmentId: environment.id,
-  });
-  return { projectId: project.id, environmentId: environment.id };
+/**
+ * Retire every bootstrap key that can still authenticate.
+ *
+ * Marked `superseded` rather than merely revoked: that is the fact the next
+ * boot reads to tell "API_KEY changed" from "a person disabled this".
+ *
+ * Scoped to bootstrap rows by their label, so keys minted through the console
+ * or the CLI are not retired by an environment variable changing.
+ *
+ * @returns the prefixes that were retired, for the log line.
+ */
+async function revokeLiveBootstrapKeys(database: Database, now: Date): Promise<{ prefix: string }[]> {
+  return database
+    .update(apiKeys)
+    .set({ revokedAt: now, revokedReason: "superseded", updatedAt: now })
+    .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)))
+    .returning({ prefix: apiKeys.keyPrefix });
 }
 
 /**
@@ -96,63 +95,136 @@ async function ensureDefaults(database: Database): Promise<{ projectId: string; 
  * behind revoked rather than deleted, so a key that was in use remains
  * auditable.
  */
-async function registerEnvKey(database: Database, environmentId: string, presented: string): Promise<void> {
+async function registerEnvKey(database: Database, presented: string): Promise<void> {
   const prefix = bootstrapPrefix(presented);
 
-  const existing = await database
-    .select()
+  // Every bootstrap row. Identified by label rather than by an environment:
+  // this key has none. The prefix is derived from the key itself, so it is
+  // stable for a given API_KEY and changes the moment the variable does —
+  // which is what makes the registration idempotent across restarts and a
+  // rotation visible.
+  const history = await database
+    .select({
+      prefix: apiKeys.keyPrefix,
+      revokedAt: apiKeys.revokedAt,
+      revokedReason: apiKeys.revokedReason,
+    })
     .from(apiKeys)
-    .where(and(eq(apiKeys.keyPrefix, prefix), eq(apiKeys.environmentId, environmentId)))
-    .limit(1);
+    .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL));
 
-  if (existing[0] !== undefined) {
-    // Already registered, and possibly revoked by hand. Un-revoking on restart
-    // would make revocation useless for the one key an operator cannot rotate
-    // without a redeploy, so it is left exactly as found.
+  const live = history.filter((row) => row.revokedAt === null);
+
+  // Nothing here compares two rows. Which registration is "current" was
+  // inferred from row order first and from revocation timestamps second, and
+  // both were questions SQLite does not promise to answer: rows that tie come
+  // back in no defined order. Each rule below reads one row's own recorded
+  // facts, so there is nothing left for a tie to decide.
+
+  // Asked first, and about this key alone, because a person's decision to
+  // disable it does not expire. `superseded` is written by the retire path and
+  // by nothing else, so a null reason means someone did it deliberately.
+  //
+  // This sat inside the "nothing is live" branch, which made it conditional on
+  // unrelated history: X, then Y, then Y disabled by hand, then back to X — and
+  // with X live, returning to Y skipped the check entirely and re-inserted Y as
+  // an admin key holding every scope. Disabling the one credential that cannot
+  // be rotated without a redeploy has to survive whatever the variable does
+  // afterwards.
+  const disabledByHand = history.some(
+    (row) => row.prefix === prefix && row.revokedAt !== null && row.revokedReason === null,
+  );
+
+  if (disabledByHand) {
+    // Anything still live is retired with it. Leaving those alone would keep a
+    // previous API_KEY working while the operator believes the current one is
+    // in force — a stale credential surviving precisely because the configured
+    // one was refused.
+    const retired = await revokeLiveBootstrapKeys(database, new Date());
+    // Warned rather than passed over in silence: the deployment is configured
+    // with a key that will not authenticate, and nothing else says why.
+    log.warn("the API_KEY in the environment was disabled by hand and stays disabled", {
+      alsoRetired: retired.length,
+    });
     return;
   }
 
-  const now = new Date();
-
-  // The previous API_KEY stops working here, which is what the docstring above
-  // has always claimed and what the code did not do. Rotating the variable
-  // registered the new key and left the old row active, so a credential the
-  // operator believed they had replaced still authenticated — and the only way
-  // to find it was to know it was there. Rotation has to mean the old one is
-  // finished.
-  //
-  // Scoped to this environment's bootstrap rows: keys minted through the
-  // console or the CLI are not superseded by an environment variable changing.
-  const superseded = await database
-    .update(apiKeys)
-    .set({ revokedAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(apiKeys.environmentId, environmentId),
-        eq(apiKeys.label, BOOTSTRAP_KEY_LABEL),
-        isNull(apiKeys.revokedAt),
-      ),
-    )
-    .returning({ prefix: apiKeys.keyPrefix });
-
-  if (superseded.length > 0) {
-    log.info("revoked the previous API_KEY registration", {
-      environmentId,
-      revoked: superseded.length,
-    });
+  if (live.length === 1 && live[0]!.prefix === prefix) {
+    // Registered, live, and the only one. Nothing to do.
+    return;
   }
 
-  await database.insert(apiKeys).values({
-    environmentId,
-    keyHash: await Bun.password.hash(presented, { algorithm: "argon2id" }),
-    keyPrefix: prefix,
-    label: BOOTSTRAP_KEY_LABEL,
-    scopes: [...ALL_SCOPES],
-    createdAt: now,
-    updatedAt: now,
+  // Everything else registers, and the supersede below is what makes that
+  // safe. Two cases reach here besides an ordinary rotation:
+  //
+  // A database written before rotation retired anything can hold several live
+  // bootstrap rows, including one matching this key. Returning because one
+  // matched left the others usable — admin keys with every scope, belonging to
+  // API_KEY values the operator had already replaced. Falling through revokes
+  // all of them and leaves exactly one, so the condition above holds from the
+  // next boot onward.
+  //
+  // And a rollback: a key whose row a later rotation superseded is registered
+  // again rather than left revoked, which is the whole point of recording why.
+
+  // Falling through with an older row for this prefix is deliberate. Rotating
+  // X → Y → X used to find X's superseded row, take it for an existing
+  // registration and return, leaving the operator's key revoked and no way to
+  // tell why: rolling a deployment back to a previous API_KEY silently locked
+  // them out. A row that something newer superseded is history, not a
+  // registration, so the key is registered again.
+  //
+  // The distinction is positional rather than recorded: a hand-revoked key is
+  // still the newest bootstrap row, a superseded one is not.
+
+  const now = new Date();
+
+  // Hashed before anything is written. Argon2 is the slow, throwing part of
+  // this function, and doing it after the revocation put a failure exactly
+  // where it costs most.
+  const keyHash = await Bun.password.hash(presented, { algorithm: "argon2id" });
+
+  // Revocation and replacement together, or neither.
+  //
+  // Separately, a crash between them left the old key revoked and no new row
+  // written — the operator locked out of their own instance by a restart, with
+  // the only credential they had just been told was superseded.
+  const superseded = await withTransaction(database, async (tx) => {
+    // The previous API_KEY stops working here, which is what the docstring
+    // above has always claimed and what the code did not do. Rotating the
+    // variable registered the new key and left the old row active, so a
+    // credential the operator believed they had replaced still authenticated —
+    // and the only way to find it was to know it was there.
+    //
+    // Scoped to bootstrap rows by their label: keys minted through the console
+    // or the CLI are not superseded by an environment variable changing.
+    const revoked = await revokeLiveBootstrapKeys(tx, now);
+
+    // Registered as an admin key, like the one setup mints.
+    //
+    // API_KEY and the setup screen are two ways to obtain the same thing — the
+    // operator's credential — so they must produce the same kind of key.
+    // Leaving this one a tenant credential would mean the powers you got
+    // depended on which door you came through, and the one that made you a
+    // tenant let you send WhatsApp messages as that project.
+    await tx.insert(apiKeys).values({
+      level: "admin",
+      environmentId: null,
+      keyHash,
+      keyPrefix: prefix,
+      label: BOOTSTRAP_KEY_LABEL,
+      scopes: [...ALL_SCOPES],
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    return revoked;
   });
 
-  log.info("registered the API_KEY from the environment", { environmentId, scopes: ALL_SCOPES.length });
+  if (superseded.length > 0) {
+    log.info("revoked the previous API_KEY registration", { revoked: superseded.length });
+  }
+
+  log.info("registered the API_KEY from the environment", { level: "admin", scopes: ALL_SCOPES.length });
 }
 
 /**
@@ -169,14 +241,13 @@ async function registerEnvKey(database: Database, environmentId: string, present
  * that exists to mint a replacement refuses to appear because setup is closed.
  * That is an instance locked out of itself by the one path meant to prevent it.
  */
-async function hasAnyKey(database: Database, environmentId: string): Promise<boolean> {
+async function hasAnyKey(database: Database): Promise<boolean> {
   const now = new Date();
   const [row] = await database
     .select({ id: apiKeys.id })
     .from(apiKeys)
     .where(
       and(
-        eq(apiKeys.environmentId, environmentId),
         isNull(apiKeys.revokedAt),
         // Null expiry means it does not expire, which is the common case and
         // must not be read as "expired at the epoch".
@@ -196,22 +267,29 @@ async function hasAnyKey(database: Database, environmentId: string): Promise<boo
  * someone reaches the screen.
  */
 export async function ensureBootstrap(database: Database = db()): Promise<InstanceState> {
-  const { projectId, environmentId } = await ensureDefaults(database);
+  // No project is created here any more.
+  //
+  // One was, called "Default", because the operator's key had to live in an
+  // environment and an environment needs a project. An admin key has no
+  // tenant, so the reason is gone — and a project nobody asked for, named
+  // after the fact that it had to exist, is worse than no project at all.
+  // Setup names the first one; until then the instance simply has none.
+  const existing = await findDefaults(database);
 
   const envKey = config().apiKey;
-  if (envKey !== null) await registerEnvKey(database, environmentId, envKey);
+  if (envKey !== null) await registerEnvKey(database, envKey);
 
   // Settings resolve against the database, so this is the first point at which
   // a stored timezone can take effect. Anything logged before now used the
   // environment's, which is the only value available that early.
   setServerTimezone(SettingsStore.resolve("serverTimezone", database).value);
 
-  const configured = envKey !== null || (await hasAnyKey(database, environmentId));
+  const configured = envKey !== null || (await hasAnyKey(database));
 
   return {
     configured,
     apiKeySource: envKey !== null ? "environment" : configured ? "database" : "none",
-    projectId,
-    environmentId,
+    projectId: existing?.projectId ?? null,
+    environmentId: existing?.environmentId ?? null,
   };
 }

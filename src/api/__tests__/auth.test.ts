@@ -71,6 +71,9 @@ describe("GET /v1/whoami", () => {
     // Exact match, not a subset: whoami is the endpoint an integrator hits
     // first, and a field appearing in it silently is a contract change.
     expect(await res.json()).toEqual({
+      // Says which kind of credential it is, so the console can tell a tenant
+      // key from an admin one without inspecting which fields are present.
+      level: "tenant",
       ...ids,
       projectSlug: "grande",
       projectName: "Grande",
@@ -165,12 +168,29 @@ describe("instance settings are not a tenant's to change", () => {
 
   const put = (apiKey: string) =>
     app.handle(
-      new Request("http://localhost/v1/settings", {
+      new Request("http://localhost/admin/v1/settings", {
         method: "PUT",
         headers: { "x-api-key": apiKey, "content-type": "application/json" },
         body: JSON.stringify({ instanceName: "seized" }),
       }),
     );
+
+  // Instance settings live on the admin surface, which answers 404 unless it
+  // is mounted. Set here rather than for the whole file: another test in it
+  // asserts the surface is *absent* by default, and a global flag would make
+  // that one pass or fail depending on nothing it controls.
+  beforeEach(() => {
+    Bun.env["ADMIN_API_ENABLED"] = "true";
+    resetConfig();
+    app = createApp();
+  });
+
+  /** An instance-level credential with exactly these scopes. */
+  const adminKeyWith = async (scopes: string[], label: string): Promise<string> => {
+    const database = createDatabase(join(dir, "t.sqlite"));
+    const minted = await ApiKeyStore.createAdmin({ label, scopes }, database);
+    return minted.plaintext;
+  };
 
   test("a project key cannot rename the instance for everyone else", async () => {
     // The settings behind this route are one per process: the instance name is
@@ -178,22 +198,32 @@ describe("instance settings are not a tenant's to change", () => {
     // the one the logs are written in. `manage:devices` is a scope an ordinary
     // tenant is expected to hold — claiming a number needs it — and it used to
     // be enough to do both to every other tenant on the deployment.
+    //
+    // Refused by level now rather than by scope: these live on the admin
+    // surface, so a tenant key is turned away before its scopes are read.
     const tenant = await keyWith(["manage:devices", "send:text"], "tenant");
     expect((await put(tenant)).status, "a tenant key changed an instance-wide setting").toBe(403);
   });
 
-  test("reading them needs the same scope", async () => {
+  test("a tenant key holding manage:instance is still refused", async () => {
+    // The scope is not the boundary any more, and this is what that buys: a
+    // tenant credential cannot reach instance settings however it is scoped,
+    // so a mis-scoped project key is no longer one grant away from renaming
+    // the deployment.
+    const tenant = await keyWith(["manage:instance"], "over-scoped-tenant");
+    expect((await put(tenant)).status, "a scope let a tenant key onto the admin surface").toBe(403);
+  });
+
+  test("reading them needs an admin key too", async () => {
     const tenant = await keyWith(["manage:devices"], "tenant-read");
     const response = await app.handle(
-      new Request("http://localhost/v1/settings", { headers: { "x-api-key": tenant } }),
+      new Request("http://localhost/admin/v1/settings", { headers: { "x-api-key": tenant } }),
     );
     expect(response.status).toBe(403);
   });
 
-  test("a key that holds manage:instance still works", async () => {
-    // The guard has to stop a tenant without locking the console out: its own
-    // key is minted with the full set.
-    const operator = await keyWith(["manage:instance"], "operator");
+  test("an admin key that holds manage:instance works", async () => {
+    const operator = await adminKeyWith(["manage:instance", "manage:projects"], "operator");
     expect((await put(operator)).status).toBe(200);
   });
 });

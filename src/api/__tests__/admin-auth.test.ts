@@ -24,6 +24,8 @@ import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { ALL_SCOPES } from "../../auth/scopes";
 import { ensureBootstrap } from "../../ops/bootstrap";
+import { EnvironmentStore } from "../../stores/environment-store";
+import { ProjectStore } from "../../stores/project-store";
 
 const restoreEnv = captureEnv([...FIXTURE_ENV_KEYS, "ADMIN_API_ENABLED"]);
 
@@ -33,9 +35,22 @@ let app: ReturnType<typeof createApp>;
 let projectId: string;
 let environmentId: string;
 
-/** Mint a key in the bootstrap environment with exactly these scopes. */
+/** Mint a tenant key in the bootstrap environment with exactly these scopes. */
 const keyWith = async (scopes: string[], label: string): Promise<string> => {
   const { plaintext } = await ApiKeyStore.create({ projectId, environmentId, label, scopes }, database);
+  return plaintext;
+};
+
+/**
+ * Mint an instance-level key with exactly these scopes.
+ *
+ * The admin surface takes a key whose *level* is admin, not a tenant key
+ * carrying an admin scope — which is the distinction these tests exist to
+ * hold, and the reason the tenant helper above cannot reach these routes any
+ * more.
+ */
+const adminKeyWith = async (scopes: string[], label: string): Promise<string> => {
+  const { plaintext } = await ApiKeyStore.createAdmin({ label, scopes }, database);
   return plaintext;
 };
 
@@ -53,9 +68,19 @@ beforeEach(async () => {
   database = createDatabase(join(dir, "t.sqlite"));
   await MigrationManager.runMigrations(database);
 
-  const state = await ensureBootstrap(database);
-  projectId = state.projectId!;
-  environmentId = state.environmentId!;
+  await ensureBootstrap(database);
+
+  // Created here rather than taken from bootstrap. Nothing creates a project
+  // any more — the operator's key is an admin key with no tenant, so there was
+  // no longer a reason to conjure one called "Default" on every boot. These
+  // tests need a tenant to mint tenant keys into, so they make one.
+  const project = await ProjectStore.create({ slug: "acme-tenant", displayName: "Acme" }, database);
+  const environment = await EnvironmentStore.create(
+    { projectId: project.id, slug: "production", kind: "live" },
+    database,
+  );
+  projectId = project.id;
+  environmentId = environment.id;
 
   app = createApp();
 });
@@ -103,7 +128,7 @@ describe("with no credential", () => {
     // than no check at all, because the log would say it was refused.
     await call({ method: "POST", path: "/admin/v1/projects", body: { slug: "ghost", displayName: "Ghost" } });
 
-    const admin = await keyWith([...ALL_SCOPES], "admin");
+    const admin = await adminKeyWith([...ALL_SCOPES], "admin");
     const listed = (await (
       await call({ method: "GET", path: "/admin/v1/projects" }, { "x-api-key": admin })
     ).json()) as Array<{ slug: string }>;
@@ -129,7 +154,7 @@ describe("with an ordinary project key", () => {
 
 describe("with manage:projects", () => {
   test("the surface works", async () => {
-    const admin = await keyWith(["manage:projects"], "operator");
+    const admin = await adminKeyWith(["manage:projects"], "operator");
 
     const res = await call(
       { method: "POST", path: "/admin/v1/projects", body: { slug: "acme", displayName: "Acme" } },
@@ -167,7 +192,7 @@ describe("the flag", () => {
     resetConfig();
     const disabled = createApp();
 
-    const admin = await keyWith([...ALL_SCOPES], "admin");
+    const admin = await adminKeyWith([...ALL_SCOPES], "admin");
     const res = await disabled.handle(
       new Request("http://localhost/admin/v1/projects", { headers: { "x-api-key": admin } }),
     );
@@ -178,7 +203,7 @@ describe("the flag", () => {
 
 describe("what a project key may be granted", () => {
   const mintKeyWithScopes = async (scopes: string[]) => {
-    const admin = await keyWith([...ALL_SCOPES], "admin");
+    const admin = await adminKeyWith([...ALL_SCOPES], "admin");
 
     const project = (await (
       await call(
@@ -239,5 +264,73 @@ describe("what a project key may be granted", () => {
     const res = await mintKeyWithScopes(["manage:projects"]);
     const body = (await res.json()) as { detail?: string };
     expect(body.detail ?? "").toContain("manage:projects");
+  });
+});
+
+describe("level, not scope, decides which surface a key reaches", () => {
+  test("a tenant key holding every scope is still refused by the admin surface", async () => {
+    // The whole point of the level. Before it, "may this key manage projects?"
+    // was answered by a scope — so a tenant credential one grant away from
+    // manage:projects could create projects and mint keys for them.
+    const overScoped = await keyWith([...ALL_SCOPES], "tenant with everything");
+
+    const res = await call({ method: "GET", path: "/admin/v1/projects" }, { "x-api-key": overScoped });
+    expect(res.status, "a scope let a tenant key onto the admin surface").toBe(403);
+    expect((await res.json()) as { type: string }).toMatchObject({
+      type: "https://bunwa.dev/errors/admin-key-required",
+    });
+  });
+
+  test("an admin key is refused by a project route rather than acting as a tenant", async () => {
+    // The other direction, and the reason it matters: an admin key that fell
+    // through to a project route would be acting inside whichever tenant the
+    // route derived — which is the conflation this replaced.
+    const admin = await adminKeyWith([...ALL_SCOPES], "operator");
+
+    const res = await call({ method: "GET", path: "/v1/whoami" }, { "x-api-key": admin });
+    expect(res.status, "an admin key acted as a tenant").toBe(403);
+    expect((await res.json()) as { type: string }).toMatchObject({
+      type: "https://bunwa.dev/errors/tenant-key-required",
+    });
+  });
+
+  test("an admin key can say what it is without any scope at all", async () => {
+    // Identifying yourself is not a privilege. A key with no scopes still has
+    // to be able to find out what it is, or a console holding one cannot tell
+    // whether to offer instance screens, project screens or an explanation.
+    const bare = await adminKeyWith([], "no scopes");
+
+    const res = await call({ method: "GET", path: "/admin/v1/whoami" }, { "x-api-key": bare });
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { level: string; scopes: string[] }).toMatchObject({
+      level: "admin",
+      scopes: [],
+    });
+  });
+});
+
+describe("instance settings answer to manage:instance", () => {
+  test("a key holding only manage:instance may read and write them", async () => {
+    // The scope the handlers check. The guard above them checks
+    // `manage:projects`, and hooks in Elysia apply to routes registered after
+    // them — so a hook meant to sit below these routes but written above them
+    // refuses the exact key the handlers were built to admit, and the check
+    // inside never runs.
+    const key = await adminKeyWith(["manage:instance"], "instance only");
+
+    const read = await call({ method: "GET", path: "/admin/v1/settings" }, { "x-api-key": key });
+    expect(read.status, "manage:instance was refused its own settings").toBe(200);
+
+    const write = await call(
+      { method: "PUT", path: "/admin/v1/settings", body: { instanceName: "renamed" } },
+      { "x-api-key": key },
+    );
+    expect(write.status, "manage:instance could not write its own settings").toBe(200);
+  });
+
+  test("a key holding neither scope is still refused", async () => {
+    const key = await adminKeyWith(["manage:devices"], "devices only");
+    const res = await call({ method: "GET", path: "/admin/v1/settings" }, { "x-api-key": key });
+    expect(res.status).toBe(403);
   });
 });

@@ -29,10 +29,21 @@ interface ClaimState {
   result: ClaimResult | null;
   error: string | null;
   busy: boolean;
+  /**
+   * The binding a scan is currently expected for, or null.
+   *
+   * Held so something can notice when the pairing finishes. The QR is handed
+   * over and then nothing else happens on this screen — the operator scans,
+   * WhatsApp connects, and the page carries on showing a code that has already
+   * been used. Knowing which device to watch is what closes that.
+   */
+  pairing: { virtualDeviceId: string; alias: string } | null;
 
   setMsisdn: (value: string) => void;
   setAlias: (value: string) => void;
   submit: () => Promise<void>;
+  /** Stop watching: the pairing finished, or the operator moved on. */
+  settled: () => void;
   reset: () => void;
 }
 
@@ -58,6 +69,7 @@ export const useClaim = create<ClaimState>((set, get) => ({
   result: null,
   error: null,
   busy: false,
+  pairing: null,
 
   setMsisdn: (value) => {
     set({ msisdn: value });
@@ -101,16 +113,28 @@ export const useClaim = create<ClaimState>((set, get) => ({
       return;
     }
 
-    set({ result: data, busy: false, error: null });
+    // Only a pairing claim is worth watching: the other two outcomes are
+    // already finished when they arrive. `alias` is kept alongside the id so
+    // the notice can name the device rather than its identifier.
+    const pairing =
+      "outcome" in data && data.outcome === "pending_pairing" && "virtualDeviceId" in data
+        ? { virtualDeviceId: data.virtualDeviceId, alias: data.alias }
+        : null;
+
+    set({ result: data, busy: false, error: null, pairing });
     // The device list is now stale — the caller refreshes it.
     useSession.getState().bumpRevision();
+  },
+
+  settled: () => {
+    set({ pairing: null });
   },
 
   reset: () => {
     // Invalidates anything in flight as well as clearing the form: a claim
     // that lands after a reset must not repopulate the fields it just cleared.
     submitGeneration += 1;
-    set({ msisdn: "", alias: "", result: null, error: null, busy: false });
+    set({ msisdn: "", alias: "", result: null, error: null, busy: false, pairing: null });
   },
 }));
 
@@ -123,5 +147,5 @@ blankOnKeyChange(useClaim, () => {
   // guards in `submit` still pass — same generation, same key — so the old
   // response repopulates the form that was just cleared.
   submitGeneration += 1;
-  return { msisdn: "", alias: "", result: null, error: null, busy: false };
+  return { msisdn: "", alias: "", result: null, error: null, busy: false, pairing: null };
 });

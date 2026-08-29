@@ -18,17 +18,31 @@
 import { Elysia, t } from "elysia";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
-import { requireApiKey, requireScope } from "../../auth/middleware";
+import { EngineRegistry } from "../../engine/registry";
+import { requireAdminKey, requireScope } from "../../auth/middleware";
+import { SettingsStore, type SettingKey } from "../../stores/settings-store";
+import { retireDevice } from "../../ops/retire-device";
+import { serverTimezone, setServerTimezone } from "../../time/format";
 import { isProjectScope, PROJECT_SCOPES } from "../../auth/scopes";
 import type { ApiKey } from "../../db/schema";
 import { ValidationError } from "../../stores/errors";
+import { DeviceStore } from "../../stores/device-store";
 import { EnvironmentStore } from "../../stores/environment-store";
 import { ProjectStore } from "../../stores/project-store";
 import { log } from "../../observability/logger";
 import { config } from "../../config/env";
 import { problem } from "../server";
 
-export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
+/**
+ * The instance surface.
+ *
+ * A factory rather than a value because retiring a device has to reach the
+ * engine that holds its socket — the same reason `deviceRoutes` is one. The
+ * registry is passed in rather than imported so a test can drive these routes
+ * against a stub engine instead of opening a WhatsApp connection.
+ */
+export const adminRoutes = (registry: EngineRegistry) =>
+  new Elysia({ prefix: "/admin/v1" })
   /*
    * The flag is enforced here rather than by mounting conditionally.
    *
@@ -57,13 +71,178 @@ export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
       { status: 404, headers: { "content-type": "application/problem+json" } },
     );
   })
-  .use(requireApiKey)
-  // Applied to every route in the plugin rather than repeated per handler. The
+  // An admin key, not a tenant key with a scope on it.
+  //
+  // These routes create projects and mint credentials for them, so the
+  // question is what the caller *is* before it is what they may do. A tenant
+  // key is refused here even if it somehow carries `manage:projects` — which
+  // is the difference between a scope check and a level check, and the reason
+  // the operator credential is no longer also a credential that can send
+  // messages as a project.
+  .use(requireAdminKey)
+  /**
+   * Who this admin key is, as the console needs to know it.
+   *
+   * The mirror of `/v1/whoami` for a credential with no tenant. The console
+   * asks one of the two depending on which it holds, and the answer decides
+   * which sections it offers — so a key that cannot reach a screen is not
+   * shown one.
+   *
+   * Above the scope guard deliberately: identifying yourself is what every
+   * admin key may do, and a key limited to fewer scopes still has to be able
+   * to find out what it is. It discloses nothing the caller did not present.
+   */
+  .get("/whoami", ({ admin }) => ({
+    level: "admin" as const,
+    scopes: admin.scopes,
+    serverTimezone: serverTimezone(),
+  }))
+
+  /**
+   * Instance settings, and where each value comes from.
+   *
+   * Authenticated, unlike the setup screen's copy: setup answers before a
+   * credential exists and closes once one does, so without this the instance
+   * name could only ever be chosen during first run and never corrected.
+   *
+   * On the admin surface, behind `manage:instance`. These are not any
+   * tenant's settings — there is one instance name and one server timezone,
+   * shared by every project on the deployment — so they sat on the project
+   * routes only because that was where the console could reach them. A scope
+   * check was doing the work a level check should have been doing.
+   */
+  .get("/settings", ({ admin, path }) => {
+    requireScope(admin, "manage:instance", path);
+    return SettingsStore.all();
+  })
+
+  .put(
+    "/settings",
+    ({ body, path, admin }) => {
+      // `manage:instance`, not `manage:devices`. This writes values that are
+      // one per process: the instance name reaches WhatsApp through the
+      // Baileys handshake and is what every other project's number is listed
+      // under, and setServerTimezone below mutates the zone every rendered
+      // timestamp uses, logs included. A tenant holding an ordinary project
+      // key was able to do both to every other tenant on the deployment.
+      requireScope(admin, "manage:instance", path);
+
+      // Everything is checked before anything is written.
+      //
+      // One pass that validated and wrote as it went left a valid instance
+      // name persisted and a rejected timezone unwritten, then answered 400 —
+      // so the caller was told the request failed while half of it had already
+      // taken effect, and the console showed a name it had been told was not
+      // saved.
+      const pending: Array<{ setting: SettingKey; value: string }> = [];
+      for (const [key, value] of Object.entries(body)) {
+        if (value === undefined || value.trim() === "") continue;
+        const setting = key as SettingKey;
+
+        if (SettingsStore.resolve(setting).source === "environment") {
+          // Refused rather than ignored: silently dropping it leaves the
+          // console showing a value the deployment overrides, which is the
+          // failure the precedence rule exists to prevent.
+          throw new ValidationError(`${setting} is set in the environment and cannot be changed here`, setting);
+        }
+
+        // Throws on a bad value, before any write has happened.
+        pending.push({ setting, value: SettingsStore.validate(setting, value) });
+      }
+
+      for (const { setting, value } of pending) {
+        const applied = SettingsStore.set(setting, value);
+        // Rendering reads a cached zone, so a write that did not update it
+        // would take effect only after a restart.
+        if (setting === "serverTimezone") setServerTimezone(applied);
+        log.info("setting changed", { setting, value: applied });
+      }
+
+      return SettingsStore.all();
+    },
+    {
+      body: t.Object({
+        instanceName: t.Optional(t.String({ maxLength: 200 })),
+        serverTimezone: t.Optional(t.String({ maxLength: 100 })),
+      }),
+    },
+  )
+
+  // Applied to every route below rather than repeated per handler. The
   // per-handler version is how one gets forgotten, and the one that gets
   // forgotten here mints credentials.
-  .onBeforeHandle(({ auth, path }) => {
-    requireScope(auth, "manage:projects", path);
+  //
+  // Placement is the guard. Elysia applies a hook to the routes registered
+  // after it, so this has to sit physically below everything answering to a
+  // different scope: `/whoami`, which needs none because identifying yourself
+  // is not a privilege, and `/settings`, which answers to `manage:instance`.
+  // The comment here used to say "below /settings on purpose" while the code
+  // had it above — so a key holding exactly the scope those handlers check was
+  // refused by the guard, and the check inside them never ran.
+  .onBeforeHandle(({ admin, path }) => {
+    requireScope(admin, "manage:projects", path);
   })
+
+  /**
+   * Every device on the instance, and which projects are using it.
+   *
+   * The fleet view. A project key sees the numbers bound to its own
+   * environment; only a credential outside every tenant can answer "who else
+   * has this number?" — which is the question that decides what retiring one
+   * actually costs.
+   */
+  .get("/devices", () => DeviceStore.listAll())
+
+  /**
+   * Retire a device, whoever is using it.
+   *
+   * The operator's version of release, and deliberately not the same
+   * operation. A project letting go of a shared number unsubscribes and leaves
+   * it working for everyone else; an operator doing this is saying the number
+   * itself is finished — so it unlinks from WhatsApp, destroys the credentials
+   * and Signal keys, erases the history, and revokes every project's binding.
+   *
+   * There is no "unless someone is using it" here on purpose. An operator can
+   * see who holds it before pressing this, and a retire that quietly declined
+   * because a tenant still had a binding would be a button that does nothing
+   * in the case it exists for.
+   */
+  .delete(
+    "/devices/:deviceId",
+    async ({ params, set }) => {
+      // One transaction: every claim ended and the device reserved together,
+      // so a project cannot claim the number between the last revocation and
+      // the credentials being destroyed and end up bound to a condemned
+      // session.
+      const holders = await DeviceStore.retireFor(params.deviceId, "operator");
+
+      let retired;
+      try {
+        // Outside the transaction: this talks to WhatsApp, and the reservation
+        // is what makes that safe to do with the lock released.
+        retired = await retireDevice(params.deviceId, registry);
+      } catch (error) {
+        await DeviceStore.cancelRetirement(params.deviceId);
+        throw error;
+      }
+
+      log.info("device retired by operator", {
+        deviceId: params.deviceId,
+        revokedFrom: holders.length,
+        hadSession: retired.hadSession,
+      });
+
+      set.status = 200;
+      return {
+        outcome: "retired" as const,
+        revokedFrom: holders.length,
+        hadSession: retired.hadSession,
+        messagesErased: retired.messagesErased,
+      };
+    },
+    { params: t.Object({ deviceId: t.String() }) },
+  )
+
   .post(
     "/projects",
     async ({ body, set }) => {

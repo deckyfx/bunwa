@@ -21,6 +21,7 @@ import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 import { clearSetupToken, issueSetupToken, SETUP_TOKEN_HEADER } from "../routes/setup";
 import { ensureBootstrap } from "../../ops/bootstrap";
+import { ProjectStore } from "../../stores/project-store";
 import { resetTimeFormatters } from "../../time/format";
 
 const restoreEnv = captureEnv([...FIXTURE_ENV_KEYS, "SERVER_TIMEZONE", "API_KEY"]);
@@ -36,6 +37,9 @@ const setupEnv = async (extra: Record<string, string> = {}) => {
   Bun.env["LOG_LEVEL"] = "error";
   Bun.env["RUNTIME_DIR"] = dir;
   Bun.env["DATABASE_PATH"] = join(dir, "t.sqlite");
+  // The operator's key is an admin key now, so identifying it means reaching
+  // the admin surface — which answers 404 unless it is mounted.
+  Bun.env["ADMIN_API_ENABLED"] = "true";
   delete Bun.env["SERVER_TIMEZONE"];
   delete Bun.env["API_KEY"];
   for (const [k, v] of Object.entries(extra)) Bun.env[k] = v;
@@ -141,10 +145,20 @@ describe("minting the first key", () => {
     const { apiKey } = (await res.json()) as { apiKey: string };
     expect(apiKey).toMatch(/^bw_live_/);
 
+    // The admin whoami, because that is what setup mints now. A key that
+    // could answer /v1/whoami would be a tenant credential, which is exactly
+    // what the operator's key stopped being.
     const whoami = await app.handle(
-      new Request("http://localhost/v1/whoami", { headers: { "x-api-key": apiKey } }),
+      new Request("http://localhost/admin/v1/whoami", { headers: { "x-api-key": apiKey } }),
     );
     expect(whoami.status).toBe(200);
+    expect((await whoami.json()) as { level: string }).toMatchObject({ level: "admin" });
+
+    // And it is refused by a project route rather than silently acting as one.
+    const tenant = await app.handle(
+      new Request("http://localhost/v1/whoami", { headers: { "x-api-key": apiKey } }),
+    );
+    expect(tenant.status, "the operator key could still act as a tenant").toBe(403);
   });
 
   test("closes the moment it is used", async () => {
@@ -188,8 +202,10 @@ describe("a key supplied by the environment", () => {
     await setupEnv({ API_KEY: key });
     await ensureBootstrap();
 
+    // API_KEY registers as an admin key too: it and the setup screen are two
+    // doors to the same credential, so they must produce the same kind of one.
     const whoami = await app.handle(
-      new Request("http://localhost/v1/whoami", { headers: { "x-api-key": key } }),
+      new Request("http://localhost/admin/v1/whoami", { headers: { "x-api-key": key } }),
     );
     expect(whoami.status).toBe(200);
   });
@@ -244,7 +260,7 @@ describe("settings after setup", () => {
     const { apiKey } = (await minted.json()) as { apiKey: string };
 
     const res = await app.handle(
-      new Request("http://localhost/v1/settings", {
+      new Request("http://localhost/admin/v1/settings", {
         method: "PUT",
         headers: { "content-type": "application/json", "x-api-key": apiKey },
         body: JSON.stringify({ instanceName: "Second Name" }),
@@ -256,7 +272,7 @@ describe("settings after setup", () => {
   });
 
   test("need a credential", async () => {
-    const res = await app.handle(new Request("http://localhost/v1/settings"));
+    const res = await app.handle(new Request("http://localhost/admin/v1/settings"));
     expect(res.status).toBe(401);
   });
 
@@ -266,7 +282,7 @@ describe("settings after setup", () => {
     const { apiKey } = (await minted.json()) as { apiKey: string };
 
     const res = await app.handle(
-      new Request("http://localhost/v1/settings", {
+      new Request("http://localhost/admin/v1/settings", {
         method: "PUT",
         headers: { "content-type": "application/json", "x-api-key": apiKey },
         body: JSON.stringify({ serverTimezone: "Europe/London" }),
@@ -274,5 +290,76 @@ describe("settings after setup", () => {
     );
 
     expect(res.status).toBeGreaterThanOrEqual(400);
+  });
+});
+
+describe("the first project", () => {
+  test("is created from a name, with the slug derived", async () => {
+    const res = await finish({ instanceName: "demo", projectName: "Acme Ltd." });
+    expect(res.status).toBe(201);
+
+    const body = (await res.json()) as { project: { slug: string; displayName: string } | null };
+    expect(body.project, "setup accepted a project name and created nothing").not.toBeNull();
+    expect(body.project).toMatchObject({ slug: "acme-ltd", displayName: "Acme Ltd." });
+  });
+
+  test("an explicit slug wins over the derived one", async () => {
+    const res = await finish({ projectName: "Acme Ltd.", projectSlug: "acme" });
+    const body = (await res.json()) as { project: { slug: string } | null };
+    expect(body.project?.slug).toBe("acme");
+  });
+
+  test("is optional: the credential is the part that cannot wait", async () => {
+    // An operator who only wants a key gets one, and adds projects later.
+    const res = await finish({ instanceName: "demo" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { apiKey: string | null; project: null };
+    expect(body.apiKey).not.toBeNull();
+    expect(body.project).toBeNull();
+  });
+
+  test("a name with no usable slug is refused while the token is still good", async () => {
+    // Refused before the key is minted, so the operator can correct the name
+    // and try again rather than being left with a spent token and no project.
+    const res = await finish({ projectName: "→→→" });
+    // 422, which is what this app answers for a value it understood and
+    // refused — as opposed to a body it could not parse.
+    expect(res.status).toBe(422);
+
+    const retry = await finish({ projectName: "Acme" });
+    expect(retry.status, "the failed attempt spent the setup token").toBe(201);
+  });
+
+  test("a slug already taken leaves no half-finished setup behind", async () => {
+    // The failure the earlier ordering could not survive: a slug collision is
+    // only discoverable by attempting the write, so it happens after the
+    // settings have been handed to the database. Everything now goes in one
+    // transaction, and this is the test that says so — it fails if the writes
+    // are unwrapped, because the instance name persists.
+    await ProjectStore.create({ slug: "taken", displayName: "Already here" });
+
+    const res = await finish({ instanceName: "should not survive", projectName: "Taken" });
+    expect(res.status, "a duplicate slug was accepted").toBeGreaterThanOrEqual(400);
+
+    // The settings half of the same request must be gone with it.
+    const settings = await status();
+    expect(
+      (settings as { settings?: Record<string, { value?: string }> }).settings?.instanceName?.value,
+    ).not.toBe("should not survive");
+
+    // And no key was minted, so the instance is still unconfigured and the
+    // token still works — the operator can pick another name and continue.
+    expect(settings).toMatchObject({ configured: false });
+
+    const retry = await finish({ instanceName: "second try", projectName: "Fresh" });
+    expect(retry.status, "the failed attempt spent the token or wedged the instance").toBe(201);
+  });
+
+  test("nothing creates a project on its own any more", async () => {
+    // A project called "Default" was created on every boot, because the
+    // operator's key had to live in an environment. It does not any more.
+    await ensureBootstrap();
+    const state = await ensureBootstrap();
+    expect(state.projectId, "a project was conjured with nobody asking for one").toBeNull();
   });
 });

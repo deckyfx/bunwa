@@ -29,7 +29,28 @@ const STORAGE_KEY = "bunwa.apiKey";
  * `useServerTimezone`).
  */
 type Api = ReturnType<typeof client>;
-export type Identity = NonNullable<Awaited<ReturnType<Api["v1"]["whoami"]["get"]>>["data"]>;
+
+/** What a tenant key resolves to: one project, one environment. */
+export type TenantIdentity = Extract<
+  NonNullable<Awaited<ReturnType<Api["v1"]["whoami"]["get"]>>["data"]>,
+  { level: "tenant" }
+>;
+
+/** What an admin key resolves to: the instance, and no tenant at all. */
+export type AdminIdentity = Extract<
+  NonNullable<Awaited<ReturnType<Api["admin"]["v1"]["whoami"]["get"]>>["data"]>,
+  { level: "admin" }
+>;
+
+/**
+ * Who the console is acting as.
+ *
+ * A union because the two are genuinely different callers, not one caller with
+ * optional fields. A screen that needs a project cannot be handed an admin
+ * identity by accident, and the sidebar decides what to offer by asking which
+ * this is rather than by guessing from the scopes.
+ */
+export type Identity = TenantIdentity | AdminIdentity;
 
 interface SessionState {
   apiKey: string;
@@ -132,7 +153,20 @@ export const useSession = create<SessionState>((set, get) => ({
 
     set({ apiKey: trimmed, busy: true, error: null, identity: null });
 
-    const { data, error } = await client(trimmed).v1.whoami.get();
+    // Asked as a tenant first, then as an admin.
+    //
+    // A key is one or the other and the console cannot tell by looking: both
+    // are opaque strings, and the level lives in a column. Rather than parse
+    // the prefix — which would make `bw_live_admin_…` load-bearing and break
+    // for a project whose slug is "admin" — it asks, and a 403 from the tenant
+    // route is the signal to ask the other one. Any other failure is a real
+    // failure and is reported as it stands.
+    const asTenant = await client(trimmed).v1.whoami.get();
+    const tenantRefused = asTenant.error !== null && asTenant.error.status === 403;
+
+    const { data, error } = tenantRefused
+      ? await client(trimmed).admin.v1.whoami.get()
+      : asTenant;
 
     // The store is a singleton, so a slow response can land after the user has
     // moved on. Committing only when the key still matches is the same guard
@@ -172,6 +206,22 @@ export const useSession = create<SessionState>((set, get) => ({
       localStorage.setItem(STORAGE_KEY, trimmed);
     } catch {
       /* the session still works, it just will not survive a refresh */
+    }
+
+    // Narrowed by the discriminant the routes now send, rather than trusted.
+    // `data` is a union that also includes a raw Response, and an identity
+    // that is neither level is not one this console can act on — better a
+    // named failure than a shell that renders with nothing behind it.
+    // `"level" in data` first: the union includes a raw Response, which has no
+    // such property and would make the comparison a type error rather than a
+    // check.
+    if (!("level" in data) || (data.level !== "tenant" && data.level !== "admin")) {
+      set({
+        identity: null,
+        busy: false,
+        error: "the server returned an identity this console does not understand",
+      });
+      return;
     }
 
     set({ identity: data, busy: false, error: null });

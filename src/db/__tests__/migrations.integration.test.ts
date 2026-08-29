@@ -218,6 +218,16 @@ describe("a released migration is immutable", () => {
       hash: "f65658efa205bde50f8777f52c019cf9762689513a6a0ff14e7b050a807b63cc",
       when: 1787955854834,
     },
+    {
+      tag: "0008_api_key_levels",
+      hash: "106f01bd25e3a5312b8e155b61eb7ef95f2108db3ece3afd85421c1c4417fecf",
+      when: 1787980003702,
+    },
+    {
+      tag: "0009_revocation_reason",
+      hash: "de4740f8fc7c9167b2f371e8e40ee9565f8fc305f5c708f0be10fd592041838d",
+      when: 1788010909408,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
@@ -272,6 +282,11 @@ describe("a released migration is immutable", () => {
       // to drop for it.
       "0006_retire_gowa_engine_kind": [],
       "0007_settings": ["settings"],
+      // Rebuilds `api_keys` to add `level` and relax `environment_id`. A
+      // rebuild creates no table, so there is nothing to drop for it.
+      "0008_api_key_levels": [],
+      // Adds a column to api_keys; creates no table, so nothing to drop.
+      "0009_revocation_reason": [],
     };
     for (const migration of built.slice(1)) {
       const tables = CREATED_AFTER_BASELINE[migration.tag];
@@ -313,5 +328,62 @@ describe("a released migration is immutable", () => {
       sql`SELECT COUNT(*) AS n FROM rate_limits WHERE expires_at = 0`,
     );
     expect(Number(row?.n ?? 0)).toBe(0);
+  });
+
+  test("a key that predates 0008 comes through it as a tenant key", async () => {
+    // The upgrade test above rolls forward an empty api_keys, so a migration
+    // that rebuilds that table can copy its rows wrongly and still pass it.
+    // This one carries a row across, which is the only way the copy shows.
+    //
+    // The bug it pins: `SELECT "level"` from a table that has no such column.
+    // SQLite does not reject that — an unresolvable double-quoted identifier
+    // falls back to being a string literal — so every pre-existing key arrived
+    // holding the word "level", outside the enum, with nothing raised anywhere.
+    const { database } = scratch();
+    const built = MigrationManager.buildSequence();
+    const baseline = built[0]!;
+
+    // A database as the baseline release left it: 0000's schema, 0000's row in
+    // the tracking table, and nothing after it. Built from the shipped SQL
+    // rather than from the current schema, because the point is to start from
+    // the shape that existed before `level` did.
+    const sqlPath = join(import.meta.dir, "..", "migrations", `${baseline.tag}.sql`);
+    const baselineSql = await Bun.file(sqlPath).text();
+    for (const statement of baselineSql.split("--> statement-breakpoint")) {
+      const trimmed = statement.trim();
+      if (trimmed.length > 0) database.run(sql.raw(trimmed));
+    }
+    database.run(
+      sql.raw(
+        `CREATE TABLE IF NOT EXISTS __drizzle_migrations (id SERIAL PRIMARY KEY, hash text NOT NULL, created_at numeric)`,
+      ),
+    );
+    database.run(
+      sql`INSERT INTO __drizzle_migrations (hash, created_at) VALUES (${baseline.hash}, ${baseline.when})`,
+    );
+
+    // Written against 0000's column names, not today's — the tables these rows
+    // go into are the old ones, and later migrations reshape them.
+    database.run(
+      sql`INSERT INTO projects (id, slug, display_name) VALUES ('proj-old', 'older', 'Older')`,
+    );
+    database.run(
+      sql`INSERT INTO environments (id, project_id, slug, kind)
+        VALUES ('env-old', 'proj-old', 'production', 'live')`,
+    );
+    database.run(
+      sql`INSERT INTO api_keys (id, environment_id, key_hash, key_prefix, label)
+        VALUES ('key-old', 'env-old', 'hash-old', 'bw_live_old', 'predates the levels')`,
+    );
+
+    await MigrationManager.runMigrations(database);
+
+    const [key] = database.all<{ id: string; level: string; environment_id: string | null }>(
+      sql`SELECT id, level, environment_id FROM api_keys WHERE id = 'key-old'`,
+    );
+    expect(key, "0008 lost a key that existed before it").toBeDefined();
+    expect(key!.level, "an existing key was migrated to something other than tenant").toBe("tenant");
+    // Nothing was promoted, and the tenant it acts inside survived the rebuild.
+    expect(key!.environment_id).toBe("env-old");
   });
 });

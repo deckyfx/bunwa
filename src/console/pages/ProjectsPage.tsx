@@ -15,6 +15,7 @@ import { Check, ChevronRight, Copy, FolderKanban, KeyRound, Plus, ShieldCheck, T
 import { Card, Note } from "../components/Card";
 import { Field } from "../components/Field";
 import { BOOTSTRAP_PROJECT_SLUG, PROJECT_SCOPE_NAMES } from "../lib/scopes";
+import { slugFromName } from "../../stores/slug";
 import { useProjects } from "../store/projects";
 import { useServerTimezone } from "../store/session";
 import { renderDateTime } from "../../time/render";
@@ -71,6 +72,8 @@ function NewProject() {
   const { busy, createProject } = useProjects();
   const [slug, setSlug] = useState("");
   const [displayName, setDisplayName] = useState("");
+  // The same function the server uses, so the preview and the result agree.
+  const derived = slugFromName(displayName);
   const [open, setOpen] = useState(false);
 
   if (!open) {
@@ -93,7 +96,12 @@ function NewProject() {
       className="flex flex-col gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
       onSubmit={(e) => {
         e.preventDefault();
-        void createProject(slug, displayName).then((ok) => {
+        // The typed slug if there is one, otherwise the derived one, and
+        // trimmed either way — the field is checked trimmed, so sending it raw
+        // let " my-slug" through a guard that had judged "my-slug". The button
+        // is disabled when neither exists, so this cannot send "".
+        const typed = slug.trim();
+        void createProject(typed === "" ? (derived ?? "") : typed, displayName).then((ok) => {
           if (!ok) return;
           setSlug("");
           setDisplayName("");
@@ -101,26 +109,40 @@ function NewProject() {
         });
       }}
     >
-      <Field
-        id="project-slug"
-        label="Slug"
-        value={slug}
-        onChange={setSlug}
-        mono
-        placeholder="acme"
-        hint="Appears in every key this project issues, as bw_live_<slug>_… — so a leaked key names its owner at a glance."
-      />
+      {/* Name first. The slug is an identifier the system needs and the name
+          is the thing the operator has in mind — asking for the identifier
+          first made creating a project feel like filling in a database row,
+          and meant typing the same word twice in the common case. */}
       <Field
         id="project-name"
-        label="Display name"
+        label="Project name"
         value={displayName}
         onChange={setDisplayName}
-        placeholder="Acme Corp"
+        placeholder="Acme Ltd."
       />
+
+      {/* Only once there is a name to derive from, and secondary to it. */}
+      {displayName.trim() !== "" && (
+        <Field
+          id="project-slug"
+          label="Slug"
+          value={slug}
+          onChange={setSlug}
+          mono
+          placeholder={derived ?? "acme-ltd"}
+          hint={
+            derived === null
+              ? "That name has no usable slug — letters and digits are needed. Type one here."
+              : `Derived as "${derived}" unless you set it. It appears in every key this project issues, as bw_live_<slug>_… — so a leaked key names its owner at a glance.`
+          }
+        />
+      )}
       <div className="flex gap-2">
         <button
           type="submit"
-          disabled={busy}
+          // Nothing to submit without a name, and nothing to create if the
+          // name yields no slug and none was typed.
+          disabled={busy || displayName.trim() === "" || (derived === null && slug.trim() === "")}
           className="rounded-md bg-slate-900 px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
         >
           {busy ? "creating…" : "create"}

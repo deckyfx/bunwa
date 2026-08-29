@@ -138,6 +138,14 @@ describe("credentials do not depend on the console being served", () => {
     // The console is where an operator would normally finish setup, so it is
     // worth pinning that the headless build is not quietly a build you cannot
     // get a credential out of. Everything but the screen is the same app.
+    //
+    // The admin surface is mounted because the key setup mints is an admin
+    // key, so identifying it means reaching that surface — which is itself the
+    // point of the test: a headless deployment still gets a working operator
+    // credential.
+    Bun.env["ADMIN_API_ENABLED"] = "true";
+    resetConfig();
+
     const app = createApp();
     const token = issueSetupToken();
 
@@ -152,7 +160,7 @@ describe("credentials do not depend on the console being served", () => {
     expect(res.status).toBe(201);
     const { apiKey } = (await res.json()) as { apiKey: string };
 
-    const whoami = await get(app, "/v1/whoami", { "x-api-key": apiKey });
+    const whoami = await get(app, "/admin/v1/whoami", { "x-api-key": apiKey });
     expect(whoami.status, "and the key it minted authenticates").toBe(200);
 
     clearSetupToken();

@@ -25,6 +25,7 @@ import { EngineRegistry } from "../engine/registry";
 import { AuthError } from "../auth/middleware";
 import { ConflictError, NotFoundError, UnavailableError, ValidationError } from "../stores/errors";
 import { enterContext, log, sanitiseCorrelationId } from "../observability/logger";
+import { paintedRequestLine, plainRequestLine } from "../observability/request-line";
 import { currentLogFile } from "../observability/sinks";
 
 /** Process start, used to report uptime on the liveness probe. */
@@ -167,17 +168,30 @@ export function createApp(registry?: EngineRegistry, mode: ServerMode = "headles
     // they would otherwise be the only thing anyone ever reads.
     .onAfterResponse({ as: "global" }, ({ request, set, path, began }) => {
       const level = path === "/health" || path === "/readyz" ? "debug" : "info";
-      log[level]("request", {
+      const status = typeof set.status === "number" ? set.status : 200;
+
+      const durationMs = typeof began === "number" ? Math.round(performance.now() - began) : null;
+
+      // `REQ 200 GET /v1/devices 109ms` on the console, and the same facts as
+      // queryable keys in the file. One line per request is read far more
+      // often than it is parsed, and `request {"method":"GET","path":…}` put
+      // what a reader wants behind the punctuation of a JSON blob. `summary`
+      // keeps the fields for the file and the production JSON, where they are
+      // parsed rather than read.
+      //
+      const line = { status, method: request.method, path, durationMs };
+
+      log.summary(level, plainRequestLine(line), {
         method: request.method,
         path,
-        status: typeof set.status === "number" ? set.status : 200,
+        status,
         // `began` comes from `derive`, which does not run for an unmatched
         // route — the same gap the 404 correlation id below exists for. The
         // subtraction was therefore NaN on every 404, and `Math.round(NaN)` is
         // NaN, so the one request class most worth timing logged a duration no
         // dashboard could read. Null says "not measured", which is true.
-        durationMs: typeof began === "number" ? Math.round(performance.now() - began) : null,
-      });
+        durationMs,
+      }, paintedRequestLine(line));
     })
 
     .onError({ as: "global" }, ({ code, error, set, path, request, correlationId }) => {
@@ -320,7 +334,7 @@ export function createApp(registry?: EngineRegistry, mode: ServerMode = "headles
     // conditional mount made the app type a union of "these routes exist" and
     // "they do not", which is how Eden lost every device and message call
     // once already — and had lost `admin` entirely for the console.
-    .use(adminRoutes);
+    .use(adminRoutes(registry ?? new EngineRegistry()));
 
   return app;
 }

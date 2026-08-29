@@ -7,20 +7,11 @@
  * Those two sentences are the whole design, and `claim()` below is where they
  * are enforced.
  */
-import { and, count as drizzleCount, eq, or } from "drizzle-orm";
+import { and, count as drizzleCount, eq, ne, or } from "drizzle-orm";
 import type { EngineKind } from "../engine/types";
 
 import { db, type Database } from "../db";
-import {
-  consentEvents,
-  deviceConsents,
-  devices,
-  environments,
-  virtualDevices,
-  type Device,
-  type DeviceConsent,
-  type VirtualDevice,
-} from "../db/schema";
+import { consentEvents, deviceConsents, devices, environments, projects, type Device, type DeviceConsent, type VirtualDevice, virtualDevices } from "../db/schema";
 import { withTransaction } from "../db/transaction";
 import { ConflictError, NotFoundError, ValidationError } from "./errors";
 
@@ -115,6 +106,16 @@ export class DeviceStore {
     if (environment === undefined) throw new NotFoundError(`environment ${input.environmentId} not found`);
 
     const device = (await this.findByMsisdn(msisdn, database)) ?? (await this.provision(msisdn, database));
+
+    // Refused rather than queued. The number is mid-retirement: its credentials
+    // are being destroyed, so a binding made now would be attached to a session
+    // that is about to stop existing, and the tenant would be left with a
+    // device that had failed for reasons nothing in their project explains.
+    // Retirement is short and terminal, so the honest answer is "not this one,
+    // not now".
+    if (device.state === "retiring") {
+      throw new ConflictError(`${msisdn} is being retired; claim it again once that finishes`, "msisdn");
+    }
 
     const [existingBinding] = await database
       .select()
@@ -490,6 +491,211 @@ export class DeviceStore {
     }
   }
 
+  /**
+   * Which projects still have a live claim on this device.
+   *
+   * The question this exists for: when one project lets a shared number go, is
+   * anyone else still using it? If so the device carries on and only that
+   * project's binding ends; if not there is nothing left the credentials serve.
+   *
+   * Answered from the consent record, not from the binding alone. A binding is
+   * created `pending_consent` and is only ever moved off that by a grant — a
+   * denial and a lapsed deadline both leave it exactly as it was. Counting
+   * bindings therefore counted projects the phone holder had refused, so the
+   * last project that actually had consent could release a number and find it
+   * not retired: credentials and message history kept alive on behalf of
+   * someone who had been told no.
+   *
+   * Granted holds, and so does pending — a request still inside its deadline
+   * is a decision outstanding, and retiring the device underneath it would
+   * answer the question by destroying what it was about. Denied, revoked and
+   * expired hold nothing; the project has no access and no question pending.
+   *
+   * Deliberately not the same rule as `hasStandingClaim`, which counts denied
+   * and revoked *because* they are decisions — it is asking whether anyone has
+   * ever answered for this device, so that a new claim cannot silently re-grant
+   * itself past a refusal. This asks who would lose something if the number
+   * went away, and a project holding a refusal loses nothing.
+   *
+   * A suspended binding still counts when its consent is live: that is a
+   * tenant whose access is paused rather than ended, and unlinking the number
+   * from WhatsApp underneath them would be the wrong answer.
+   */
+  static async projectsHolding(
+    deviceId: string,
+    database: Database = db(),
+    now: Date = new Date(),
+  ): Promise<string[]> {
+    const rows = await database
+      .selectDistinct({ projectId: environments.projectId })
+      .from(virtualDevices)
+      .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .where(and(eq(virtualDevices.deviceId, deviceId), ne(virtualDevices.status, "revoked")));
+
+    const holding: string[] = [];
+    for (const row of rows) {
+      const consent = await this.consentFor(deviceId, row.projectId, database);
+      const status = effectiveStatus(consent, now);
+      if (status === "granted" || status === "pending") holding.push(row.projectId);
+    }
+
+    return holding;
+  }
+
+  /**
+   * Revoke one project's claim, and reserve the device if it was the last.
+   *
+   * The decision and the reservation are one transaction because they are one
+   * decision. Asked separately, another project could claim the number between
+   * "nobody holds this" and the credentials being destroyed: its binding would
+   * be created against a live session that was about to be logged out, and the
+   * tenant would be left holding a device that had silently stopped working
+   * for reasons nothing in their project explained.
+   *
+   * `retiring` is a reservation rather than a state of the phone, which is why
+   * `claim` refuses it: the caller has committed to destroying this device and
+   * has not finished yet.
+   *
+   * @returns the projects still holding it. Empty means the caller reserved it
+   * and must now retire it or release the reservation.
+   */
+  static async releaseFor(
+    deviceId: string,
+    projectId: string,
+    actor: "phone_holder" | "operator",
+    database: Database = db(),
+    now: Date = new Date(),
+  ): Promise<string[]> {
+    return withTransaction(database, async (tx) => {
+      await this.revokeWithin(tx, deviceId, projectId, actor, now);
+
+      // Asked after the revocation, not before. Before, this project's own
+      // claim would still count and nothing would ever be the last one.
+      const holders = await this.projectsHolding(deviceId, tx, now);
+      if (holders.length === 0) await this.reserveWithin(tx, deviceId, now);
+      return holders;
+    });
+  }
+
+  /**
+   * Revoke every project's claim and reserve the device, for an operator.
+   *
+   * The same transaction for the same reason. An operator retiring a device
+   * says the number is finished, so unlike `releaseFor` there is no holder
+   * count to consult — but the window between revoking the last binding and
+   * destroying the credentials is identical, and a claim landing in it would
+   * bind a tenant to a session already condemned.
+   *
+   * @returns the projects whose claims were ended.
+   */
+  static async retireFor(
+    deviceId: string,
+    actor: "phone_holder" | "operator",
+    database: Database = db(),
+    now: Date = new Date(),
+  ): Promise<string[]> {
+    return withTransaction(database, async (tx) => {
+      // Checked before anything else. Without it an unknown id was a silent
+      // success: nothing to revoke, an update touching no rows, and a
+      // retirement finding no device to end — so a mistyped id answered 200
+      // "retired" and the operator was told a number had been destroyed that
+      // had never existed. The tenant route already 404s for the same mistake.
+      const [device] = await tx
+        .select({ id: devices.id })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (device === undefined) throw new NotFoundError(`device ${deviceId} not found`);
+
+      // Every project with a binding, not every project that *holds* it.
+      // `projectsHolding` answers a narrower question — who would lose
+      // something — and deliberately excludes projects whose consent was
+      // denied or has lapsed. Those still have a binding row, and revoking by
+      // holder left it behind pointing at a device whose credentials had just
+      // been destroyed.
+      const bound = await this.projectsBound(deviceId, tx);
+      for (const projectId of bound) {
+        await this.revokeWithin(tx, deviceId, projectId, actor, now);
+      }
+      await this.reserveWithin(tx, deviceId, now);
+      return bound;
+    });
+  }
+
+  /**
+   * Every project with a binding to this device that has not been revoked.
+   *
+   * The structural question, where `projectsHolding` asks the consent one.
+   * Kept apart because they diverge exactly where it matters: a refused
+   * project is bound but holds nothing, so it must not block a retirement and
+   * must still be cleaned up by one.
+   */
+  private static async projectsBound(deviceId: string, database: Database): Promise<string[]> {
+    const rows = await database
+      .selectDistinct({ projectId: environments.projectId })
+      .from(virtualDevices)
+      .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .where(and(eq(virtualDevices.deviceId, deviceId), ne(virtualDevices.status, "revoked")));
+
+    return rows.map((row) => row.projectId);
+  }
+
+  /** Take the reservation. Separate only so both paths above set it identically. */
+  private static async reserveWithin(database: Database, deviceId: string, now: Date): Promise<void> {
+    await database
+      .update(devices)
+      .set({
+        state: "retiring",
+        stateReason: "retiring: the last claim ended and the credentials are being destroyed",
+        updatedAt: now,
+      })
+      .where(eq(devices.id, deviceId));
+  }
+
+  /**
+   * Give the reservation back, when the retirement it was taken for failed.
+   *
+   * Without this a device whose retirement threw would sit in `retiring` for
+   * ever, refusing every future claim with an explanation that had stopped
+   * being true — the number unusable by anyone, including the project that
+   * still held it.
+   */
+  static async cancelRetirement(
+    deviceId: string,
+    database: Database = db(),
+    now: Date = new Date(),
+  ): Promise<void> {
+    await database
+      .update(devices)
+      .set({
+        state: "disconnected",
+        stateReason: "retirement failed; the device was left as it was",
+        updatedAt: now,
+      })
+      .where(and(eq(devices.id, deviceId), eq(devices.state, "retiring")));
+  }
+
+  /**
+   * Mark a device as holding no session, after its credentials have gone.
+   *
+   * Separate from the engine work so the row and the socket cannot disagree
+   * about what happened: the caller ends the session first and records it
+   * here, rather than this method implying anything about a live connection.
+   */
+  static async markRetired(deviceId: string, database: Database = db(), now: Date = new Date()): Promise<void> {
+    await database
+      .update(devices)
+      .set({
+        state: "unpaired",
+        stateReason: "retired: credentials destroyed, the device must pair again",
+        enginePoolId: null,
+        engineDeviceId: null,
+        jid: null,
+        updatedAt: now,
+      })
+      .where(eq(devices.id, deviceId));
+  }
+
   private static async activateBindingsFor(
     deviceId: string,
     projectId: string,
@@ -570,6 +776,89 @@ export class DeviceStore {
       .from(virtualDevices)
       .innerJoin(devices, eq(virtualDevices.deviceId, devices.id))
       .where(eq(virtualDevices.environmentId, environmentId));
+  }
+
+  /**
+   * Every device on the instance, with who is using it.
+   *
+   * The operator's view, and the one thing a project key can never assemble:
+   * a number can be shared, so "which tenants does this device serve?" is a
+   * question only somebody outside all of them can ask. It is also the
+   * question that decides whether retiring a device is a small act or a large
+   * one.
+   *
+   * The msisdn is included because for an operator it *is* the device's name —
+   * ids identify, phone numbers are what a support conversation is about.
+   */
+  static async listAll(database: Database = db()) {
+    const rows = await database
+      .select({
+        deviceId: devices.id,
+        msisdn: devices.msisdn,
+        state: devices.state,
+        stateReason: devices.stateReason,
+        lastSeenAt: devices.lastSeenAt,
+        enginePoolId: devices.enginePoolId,
+        bindingStatus: virtualDevices.status,
+        alias: virtualDevices.alias,
+        projectId: projects.id,
+        projectName: projects.displayName,
+        environmentSlug: environments.slug,
+      })
+      .from(devices)
+      .leftJoin(virtualDevices, eq(virtualDevices.deviceId, devices.id))
+      .leftJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .leftJoin(projects, eq(environments.projectId, projects.id));
+
+    // Folded here rather than in the query: one row per device with its
+    // holders nested is what the screen renders, and a join returns one row
+    // per binding. Doing it in SQL would mean string-aggregating names, which
+    // is harder to read and no faster at this size.
+    const byDevice = new Map<string, {
+      deviceId: string;
+      msisdn: string;
+      state: string;
+      stateReason: string | null;
+      lastSeenAt: Date | null;
+      enginePoolId: string | null;
+      heldBy: Array<{ projectId: string; projectName: string; environmentSlug: string; alias: string; status: string }>;
+    }>();
+
+    for (const row of rows) {
+      const existing = byDevice.get(row.deviceId) ?? {
+        deviceId: row.deviceId,
+        msisdn: row.msisdn,
+        state: row.state,
+        stateReason: row.stateReason,
+        lastSeenAt: row.lastSeenAt,
+        enginePoolId: row.enginePoolId,
+        heldBy: [],
+      };
+
+      // A revoked binding is a project that used to hold this number. Listing
+      // it as a holder would make a device look shared when it is not, and
+      // that is the number the retire decision turns on.
+      if (
+        row.projectId !== null &&
+        row.projectName !== null &&
+        row.environmentSlug !== null &&
+        row.alias !== null &&
+        row.bindingStatus !== null &&
+        row.bindingStatus !== "revoked"
+      ) {
+        existing.heldBy.push({
+          projectId: row.projectId,
+          projectName: row.projectName,
+          environmentSlug: row.environmentSlug,
+          alias: row.alias,
+          status: row.bindingStatus,
+        });
+      }
+
+      byDevice.set(row.deviceId, existing);
+    }
+
+    return [...byDevice.values()];
   }
 
   /**
