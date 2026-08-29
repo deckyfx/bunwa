@@ -28,6 +28,24 @@ interface FleetState {
 
 const api = () => client(useSession.getState().apiKey);
 
+/**
+ * Which load is the current one.
+ *
+ * Module-level rather than store state: it is bookkeeping about requests, not
+ * something a component renders, and putting it in the store would make every
+ * load notify subscribers twice.
+ */
+let loadGeneration = 0;
+
+/**
+ * The instance-wide device store, held apart from the per-project one.
+ *
+ * Two stores rather than one because they answer to different credentials and
+ * different questions: `useDevices` shows what a project may see under a tenant
+ * key, this one shows every device on the instance under an admin key. Merging
+ * them would mean a single cache holding rows from both, and a console that
+ * showed one tenant's fleet to another the moment the key changed.
+ */
 export const useFleet = create<FleetState>((set, get) => ({
   devices: null,
   error: null,
@@ -37,8 +55,14 @@ export const useFleet = create<FleetState>((set, get) => ({
     const under = useSession.getState().apiKey;
     if (under === "") return;
 
+    // Retiring a device reloads, and the page reloads on its own, so two loads
+    // overlap readily. Without this the slower one wins by finishing last, and
+    // the list settles back to the state from before the retirement.
+    const generation = ++loadGeneration;
+
     const { data, error } = await api().admin.v1.devices.get();
     if (useSession.getState().apiKey !== under) return;
+    if (generation !== loadGeneration) return;
 
     if (error !== null || !Array.isArray(data)) {
       set({ error: "could not load devices", devices: null });
@@ -54,10 +78,11 @@ export const useFleet = create<FleetState>((set, get) => ({
     set({ busy: true, error: null });
     const { error } = await api().admin.v1.devices({ deviceId }).delete();
 
-    if (useSession.getState().apiKey !== under) {
-      set({ busy: false });
-      return false;
-    }
+    // Not `set({ busy: false })`: the key already changed, so
+    // blankOnKeyChange has reset this store and a newer operation may already
+    // have set busy for itself. Clearing it here would take the spinner off a
+    // request that is still in flight.
+    if (useSession.getState().apiKey !== under) return false;
 
     if (error !== null) {
       set({ busy: false, error: "could not retire this device" });

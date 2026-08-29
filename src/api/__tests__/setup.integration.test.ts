@@ -313,7 +313,7 @@ describe("the first project", () => {
     // An operator who only wants a key gets one, and adds projects later.
     const res = await finish({ instanceName: "demo" });
     expect(res.status).toBe(201);
-    const body = (await res.json()) as { apiKey: string | null; project: unknown };
+    const body = (await res.json()) as { apiKey: string | null; project: null };
     expect(body.apiKey).not.toBeNull();
     expect(body.project).toBeNull();
   });

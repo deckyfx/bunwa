@@ -44,6 +44,14 @@ interface DeviceState {
  * means that check is written once, and `blankOnKeyChange` below empties it
  * the moment the credential moves rather than leaving it to be overwritten.
  */
+/**
+ * Which load is the current one. See the note in ./fleet, which does the same.
+ *
+ * Module-level rather than store state: it is bookkeeping about requests, not
+ * something a component renders.
+ */
+let loadGeneration = 0;
+
 export const useDevices = create<DeviceState>((set, get) => ({
   devices: null,
   error: null,
@@ -56,8 +64,14 @@ export const useDevices = create<DeviceState>((set, get) => ({
       return;
     }
 
+    // Releasing reloads, and the page reloads on its own, so two loads overlap
+    // readily. Without this the slower one wins by finishing last, and the list
+    // settles back to the state from before the release.
+    const generation = ++loadGeneration;
+
     const { data, error } = await client(apiKey).v1.devices.get();
     if (useSession.getState().apiKey !== apiKey) return;
+    if (generation !== loadGeneration) return;
 
     if (error !== null || !Array.isArray(data)) {
       set({ error: "could not load devices" });
@@ -74,11 +88,11 @@ export const useDevices = create<DeviceState>((set, get) => ({
     const { data, error } = await client(under).v1.devices({ ref }).delete();
 
     // Same rule as everywhere else in this store: the credential that asked is
-    // the only one this answer belongs to.
-    if (useSession.getState().apiKey !== under) {
-      set({ busy: false });
-      return null;
-    }
+    // the only one this answer belongs to. Not `set({ busy: false })` — the key
+    // already changed, so blankOnKeyChange has reset this store and a newer
+    // operation may already have set busy for itself. Clearing it here would
+    // take the spinner off a request that is still in flight.
+    if (useSession.getState().apiKey !== under) return null;
 
     if (error !== null || data === null || !("outcome" in data)) {
       set({ busy: false, error: "could not release this number" });
