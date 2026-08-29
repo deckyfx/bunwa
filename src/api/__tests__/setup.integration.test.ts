@@ -21,6 +21,7 @@ import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 import { clearSetupToken, issueSetupToken, SETUP_TOKEN_HEADER } from "../routes/setup";
 import { ensureBootstrap } from "../../ops/bootstrap";
+import { ProjectStore } from "../../stores/project-store";
 import { resetTimeFormatters } from "../../time/format";
 
 const restoreEnv = captureEnv([...FIXTURE_ENV_KEYS, "SERVER_TIMEZONE", "API_KEY"]);
@@ -327,6 +328,31 @@ describe("the first project", () => {
 
     const retry = await finish({ projectName: "Acme" });
     expect(retry.status, "the failed attempt spent the setup token").toBe(201);
+  });
+
+  test("a slug already taken leaves no half-finished setup behind", async () => {
+    // The failure the earlier ordering could not survive: a slug collision is
+    // only discoverable by attempting the write, so it happens after the
+    // settings have been handed to the database. Everything now goes in one
+    // transaction, and this is the test that says so — it fails if the writes
+    // are unwrapped, because the instance name persists.
+    await ProjectStore.create({ slug: "taken", displayName: "Already here" });
+
+    const res = await finish({ instanceName: "should not survive", projectName: "Taken" });
+    expect(res.status, "a duplicate slug was accepted").toBeGreaterThanOrEqual(400);
+
+    // The settings half of the same request must be gone with it.
+    const settings = await status();
+    expect(
+      (settings as { settings?: Record<string, { value?: string }> }).settings?.instanceName?.value,
+    ).not.toBe("should not survive");
+
+    // And no key was minted, so the instance is still unconfigured and the
+    // token still works — the operator can pick another name and continue.
+    expect(settings).toMatchObject({ configured: false });
+
+    const retry = await finish({ instanceName: "second try", projectName: "Fresh" });
+    expect(retry.status, "the failed attempt spent the token or wedged the instance").toBe(201);
   });
 
   test("nothing creates a project on its own any more", async () => {

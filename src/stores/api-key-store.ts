@@ -102,13 +102,6 @@ const HINTS: Record<RejectionReason, string> = {
 
 export class ApiKeyStore {
   /**
-   * Mint a key for an environment.
-   *
-   * The plaintext in the return value is the only copy that will ever exist.
-   *
-   * @throws NotFoundError if the environment does not belong to the project
-   */
-  /**
    * Mint a credential that acts on the instance rather than inside a project.
    *
    * Separate from `create` because the two take different inputs and mean
@@ -147,6 +140,19 @@ export class ApiKeyStore {
     return { apiKey: created, plaintext: generated.plaintext };
   }
 
+  /**
+   * Mint a key that acts inside one environment of one project.
+   *
+   * The tenant counterpart to `createAdmin`: this one names the environment it
+   * belongs to, and that environment is the whole of what the key can reach.
+   * Every key a project issues comes from here — `createAdmin` exists for the
+   * instance-level credential alone, and is deliberately not reachable by
+   * passing something unusual to this method.
+   *
+   * The plaintext in the return value is the only copy that will ever exist.
+   *
+   * @throws NotFoundError if the environment does not belong to the project
+   */
   static async create(
     input: { projectId: string; environmentId: string; label: string; scopes: string[]; expiresAt?: Date },
     database: Database = db(),
