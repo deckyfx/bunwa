@@ -4,75 +4,24 @@ Things known to be incomplete, with enough context to act on later without
 re-deriving why. Roadmap items live in docs/08; this file is for what was
 noticed in passing and deliberately not done at the time.
 
-Part A is this branch. Part B is what was already here, carried forward
-unchanged — the file was rewritten rather than appended to, and dropping those
-would have quietly retired real findings, one of which is a stage-1 exit
+Part A is current work. Part B is older, carried forward unchanged — dropping
+those would quietly retire real findings, one of which is a stage-1 exit
 criterion.
 
 
-# PART A — stage-5 branch: unfinished
+# PART A — current
 
-## A1. Split this branch before review
+## Done since this file was last written
 
-Status: blocking the CodeRabbit session
-Size: 28 commits, 174 files, ~13.9k insertions
-
-Too large to review as one change, and the risk is not the volume but the
-mixture: a security fix and a stylesheet in the same diff get the same amount
-of attention, which is the wrong amount for one of them.
-
-Proposed split, in dependency order. Each is a branch off the previous, so the
-security work can be reviewed and merged without waiting for the console.
-
-  1. observability + time
-       bee1d38  timezone, dual log sink
-       650ca01  logfmt in the file
-     Self-contained. Touches src/time, src/observability, .env*.
-
-  2. server shape
-       7500e7d  serverMode, Elysia onStart/onStop, root route
-     Depends on nothing above; small.
-
-  3. settings + first run (backend only)
-       deb92d5  settings table, instance name, precedence rule
-       3fa3dca  setup route, bootstrap, API_KEY
-     The migration lives here (0006_settings). Note it also rebuilds `devices`
-     to drop the two engine kinds gowa left behind — pending drift that had to
-     land with the next migration whatever it was. Worth calling out in the PR
-     body so a reviewer does not read it as scope creep.
-
-  4. authorisation
-       109af7b  manage:instance — instance settings were reachable with a
-                tenant key
-       5a8fe49  manage:projects — the tenant-creating API had no auth at all
-       6dded30  key:grant, key:list missing-scope reporting
-     The one a reviewer should spend their attention on. Two real privilege
-     bugs, both mine. Keep it separate and small for exactly that reason.
-
-  5. console shell
-       4ebdb0f  fonts, icons (another agent)
-       02f4eb2  timezone picker, cards, sticky ribbon, placeholders
-       082f6ee  left panel, theme switcher, names instead of UUIDs
-       590f16e  hash routing
-       cf58f87  the checking state on reload
-
-  6. console — setup and tenancy
-       809635f  setup screen
-       d417f42  suggestions
-       3412b80  the minted key was destroyed by its own render
-       ce42626  stale credential from a replaced database
-       368e1b6  projects, project keys, scope-aware navigation
-       aca3ddd  bootstrap project badged
-
-  7. test-infrastructure fixes, foldable into whichever branch they touch
-       4901568  explicit Testing Library cleanup
-       e902c59  the ticket request loop
-
-Not yet decided: whether to rebase into these branches (clean history, loses
-the exact sequence in which the bugs were found) or cherry-pick onto branches
-off main (keeps the commits verbatim, risks conflicts in src/console/App.tsx,
-which nearly every console commit touches). Recommend cherry-pick in the order
-above; App.tsx conflicts resolve in favour of the later commit each time.
+  - The stage-5 branch was split into three PRs (#7 gowa removal, #8 console
+    refactor, #6 observability/setup/settings/projects) and all three merged.
+    That was A1, and it is finished.
+  - docs/ and .coderabbit.yaml were brought in line with the gowa removal and
+    the console rework. DOCS-HANDOVER.md is gone.
+  - **A real device has paired.** This was the largest unknown in the project
+    and it is now retired: the engine path is no longer only exercised against
+    a stub socket. Several notes below and in docs/08 still assume otherwise
+    and are wrong until corrected.
 
 
 ## A2. A super-admin key that is not also a project key
@@ -106,8 +55,7 @@ Two ways out, and they are not equally cheap:
       need that FK relaxed anyway.
 
 Recommend (a): one nullable column and a null case handlers must reject beats
-two auth paths that can drift. Not done here because it is a schema and type
-change across the whole API surface, and this branch is already too large.
+two auth paths that can drift.
 
 Until then: the bootstrap project is badged "instance" in the projects list so
 it does not read as a tenant someone created.
@@ -141,25 +89,66 @@ caught both occurrences before they were noticed as bugs.
 
 ## A5. Console work not done
 
-  - No Projects screen coverage beyond the store: ProjectsPage itself has no
-    component test. The store and the routes are tested; the page is not.
+  - No ProjectsPage component test. The store and the routes are tested; the
+    page is not.
   - Environments cannot be created from the console. The admin API supports
     it; the UI only lists them, so a project created in the console has no
-    environment until one is added over HTTP. This makes the create-project
-    flow incomplete in practice — a project with no environment cannot issue
-    keys, which the UI says but does not let you fix.
+    environment until one is added over HTTP. A project with no environment
+    cannot issue keys, which the UI says but does not let you fix.
   - Deleting or suspending a project is not exposed anywhere.
 
 
-## A6. Still outstanding from earlier in the session
+## A6. The claim flow needs more than the one fix it has had
 
-  - docs/ cleanup and .coderabbit.yaml revision after the gowa removal and the
-    console rework. DOCS-HANDOVER.md holds the brief; delegatable.
+Status: partly done on feat/claim-flow-polish, not merged
+
+Pairing works against a real device, and the first rough edge is fixed: the
+claim screen now watches the binding it started, says it is waiting while the
+code is outstanding, and announces the device and moves to Devices when it
+connects. Before that a scanned QR looked exactly like an unscanned one, so
+the reasonable next move was to claim again — starting a second pairing for a
+device already pairing.
+
+What has not been looked at, and was described as "needs some major polish":
+the rest of that flow. Worth walking it end to end with a real phone and
+writing down each place the screen cannot answer the question the operator
+has, rather than guessing from the code.
+
+
+## A7. Re-measure the blind window against Baileys
+
+Status: now possible, still not done
+
+The 203-second gap between a silent disconnect and the engine admitting it is
+a *gowa* measurement (docs/12), and it is the reason a send is confirmed by a
+delivery ack rather than by the engine accepting it — `sweepUnacked` exists
+because of it. docs/08 lists re-measuring it as stage 4 step 4, deferred
+because no real device had paired.
+
+One has now. This is the oldest unverified assumption in the project and the
+delivery design rests on it.
+
+
+## A8. Anyone with a pre-merge dev database cannot start
+
+Status: known consequence of the #6 rebase, no fix possible
+
+Resolving the migration collision renumbered two migrations: 0006_settings
+became 0007_settings, and the devices rebuild became 0006_retire_gowa_engine_kind.
+A database created from the unmerged stage-5 branch has the old pair applied
+and will fail the startup check with "applied migration N does not match this
+build" — correctly, since its history is one this binary does not recognise.
+
+There is no in-place repair: the numbering changed underneath it. `bun run
+db:purge` and re-run. Only affects dev databases created off that branch;
+nothing has been deployed.
+
+
+## A9. Still outstanding from earlier
+
   - The audit of "which components should be using Elysia and are not" was
     asked for after the SSE fix and never completed. SSE and the console
     plugin were fixed; nothing systematically checked the rest.
-  - No real device has ever paired. Everything in the engine path is tested
-    against a stub socket.
 
 
 # PART B — carried forward, unchanged
