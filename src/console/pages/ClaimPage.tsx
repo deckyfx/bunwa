@@ -8,15 +8,53 @@
  * rate-limits claims per environment, and why this screen says plainly that
  * the wait is human.
  */
+import { useEffect } from "react";
 import { PlusCircle } from "lucide-react";
 
 import { Card } from "../components/Card";
 import { Field } from "../components/Field";
 import { Qr } from "../components/Qr";
 import { useClaim, type ClaimResult } from "../store/claim";
+import { useDevices } from "../store/devices";
+import { useNotice } from "../store/notice";
+import { useRoute } from "../store/route";
+import { useSession } from "../store/session";
 
 export function ClaimPage() {
-  const { msisdn, alias, result, error, busy, setMsisdn, setAlias, submit } = useClaim();
+  const { msisdn, alias, result, error, busy, setMsisdn, setAlias, submit, pairing, settled } =
+    useClaim();
+  const revision = useSession((s) => s.revision);
+  const devices = useDevices((s) => s.devices);
+  const loadDevices = useDevices((s) => s.load);
+  const navigate = useRoute((s) => s.navigate);
+  const showNotice = useNotice((s) => s.show);
+
+  // Refetch while a scan is outstanding.
+  //
+  // `device.connected` bumps the revision, but only the device list reacts to
+  // it — so with the claim screen open nothing asked the server anything and
+  // the QR sat there after it had been used. Scoped to a pending pairing so
+  // this screen is not fetching devices the rest of the time.
+  useEffect(() => {
+    if (pairing === null) return;
+    void loadDevices();
+  }, [pairing, revision, loadDevices]);
+
+  // The scan landed: say so, and go where the answer is.
+  //
+  // The device list is the screen that can show state, last seen and the
+  // actions available now; this one has done its job and cannot say anything
+  // further. `settled()` first, so the watch stops before the navigation and a
+  // second render cannot fire it twice.
+  useEffect(() => {
+    if (pairing === null || devices === null) return;
+    const paired = devices.find((d) => d.virtualDeviceId === pairing.virtualDeviceId);
+    if (paired === undefined || paired.deviceState !== "connected") return;
+
+    settled();
+    showNotice(`${pairing.alias} is connected.`);
+    navigate("devices");
+  }, [pairing, devices, settled, showNotice, navigate]);
 
   return (
     <Card id="claim" title="Claim a number" icon={PlusCircle}>
@@ -47,6 +85,18 @@ export function ClaimPage() {
       )}
 
       {result !== null && <Outcome result={result} />}
+
+      {/* Said while the code is on screen, because a QR that has been scanned
+          looks exactly like one that has not. Without this the operator scans,
+          nothing visibly changes, and the reasonable next move is to claim
+          again — which starts a second pairing for a device already pairing. */}
+      {pairing !== null && (
+        <p className="mt-3 text-sm text-slate-600 dark:text-slate-400">
+          Waiting for the scan. This page moves to Devices on its own once
+          {" "}
+          {pairing.alias} connects.
+        </p>
+      )}
     </Card>
   );
 }

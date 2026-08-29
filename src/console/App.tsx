@@ -25,6 +25,7 @@ import { ProjectsPage } from "./pages/ProjectsPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { SetupPage } from "./pages/SetupPage";
 import { useEventStream } from "./hooks/useEventStream";
+import { useNotice } from "./store/notice";
 import { useSession } from "./store/session";
 import { useRoute } from "./store/route";
 import { useSetup } from "./store/setup";
@@ -62,6 +63,9 @@ export function App() {
   const refreshSetup = useSetup((s) => s.refresh);
   const watchSystem = useTheme((s) => s.watchSystem);
   const stream = useEventStream();
+  const notice = useNotice((s) => s.message);
+  const noticeTone = useNotice((s) => s.tone);
+  const dismissNotice = useNotice((s) => s.dismiss);
 
   const [draft, setDraft] = useState(apiKey);
 
@@ -267,6 +271,35 @@ export function App() {
                 {error}
               </p>
             )}
+
+            {/* In the shell rather than on a page, because what raises a
+                notice and what shows it are usually different screens: pairing
+                finishes on the claim page and the operator is sent to the
+                device list to read about it. Dismissed by hand, not on a
+                timer — this is the explanation for a navigation the operator
+                did not ask for, and it should still be there if they looked
+                away. */}
+            {notice !== null && (
+              <div
+                role="status"
+                className={`mb-3 flex items-start justify-between gap-3 rounded-md p-3 text-sm ${
+                  noticeTone === "bad"
+                    ? "bg-rose-50 text-rose-800 dark:bg-rose-950/40 dark:text-rose-200"
+                    : "bg-emerald-50 text-emerald-900 dark:bg-emerald-950/40 dark:text-emerald-100"
+                }`}
+              >
+                <span>{notice}</span>
+                <button
+                  type="button"
+                  onClick={dismissNotice}
+                  aria-label="Dismiss"
+                  className="shrink-0 rounded px-1 opacity-60 hover:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+
             <Section id={route.section} />
           </main>
         </div>
