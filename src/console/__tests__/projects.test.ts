@@ -8,10 +8,29 @@
  */
 import { describe, expect, test, beforeEach, mock } from "bun:test";
 
-let mintResolver: () => Promise<unknown> = () =>
+// `import type` survives mock.module: the mock replaces the runtime module
+// while the types still come from the real one, so these stand-ins are checked
+// against the routes they stand in for.
+import type { Environment, KeySummary, Project } from "../store/projects";
+
+/**
+ * Only the halves the store reads.
+ *
+ * These were `unknown`, which is the same gap that had already been closed in
+ * the deliveries test and which I reopened by writing new fixtures the old
+ * way. An untyped resolver lets a route change shape while every assertion
+ * here keeps passing — the drift Eden was adopted to make impossible, switched
+ * off in the tests meant to prove the store survives a real server. The
+ * envelope's `status`, `headers` and raw `response` are omitted because the
+ * store destructures `{ data, error }` and nothing else.
+ */
+type Reply<T> = { data: T | null; error: { status?: number } | null };
+
+let mintResolver: () => Promise<Reply<{ key: string; label: string }>> = () =>
   Promise.resolve({ data: { key: "bw_live_x", label: "k" }, error: null });
-let listResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
-let envResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
+let listResolver: () => Promise<Reply<Project[]>> = () => Promise.resolve({ data: [], error: null });
+let envResolver: () => Promise<Reply<Environment[]>> = () => Promise.resolve({ data: [], error: null });
+let keysResolver: () => Promise<Reply<KeySummary[]>> = () => Promise.resolve({ data: [], error: null });
 
 void mock.module("../lib/api", () => ({
   client: () => ({
@@ -24,7 +43,7 @@ void mock.module("../lib/api", () => ({
                 "api-keys": Object.assign(
                   () => ({ delete: () => Promise.resolve({ error: null }) }),
                   {
-                    get: () => Promise.resolve({ data: [], error: null }),
+                    get: () => keysResolver(),
                     post: () => mintResolver(),
                   },
                 ),
@@ -59,11 +78,12 @@ beforeEach(() => {
   useProjects.setState(RESET);
   listResolver = () => Promise.resolve({ data: [], error: null });
   envResolver = () => Promise.resolve({ data: [], error: null });
+  keysResolver = () => Promise.resolve({ data: [], error: null });
 });
 
 describe("a key minted while the operator moves on", () => {
   test("is not shown under a different project", async () => {
-    let release: ((v: unknown) => void) | undefined;
+    let release: ((v: Reply<{ key: string; label: string }>) => void) | undefined;
     mintResolver = () =>
       new Promise((resolve) => {
         release = resolve;
@@ -84,7 +104,7 @@ describe("a key minted while the operator moves on", () => {
 
   test("is not shown to whoever signs in next", async () => {
     // The sharper case: not a different project, a different person.
-    let release: ((v: unknown) => void) | undefined;
+    let release: ((v: Reply<{ key: string; label: string }>) => void) | undefined;
     mintResolver = () =>
       new Promise((resolve) => {
         release = resolve;
@@ -114,7 +134,7 @@ describe("a listing that lands after the operator signed out", () => {
     // blankOnKeyChange empties the store on the key change; this is the
     // request that was already in flight when it did, arriving afterwards and
     // filling it straight back in.
-    let release: ((v: unknown) => void) | undefined;
+    let release: ((v: Reply<Project[]>) => void) | undefined;
     listResolver = () =>
       new Promise((resolve) => {
         release = resolve;
@@ -122,7 +142,19 @@ describe("a listing that lands after the operator signed out", () => {
 
     const loading = useProjects.getState().load();
     useSession.setState({ apiKey: "key-b" });
-    release?.({ data: [{ id: "p1", slug: "grande", displayName: "Grande", status: "active" }], error: null });
+    release?.({
+      data: [
+        {
+          id: "p1",
+          slug: "grande",
+          displayName: "Grande",
+          status: "active",
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        },
+      ],
+      error: null,
+    });
     await loading;
 
     expect(
@@ -137,7 +169,7 @@ describe("a selection loaded under one credential", () => {
     // The case a selection check alone cannot see: the ids match again because
     // the next person navigated to the same place, so only the credential
     // tells the two requests apart.
-    let release: ((v: unknown) => void) | undefined;
+    let release: ((v: Reply<Environment[]>) => void) | undefined;
     envResolver = () =>
       new Promise((resolve) => {
         release = resolve;
@@ -147,7 +179,24 @@ describe("a selection loaded under one credential", () => {
     useSession.setState({ apiKey: "key-b" });
     useProjects.setState({ openId: "p1" });
 
-    release?.({ data: [{ id: "e1", slug: "production", kind: "production", status: "active" }], error: null });
+    // Spelled out because the compiler now insists: `kind` is "live" | "test",
+    // not the environment slug, and this fixture had it wrong until the types
+    // said so.
+    release?.({
+      data: [
+        {
+          id: "e1",
+          slug: "production",
+          kind: "live",
+          status: "active",
+          projectId: "p1",
+          settings: {},
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        },
+      ],
+      error: null,
+    });
     await opening;
 
     expect(

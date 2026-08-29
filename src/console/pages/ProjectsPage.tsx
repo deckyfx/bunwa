@@ -235,6 +235,19 @@ function Keys({ projectId, environmentId }: { projectId: string; environmentId: 
   );
 }
 
+/**
+ * Projects, their environments, and the keys that reach them.
+ *
+ * The operator's view of the tenant model, and the only screen that mints a
+ * credential for somebody else. That is why the minted key is shown once, in
+ * memory, and never written anywhere: the operator is holding another party's
+ * secret for as long as it takes to pass it on.
+ *
+ * Only offered to a key carrying `manage:projects`. A refusal is reported
+ * rather than rendered as an empty list, because "no projects" and "you may
+ * not see the projects" are different answers and only one of them is a reason
+ * to create one.
+ */
 export function ProjectsPage() {
   const { projects, openId, environments, keysFor, error, mintedKey, load, open, loadKeys, dismissKey } =
     useProjects();

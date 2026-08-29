@@ -55,6 +55,33 @@ interface ProjectsState {
 
 const api = () => client(useSession.getState().apiKey);
 
+/**
+ * What a request was made under, and whether that is still true.
+ *
+ * Five separate findings on this store were the same mistake: a response
+ * committed after the thing it describes had moved on. Each was fixed where it
+ * was found, and the sixth arrived because `open` and `loadKeys` checked the
+ * selection and not the credential — a guard that looked present and answered
+ * half the question.
+ *
+ * Both halves are here so neither can be forgotten independently. The
+ * credential matters because the next operator can navigate to the same
+ * project, which makes the selection match again; the selection matters
+ * because the same operator can move on within one session. `undefined` means
+ * a field is not part of this request's identity rather than that it need not
+ * be checked.
+ */
+function taken(get: () => ProjectsState, of: { openId?: string; keysFor?: string }) {
+  const apiKey = useSession.getState().apiKey;
+  return (): boolean => {
+    if (useSession.getState().apiKey !== apiKey) return false;
+    const now = get();
+    if (of.openId !== undefined && now.openId !== of.openId) return false;
+    if (of.keysFor !== undefined && now.keysFor !== of.keysFor) return false;
+    return true;
+  };
+}
+
 /** Say what the server said, and name the one failure that has a specific fix. */
 const messageFrom = (error: { status?: unknown; value?: unknown } | null): string => {
   const value = error?.value;
@@ -81,17 +108,13 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   mintedKey: null,
 
   load: async () => {
-    // The credential this listing was fetched under.
-    //
     // `blankOnKeyChange` empties the store when the key changes, but a request
     // already in flight lands afterwards and fills it straight back in — so
-    // clearing on its own paints one operator's projects for the next. Found
-    // by auditing the other actions after the same fault turned up in
-    // createKey, rather than by meeting it again.
-    const under = useSession.getState().apiKey;
+    // clearing on its own paints one operator's projects for the next.
+    const still = taken(get, {});
 
     const { data, error } = await api().admin.v1.projects.get();
-    if (useSession.getState().apiKey !== under) return;
+    if (!still()) return;
 
     // `Array.isArray` as well as the error check: Eden types `data` as the
     // union of the body and a raw Response, so narrowing is what makes the
@@ -105,13 +128,13 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   createProject: async (slug, displayName) => {
     set({ busy: true, error: null });
-    const under = useSession.getState().apiKey;
+    const still = taken(get, {});
 
     const { error } = await api().admin.v1.projects.post({ slug: slug.trim(), displayName: displayName.trim() });
 
     // Busy clears either way — this call finished, whoever is looking — but
     // the outcome is only reported to the session that asked for it.
-    if (useSession.getState().apiKey !== under) {
+    if (!still()) {
       set({ busy: false });
       return false;
     }
@@ -134,20 +157,12 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
     set({ openId: projectId, environments: null, keys: null, keysFor: null, error: null });
 
-    const under = useSession.getState().apiKey;
+    const still = taken(get, { openId: projectId });
     const { data, error } = await api().admin.v1.projects({ projectId }).environments.get();
 
-    // Dropped if the operator has opened a different project since. The
-    // request for A can settle after the request for B, and storing it then
-    // put A's environments under B's name and went on to load A's keys.
-    //
-    // The credential as well as the selection. Checking the selection alone
-    // left the case where the *next* operator opens the same project: the ids
-    // match again, so a response fetched under the previous key passed the
-    // guard and restored the previous session's data. My own audit of this
-    // file missed it by counting whether each action had a guard rather than
-    // whether it had the right one.
-    if (useSession.getState().apiKey !== under || get().openId !== projectId) return;
+    // Dropped if the operator has opened a different project since, or if a
+    // different operator is looking now.
+    if (!still()) return;
 
     if (error !== null || !Array.isArray(data)) {
       set({ error: messageFrom(error) });
@@ -167,15 +182,13 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   loadKeys: async (projectId, environmentId) => {
     set({ keys: null, keysFor: environmentId });
 
-    const under = useSession.getState().apiKey;
+    const still = taken(get, { keysFor: environmentId });
     const { data, error } = await api()
       .admin.v1.projects({ projectId })
       .environments({ environmentId })["api-keys"].get();
 
-    // The environment the operator is looking at now, and the credential that
-    // asked for it — the same race one level down, and the same reason both
-    // halves are needed.
-    if (useSession.getState().apiKey !== under || get().keysFor !== environmentId) return;
+    // The same race one level down.
+    if (!still()) return;
 
     if (error !== null || !Array.isArray(data)) {
       set({ error: messageFrom(error) });
@@ -187,11 +200,10 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   createKey: async (projectId, environmentId, label, scopes) => {
     set({ busy: true, error: null });
 
-    // The credential this mint was authorised by, captured before the request.
     // A minted key is the one piece of state here that is somebody else's
-    // secret, and project state was not cleared on sign-out — so a slow mint
-    // could put its "copy this now" dialog in front of whoever signed in next.
-    const mintedUnder = useSession.getState().apiKey;
+    // secret, so a slow mint must never put its "copy this now" dialog in
+    // front of whoever is looking by the time it lands.
+    const still = taken(get, { openId: projectId, keysFor: environmentId });
 
     const { data, error } = await api()
       .admin.v1.projects({ projectId })
@@ -203,11 +215,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
     // whatever is open now would show one project's credential under another
     // project's name. Busy is cleared either way — the request this call
     // started has finished, whoever is looking.
-    const current = get();
-    const stillHere =
-      useSession.getState().apiKey === mintedUnder &&
-      current.openId === projectId &&
-      current.keysFor === environmentId;
+    const stillHere = still();
 
     if (error !== null || data === null) {
       set({ busy: false, ...(stillHere ? { error: messageFrom(error) } : {}) });
@@ -240,6 +248,7 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
   revokeKey: async (projectId, environmentId, keyId) => {
     set({ busy: true, error: null });
+    const still = taken(get, { openId: projectId, keysFor: environmentId });
 
     const { error } = await api()
       .admin.v1.projects({ projectId })
@@ -247,9 +256,8 @@ export const useProjects = create<ProjectsState>((set, get) => ({
       .delete();
 
     // Same guard as createKey: the revoke happened, but an error or a refresh
-    // belongs to the selection it was made under.
-    const after = get();
-    const stillHere = after.openId === projectId && after.keysFor === environmentId;
+    // belongs to the session and selection it was made under.
+    const stillHere = still();
 
     if (error !== null) {
       set({ busy: false, ...(stillHere ? { error: messageFrom(error) } : {}) });
