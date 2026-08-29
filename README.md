@@ -4,8 +4,8 @@ A Bun/TypeScript multi-tenant WhatsApp proxy. Speaks WhatsApp directly through [
 
 > Side project. The control plane works and is tested, and a console claims a
 > number, shows a scannable QR, browses conversations and watches webhook
-> deliveries. It has still never run against a real device outside stage-0
-> measurement.
+> deliveries. A real device has now paired through it — one, by hand. Nothing
+> has carried production traffic.
 
 ## Status
 
@@ -31,9 +31,9 @@ bunwa is a multi-tenant control plane that also holds the WhatsApp connection.
 An **engine** sits behind a seven-method `DeviceEngine` interface; Baileys is
 that engine, in-process, and exactly one file may import it
 ([ADR-0009](docs/adr/0009-baileys-version-and-isolation.md)). It is off by
-default: `BAILEYS_ENABLED` has to be set, because no real device has ever
-paired and a deployment should choose an unproven engine rather than be
-upgraded into one.
+default: `BAILEYS_ENABLED` has to be set, because one hand-paired device is
+not a proven engine and a deployment should choose it rather than be upgraded
+into one.
 
 It began as a proxy in front of [gowa](https://github.com/aldinokemal/go-whatsapp-web-multidevice).
 Stages 0-4 removed that, so bunwa now owns the credentials, the Signal keys and

@@ -349,9 +349,11 @@ The sequence below is the plan as written, with what happened to each step.
    [ADR-0003](adr/0003-process-isolation.md), which needs revisiting rather
    than a fresh answer invented here.
 6. **Shadow mode, then migrate one internal device, then by cohort.** Not
-   reached, because there is nothing to migrate: no real device has ever paired.
-   `BAILEYS_ENABLED` defaults to off in place of a rollout — a deployment opts
-   in to an unproven engine rather than being upgraded into one.
+   reached. There was nothing to migrate — gowa was gone before anything ran on
+   it — and a device has since paired directly on Baileys rather than being
+   moved onto it. `BAILEYS_ENABLED` defaults to off in place of a rollout: one
+   device paired by hand is not a cohort, so a deployment opts in rather than
+   being upgraded into it.
 7. **Keep the gowa adapter as a failover.** *Reversed.* Two engines is
    insurance only while both are maintained, and nothing was maintaining an
    adapter for a dependency being removed. It was deleted rather than left to
@@ -363,9 +365,14 @@ and restore-from-backup, stage 0 re-measured, and 30 days of a production cohort
 on Baileys with no regression in delivery rate or reconnect latency.
 
 Two of the four are met: conformance parity, and session state surviving
-restart and restore. The other two need a real device, and no real device has
-ever paired. That is the honest position of the whole project, not just this
-stage.
+restart and restore.
+
+A real device has now paired, which is what the other two were waiting on — but
+neither is met by it. Stage 0 has still not been re-measured against Baileys,
+so the 203-second blind window that justifies the ack timeout remains a *gowa*
+number ([12](12-stage0-findings.md)); and one device paired by hand is not
+thirty days of a production cohort. The blocker moved from "cannot be done" to
+"not done", which is progress but not the same as met.
 
 ---
 
@@ -378,9 +385,11 @@ Three things are ahead of every row in this table, because each is a gap
 between what the system claims and what it does rather than something it does
 not claim at all:
 
-1. **Pair a real device.** Everything below assumes traffic. Nothing here has
-   ever carried any, and the stage-0 blind window has never been re-measured
-   against Baileys.
+1. **Re-measure the blind window against Baileys.** A device has paired, so
+   this is finally possible; it has not been done. The ack timeout, the
+   undelivered sweep and the whole "acceptance is not delivery" design rest on
+   a number measured against gowa. Everything below assumes traffic, and
+   nothing here has carried any.
 2. **Send the consent challenge and parse the reply.** A claim against a number
    another project holds answers "the phone holder has been asked to confirm",
    and nobody is asked (§1.3, exit criterion 2).
