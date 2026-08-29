@@ -134,12 +134,20 @@ export const useProjects = create<ProjectsState>((set, get) => ({
 
     set({ openId: projectId, environments: null, keys: null, keysFor: null, error: null });
 
+    const under = useSession.getState().apiKey;
     const { data, error } = await api().admin.v1.projects({ projectId }).environments.get();
 
     // Dropped if the operator has opened a different project since. The
     // request for A can settle after the request for B, and storing it then
     // put A's environments under B's name and went on to load A's keys.
-    if (get().openId !== projectId) return;
+    //
+    // The credential as well as the selection. Checking the selection alone
+    // left the case where the *next* operator opens the same project: the ids
+    // match again, so a response fetched under the previous key passed the
+    // guard and restored the previous session's data. My own audit of this
+    // file missed it by counting whether each action had a guard rather than
+    // whether it had the right one.
+    if (useSession.getState().apiKey !== under || get().openId !== projectId) return;
 
     if (error !== null || !Array.isArray(data)) {
       set({ error: messageFrom(error) });
@@ -159,13 +167,15 @@ export const useProjects = create<ProjectsState>((set, get) => ({
   loadKeys: async (projectId, environmentId) => {
     set({ keys: null, keysFor: environmentId });
 
+    const under = useSession.getState().apiKey;
     const { data, error } = await api()
       .admin.v1.projects({ projectId })
       .environments({ environmentId })["api-keys"].get();
 
-    // The environment the operator is looking at now, not the one this call
-    // was made for — the same race one level down.
-    if (get().keysFor !== environmentId) return;
+    // The environment the operator is looking at now, and the credential that
+    // asked for it — the same race one level down, and the same reason both
+    // halves are needed.
+    if (useSession.getState().apiKey !== under || get().keysFor !== environmentId) return;
 
     if (error !== null || !Array.isArray(data)) {
       set({ error: messageFrom(error) });

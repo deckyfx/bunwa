@@ -11,6 +11,7 @@ import { describe, expect, test, beforeEach, mock } from "bun:test";
 let mintResolver: () => Promise<unknown> = () =>
   Promise.resolve({ data: { key: "bw_live_x", label: "k" }, error: null });
 let listResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
+let envResolver: () => Promise<unknown> = () => Promise.resolve({ data: [], error: null });
 
 void mock.module("../lib/api", () => ({
   client: () => ({
@@ -28,7 +29,7 @@ void mock.module("../lib/api", () => ({
                   },
                 ),
               }),
-              { get: () => Promise.resolve({ data: [], error: null }) },
+              { get: () => envResolver() },
             ),
           }),
           { get: () => listResolver() },
@@ -57,6 +58,7 @@ beforeEach(() => {
   useSession.setState({ apiKey: "key-a", identity: null, error: null, busy: false, revision: 0 });
   useProjects.setState(RESET);
   listResolver = () => Promise.resolve({ data: [], error: null });
+  envResolver = () => Promise.resolve({ data: [], error: null });
 });
 
 describe("a key minted while the operator moves on", () => {
@@ -126,6 +128,31 @@ describe("a listing that lands after the operator signed out", () => {
     expect(
       useProjects.getState().projects,
       "a previous session's projects were painted for the next one",
+    ).toBeNull();
+  });
+});
+
+describe("a selection loaded under one credential", () => {
+  test("does not restore itself when the next operator opens the same project", async () => {
+    // The case a selection check alone cannot see: the ids match again because
+    // the next person navigated to the same place, so only the credential
+    // tells the two requests apart.
+    let release: ((v: unknown) => void) | undefined;
+    envResolver = () =>
+      new Promise((resolve) => {
+        release = resolve;
+      });
+
+    const opening = useProjects.getState().open("p1");
+    useSession.setState({ apiKey: "key-b" });
+    useProjects.setState({ openId: "p1" });
+
+    release?.({ data: [{ id: "e1", slug: "production", kind: "production", status: "active" }], error: null });
+    await opening;
+
+    expect(
+      useProjects.getState().environments,
+      "a previous session's environments were restored for the next one",
     ).toBeNull();
   });
 });
