@@ -595,13 +595,37 @@ export class DeviceStore {
     now: Date = new Date(),
   ): Promise<string[]> {
     return withTransaction(database, async (tx) => {
-      const holders = await this.projectsHolding(deviceId, tx, now);
-      for (const projectId of holders) {
+      // Every project with a binding, not every project that *holds* it.
+      // `projectsHolding` answers a narrower question — who would lose
+      // something — and deliberately excludes projects whose consent was
+      // denied or has lapsed. Those still have a binding row, and revoking by
+      // holder left it behind pointing at a device whose credentials had just
+      // been destroyed.
+      const bound = await this.projectsBound(deviceId, tx);
+      for (const projectId of bound) {
         await this.revokeWithin(tx, deviceId, projectId, actor, now);
       }
       await this.reserveWithin(tx, deviceId, now);
-      return holders;
+      return bound;
     });
+  }
+
+  /**
+   * Every project with a binding to this device that has not been revoked.
+   *
+   * The structural question, where `projectsHolding` asks the consent one.
+   * Kept apart because they diverge exactly where it matters: a refused
+   * project is bound but holds nothing, so it must not block a retirement and
+   * must still be cleaned up by one.
+   */
+  private static async projectsBound(deviceId: string, database: Database): Promise<string[]> {
+    const rows = await database
+      .selectDistinct({ projectId: environments.projectId })
+      .from(virtualDevices)
+      .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .where(and(eq(virtualDevices.deviceId, deviceId), ne(virtualDevices.status, "revoked")));
+
+    return rows.map((row) => row.projectId);
   }
 
   /** Take the reservation. Separate only so both paths above set it identically. */

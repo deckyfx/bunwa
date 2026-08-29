@@ -20,6 +20,7 @@ import { apiKeys } from "../../db/schema";
 import { resetConfig } from "../../config/env";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 import { ensureBootstrap, BOOTSTRAP_KEY_LABEL } from "../bootstrap";
+import { bootstrapPrefix } from "../../auth/api-key";
 
 const restoreEnv = captureEnv([...FIXTURE_ENV_KEYS]);
 
@@ -33,13 +34,16 @@ const bootWith = async (key: string): Promise<void> => {
   await ensureBootstrap(database);
 };
 
-/** Every bootstrap row, newest first. */
+/** Every bootstrap row, oldest first. */
 const rows = async () =>
   database
     .select({ prefix: apiKeys.keyPrefix, revokedAt: apiKeys.revokedAt, level: apiKeys.level })
     .from(apiKeys)
     .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL))
     .orderBy(apiKeys.createdAt);
+
+/** The one row for this key, found rather than indexed. */
+const rowFor = async (prefix: string) => (await rows()).find((r) => r.prefix === prefix);
 
 /** The row currently able to authenticate, if any. */
 const active = async () => (await rows()).filter((r) => r.revokedAt === null);
@@ -81,13 +85,19 @@ describe("API_KEY registration", () => {
     await bootWith("bw_live_admin_alpha_secret_padding_0001");
     await bootWith("bw_live_admin_beta_secret_padding_0002");
 
-    const all = await rows();
-    expect(all, "the rotation did not record the old key").toHaveLength(2);
-    expect(all[0]?.revokedAt, "the superseded key still authenticates").not.toBeNull();
+    expect(await rows(), "the rotation did not record the old key").toHaveLength(2);
+
+    // Found by prefix rather than by position. Two boots can land in the same
+    // millisecond, and `createdAt` is the only ordering key — so asking for
+    // "the first row" was asking a question the data cannot always answer.
+    const alpha = await rowFor(bootstrapPrefix("bw_live_admin_alpha_secret_padding_0001"));
+    const beta = await rowFor(bootstrapPrefix("bw_live_admin_beta_secret_padding_0002"));
+    expect(alpha?.revokedAt, "the superseded key still authenticates").not.toBeNull();
+    expect(beta?.revokedAt, "the new key was registered already revoked").toBeNull();
 
     const usable = await active();
     expect(usable, "rotation left more than one working credential").toHaveLength(1);
-    expect(usable[0]?.prefix).toBe(all[1]?.prefix);
+    expect(usable[0]?.prefix).toBe(beta?.prefix);
   });
 
   test("rolling back to a previous API_KEY works again", async () => {
@@ -96,7 +106,7 @@ describe("API_KEY registration", () => {
     // key they had been using an hour earlier and it no longer authenticated,
     // with nothing anywhere saying why.
     await bootWith("bw_live_admin_alpha_secret_padding_0001");
-    const alpha = (await rows())[0]!.prefix;
+    const alpha = bootstrapPrefix("bw_live_admin_alpha_secret_padding_0001");
 
     await bootWith("bw_live_admin_beta_secret_padding_0002");
     await bootWith("bw_live_admin_alpha_secret_padding_0001");

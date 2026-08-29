@@ -317,7 +317,9 @@ describe("the window between deciding and destroying", () => {
     const gamma = await ProjectStore.create({ slug: "gamma", displayName: "Gamma" }, database);
     const env = await EnvironmentStore.create({ projectId: gamma.id, slug: "prod" }, database);
 
-    expect(
+    // Awaited. `rejects` returns a promise, and an unawaited one lets the test
+    // finish before the assertion has decided anything.
+    await expect(
       DeviceStore.claim({ environmentId: env.id, msisdn: "+628123456789", alias: "late" }, database),
       "a project was bound to a number whose credentials were being destroyed",
     ).rejects.toThrow(/being retired/);
@@ -337,5 +339,33 @@ describe("the window between deciding and destroying", () => {
       database,
     );
     expect(claimed.device.id, "a device stayed unclaimable after a failed retirement").toBe(deviceId);
+  });
+});
+
+describe("an operator retiring a device", () => {
+  test("revokes the binding of a project that was refused, too", async () => {
+    // `projectsHolding` deliberately does not count a project whose consent
+    // was denied — it holds nothing, and must not keep a number alive. But it
+    // still has a binding row, and revoking by holder left that row behind
+    // pointing at a device whose credentials had just been destroyed.
+    keyB = await bindSecondProject("+628123456789");
+
+    const [beta] = await database
+      .select({ projectId: environments.projectId })
+      .from(virtualDevices)
+      .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .where(and(eq(virtualDevices.deviceId, deviceId), eq(virtualDevices.alias, "shared")));
+
+    const consent = await DeviceStore.consentFor(deviceId, beta!.projectId, database);
+    await DeviceStore.respondToConsent(consent!.challengeToken, "denied", "whatsapp_reply", {}, database);
+
+    const res = await retire(adminKey);
+    expect(res.status).toBe(200);
+
+    const bindings = await database.select().from(virtualDevices).where(eq(virtualDevices.deviceId, deviceId));
+    expect(
+      bindings.every((b) => b.status === "revoked"),
+      "a refused project kept a binding to a device the operator retired",
+    ).toBe(true);
   });
 });
