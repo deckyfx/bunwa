@@ -18,7 +18,9 @@
 import { Elysia, t } from "elysia";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
-import { requireApiKey, requireScope } from "../../auth/middleware";
+import { requireAdminKey, requireScope } from "../../auth/middleware";
+import { SettingsStore, type SettingKey } from "../../stores/settings-store";
+import { serverTimezone, setServerTimezone } from "../../time/format";
 import { isProjectScope, PROJECT_SCOPES } from "../../auth/scopes";
 import type { ApiKey } from "../../db/schema";
 import { ValidationError } from "../../stores/errors";
@@ -57,13 +59,112 @@ export const adminRoutes = new Elysia({ prefix: "/admin/v1" })
       { status: 404, headers: { "content-type": "application/problem+json" } },
     );
   })
-  .use(requireApiKey)
-  // Applied to every route in the plugin rather than repeated per handler. The
+  // An admin key, not a tenant key with a scope on it.
+  //
+  // These routes create projects and mint credentials for them, so the
+  // question is what the caller *is* before it is what they may do. A tenant
+  // key is refused here even if it somehow carries `manage:projects` — which
+  // is the difference between a scope check and a level check, and the reason
+  // the operator credential is no longer also a credential that can send
+  // messages as a project.
+  .use(requireAdminKey)
+  /**
+   * Who this admin key is, as the console needs to know it.
+   *
+   * The mirror of `/v1/whoami` for a credential with no tenant. The console
+   * asks one of the two depending on which it holds, and the answer decides
+   * which sections it offers — so a key that cannot reach a screen is not
+   * shown one.
+   *
+   * Above the scope guard deliberately: identifying yourself is what every
+   * admin key may do, and a key limited to fewer scopes still has to be able
+   * to find out what it is. It discloses nothing the caller did not present.
+   */
+  .get("/whoami", ({ admin }) => ({
+    level: "admin" as const,
+    scopes: admin.scopes,
+    serverTimezone: serverTimezone(),
+  }))
+
+  // Applied to every route below rather than repeated per handler. The
   // per-handler version is how one gets forgotten, and the one that gets
   // forgotten here mints credentials.
-  .onBeforeHandle(({ auth, path }) => {
-    requireScope(auth, "manage:projects", path);
+  //
+  // Below `/whoami` and `/settings` on purpose: identifying yourself needs no
+  // scope, and settings answer to `manage:instance` rather than to this one.
+  .onBeforeHandle(({ admin, path }) => {
+    requireScope(admin, "manage:projects", path);
   })
+  /**
+   * Instance settings, and where each value comes from.
+   *
+   * Authenticated, unlike the setup screen's copy: setup answers before a
+   * credential exists and closes once one does, so without this the instance
+   * name could only ever be chosen during first run and never corrected.
+   *
+   * On the admin surface, behind `manage:instance`. These are not any
+   * tenant's settings — there is one instance name and one server timezone,
+   * shared by every project on the deployment — so they sat on the project
+   * routes only because that was where the console could reach them. A scope
+   * check was doing the work a level check should have been doing.
+   */
+  .get("/settings", ({ admin, path }) => {
+    requireScope(admin, "manage:instance", path);
+    return SettingsStore.all();
+  })
+
+  .put(
+    "/settings",
+    ({ body, path, admin }) => {
+      // `manage:instance`, not `manage:devices`. This writes values that are
+      // one per process: the instance name reaches WhatsApp through the
+      // Baileys handshake and is what every other project's number is listed
+      // under, and setServerTimezone below mutates the zone every rendered
+      // timestamp uses, logs included. A tenant holding an ordinary project
+      // key was able to do both to every other tenant on the deployment.
+      requireScope(admin, "manage:instance", path);
+
+      // Everything is checked before anything is written.
+      //
+      // One pass that validated and wrote as it went left a valid instance
+      // name persisted and a rejected timezone unwritten, then answered 400 —
+      // so the caller was told the request failed while half of it had already
+      // taken effect, and the console showed a name it had been told was not
+      // saved.
+      const pending: Array<{ setting: SettingKey; value: string }> = [];
+      for (const [key, value] of Object.entries(body)) {
+        if (value === undefined || value.trim() === "") continue;
+        const setting = key as SettingKey;
+
+        if (SettingsStore.resolve(setting).source === "environment") {
+          // Refused rather than ignored: silently dropping it leaves the
+          // console showing a value the deployment overrides, which is the
+          // failure the precedence rule exists to prevent.
+          throw new ValidationError(`${setting} is set in the environment and cannot be changed here`, setting);
+        }
+
+        // Throws on a bad value, before any write has happened.
+        pending.push({ setting, value: SettingsStore.validate(setting, value) });
+      }
+
+      for (const { setting, value } of pending) {
+        const applied = SettingsStore.set(setting, value);
+        // Rendering reads a cached zone, so a write that did not update it
+        // would take effect only after a restart.
+        if (setting === "serverTimezone") setServerTimezone(applied);
+        log.info("setting changed", { setting, value: applied });
+      }
+
+      return SettingsStore.all();
+    },
+    {
+      body: t.Object({
+        instanceName: t.Optional(t.String({ maxLength: 200 })),
+        serverTimezone: t.Optional(t.String({ maxLength: 100 })),
+      }),
+    },
+  )
+
   .post(
     "/projects",
     async ({ body, set }) => {

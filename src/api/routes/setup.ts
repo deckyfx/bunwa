@@ -188,9 +188,17 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
           );
         }
 
-        const { plaintext } = await ApiKeyStore.create({
-          projectId: state.projectId,
-          environmentId: state.environmentId,
+        // An admin key, not a tenant key that happens to hold every scope.
+        //
+        // The first credential belongs to whoever is setting the instance up,
+        // and what they need is the instance: projects, environments, keys,
+        // devices. Minting it into `default/production` made it simultaneously
+        // a credential that could send WhatsApp messages as that project,
+        // which is a tenant power an operator never asked for.
+        //
+        // Tenant keys are minted per project afterwards, from the Projects
+        // screen, which is where deciding what a project may do belongs.
+        const { plaintext } = await ApiKeyStore.createAdmin({
           label: "console (setup)",
           scopes: [...ALL_SCOPES],
         });

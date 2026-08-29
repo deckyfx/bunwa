@@ -14,6 +14,7 @@ import m0004DeviceCredentials from "./migrations/0004_device_credentials.sql" wi
 import m0005ChatHistory from "./migrations/0005_chat_history.sql" with { type: "text" };
 import m0006RetireGowaEngineKind from "./migrations/0006_retire_gowa_engine_kind.sql" with { type: "text" };
 import m0007Settings from "./migrations/0007_settings.sql" with { type: "text" };
+import m0008ApiKeyLevels from "./migrations/0008_api_key_levels.sql" with { type: "text" };
 
 /** Migration file name to its raw SQL, exactly as drizzle-kit wrote it. */
 const files: Record<string, string> = {
@@ -25,6 +26,7 @@ const files: Record<string, string> = {
   "0005_chat_history.sql": m0005ChatHistory,
   "0006_retire_gowa_engine_kind.sql": m0006RetireGowaEngineKind,
   "0007_settings.sql": m0007Settings,
+  "0008_api_key_levels.sql": m0008ApiKeyLevels,
 };
 
 export interface EmbeddedJournalEntry { idx: number; when: number; tag: string; breakpoints: boolean }

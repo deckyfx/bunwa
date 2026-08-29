@@ -89,7 +89,24 @@ export const requireApiKey = new Elysia({ name: "requireApiKey" })
     // caller being refused was still writing on every attempt — the same fault
     // just fixed inside consume(), reintroduced one line above it by the commit
     // that added this backstop. A refused request should cost no writes at all.
-    ApiKeyStore.touch(resolved.apiKey.id, resolved.environmentId);
+    ApiKeyStore.touch(resolved.apiKey.id, resolved.level === "tenant" ? resolved.environmentId : null);
+
+    // An admin key is refused here rather than given an empty tenant.
+    //
+    // Every route behind this middleware acts inside one environment and reads
+    // it straight off `auth`. Letting an admin key through with nulls would
+    // push that question into ~37 call sites; refusing it keeps the contract
+    // this middleware has always had — if you are past this line, you have a
+    // tenant — and admin routes use `requireAdminKey` instead.
+    if (resolved.level !== "tenant") {
+      throw new AuthError(
+        403,
+        "tenant-key-required",
+        "Forbidden",
+        "this endpoint acts inside a project; present a tenant API key rather than an admin key",
+        path,
+      );
+    }
 
     const auth: AuthContext = {
       projectId: resolved.projectId,
@@ -98,6 +115,69 @@ export const requireApiKey = new Elysia({ name: "requireApiKey" })
       apiKeyId: resolved.apiKey.id,
     };
     return { auth };
+  });
+
+/**
+ * What an admin key resolves to. No tenant, because it has none.
+ *
+ * Deliberately not `AuthContext` with nullable fields: the two are different
+ * kinds of caller and a handler should not be able to reach for a project id
+ * that was never going to be there.
+ */
+export interface AdminAuthContext {
+  scopes: string[];
+  apiKeyId: string;
+}
+
+/**
+ * Authenticate an instance-level caller.
+ *
+ * The mirror of `requireApiKey`: same credential path, opposite conclusion. A
+ * tenant key is refused rather than accepted-and-scope-checked, because the
+ * question "may this key act on the instance?" is answered by what the key is,
+ * before any scope is consulted. A tenant key that somehow carried
+ * `manage:projects` still must not reach these routes.
+ */
+export const requireAdminKey = new Elysia({ name: "requireAdminKey" })
+  .derive({ as: "scoped" }, async ({ request, set, path }) => {
+    const supplied = tenantFromRequest(request.headers);
+    if (supplied !== null) {
+      set.status = 400;
+      throw new AuthError(
+        400,
+        "tenant-not-accepted",
+        "Tenant may not be specified",
+        `${supplied} is not accepted; an admin key acts on the instance`,
+        path,
+      );
+    }
+
+    const presented = request.headers.get(API_KEY_HEADER);
+    if (presented === null || presented.trim() === "") {
+      throw new AuthError(401, "missing-credential", "Unauthorized", `${API_KEY_HEADER} header is required`, path);
+    }
+
+    const resolved = await ApiKeyStore.resolve(presented);
+    if (resolved === null) {
+      log.warn("api key rejected", { path });
+      throw new AuthError(401, "invalid-credential", "Unauthorized", "the API key is not valid", path);
+    }
+
+    requireWithinLimit(`key:${resolved.apiKey.id}`, LIMITS.request, path);
+    ApiKeyStore.touch(resolved.apiKey.id, resolved.level === "tenant" ? resolved.environmentId : null);
+
+    if (resolved.level !== "admin") {
+      throw new AuthError(
+        403,
+        "admin-key-required",
+        "Forbidden",
+        "this endpoint acts on the instance; present an admin API key",
+        path,
+      );
+    }
+
+    const admin: AdminAuthContext = { scopes: resolved.scopes, apiKeyId: resolved.apiKey.id };
+    return { admin };
   });
 
 /** Carries an HTTP status so the error handler can render it without guessing. */
@@ -149,7 +229,7 @@ export function requireWithinLimit(subject: string, limit: Limit, instance?: str
  * Scopes are checked per operation rather than per route group: a route that
  * grows a second capability should need a second check, not inherit one.
  */
-export function requireScope(auth: AuthContext, scope: string, instance?: string): void {
+export function requireScope(auth: { scopes: string[] }, scope: string, instance?: string): void {
   if (!auth.scopes.includes(scope)) {
     throw new AuthError(403, "insufficient-scope", "Forbidden", `this API key lacks the "${scope}" scope`, instance);
   }

@@ -126,10 +126,15 @@ describe("ApiKeyStore", () => {
       database,
     );
     const resolved = await ApiKeyStore.resolve(plaintext, database);
-    expect(resolved).not.toBeNull();
-    expect(resolved!.environmentId).toBe(envA.id);
-    expect(resolved!.projectId).toBe(a.id);
-    expect(resolved!.scopes).toEqual(["send:text"]);
+    // The level is asserted, not assumed. ResolvedKey is a union so that an
+    // admin key cannot be read as though it had a tenant; narrowing here is
+    // what makes the three reads below type-check, and it also pins that a
+    // key minted into an environment resolves as a tenant key.
+    expect(resolved?.level, "a key minted into an environment was not a tenant key").toBe("tenant");
+    if (resolved?.level !== "tenant") throw new Error("expected a tenant key");
+    expect(resolved.environmentId).toBe(envA.id);
+    expect(resolved.projectId).toBe(a.id);
+    expect(resolved.scopes).toEqual(["send:text"]);
   });
 
   test("the key is readable and names its environment kind and project", async () => {
@@ -215,7 +220,9 @@ describe("ApiKeyStore", () => {
     );
     await ApiKeyStore.create({ projectId: b.id, environmentId: envB.id, label: "theirs", scopes: [] }, database);
     const resolved = await ApiKeyStore.resolve(plaintext, database);
-    expect(resolved!.environmentId).toBe(envA.id);
-    expect(resolved!.projectId).not.toBe(b.id);
+    expect(resolved?.level).toBe("tenant");
+    if (resolved?.level !== "tenant") throw new Error("expected a tenant key");
+    expect(resolved.environmentId).toBe(envA.id);
+    expect(resolved.projectId).not.toBe(b.id);
   });
 });

@@ -55,7 +55,7 @@ export const useSettings = create<SettingsState>((set) => ({
   saved: false,
 
   load: async () => {
-    const { data, error } = await client(useSession.getState().apiKey).v1.settings.get();
+    const { data, error } = await client(useSession.getState().apiKey).admin.v1.settings.get();
     if (error !== null || data === null) {
       set({ error: messageFrom(error) });
       return;
@@ -66,7 +66,7 @@ export const useSettings = create<SettingsState>((set) => ({
   save: async (values) => {
     set({ busy: true, error: null, saved: false });
 
-    const { data, error } = await client(useSession.getState().apiKey).v1.settings.put(values);
+    const { data, error } = await client(useSession.getState().apiKey).admin.v1.settings.put(values);
 
     if (error !== null || data === null) {
       set({ busy: false, error: messageFrom(error) });

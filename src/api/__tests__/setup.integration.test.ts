@@ -36,6 +36,9 @@ const setupEnv = async (extra: Record<string, string> = {}) => {
   Bun.env["LOG_LEVEL"] = "error";
   Bun.env["RUNTIME_DIR"] = dir;
   Bun.env["DATABASE_PATH"] = join(dir, "t.sqlite");
+  // The operator's key is an admin key now, so identifying it means reaching
+  // the admin surface — which answers 404 unless it is mounted.
+  Bun.env["ADMIN_API_ENABLED"] = "true";
   delete Bun.env["SERVER_TIMEZONE"];
   delete Bun.env["API_KEY"];
   for (const [k, v] of Object.entries(extra)) Bun.env[k] = v;
@@ -141,10 +144,20 @@ describe("minting the first key", () => {
     const { apiKey } = (await res.json()) as { apiKey: string };
     expect(apiKey).toMatch(/^bw_live_/);
 
+    // The admin whoami, because that is what setup mints now. A key that
+    // could answer /v1/whoami would be a tenant credential, which is exactly
+    // what the operator's key stopped being.
     const whoami = await app.handle(
-      new Request("http://localhost/v1/whoami", { headers: { "x-api-key": apiKey } }),
+      new Request("http://localhost/admin/v1/whoami", { headers: { "x-api-key": apiKey } }),
     );
     expect(whoami.status).toBe(200);
+    expect((await whoami.json()) as { level: string }).toMatchObject({ level: "admin" });
+
+    // And it is refused by a project route rather than silently acting as one.
+    const tenant = await app.handle(
+      new Request("http://localhost/v1/whoami", { headers: { "x-api-key": apiKey } }),
+    );
+    expect(tenant.status, "the operator key could still act as a tenant").toBe(403);
   });
 
   test("closes the moment it is used", async () => {
@@ -188,8 +201,10 @@ describe("a key supplied by the environment", () => {
     await setupEnv({ API_KEY: key });
     await ensureBootstrap();
 
+    // API_KEY registers as an admin key too: it and the setup screen are two
+    // doors to the same credential, so they must produce the same kind of one.
     const whoami = await app.handle(
-      new Request("http://localhost/v1/whoami", { headers: { "x-api-key": key } }),
+      new Request("http://localhost/admin/v1/whoami", { headers: { "x-api-key": key } }),
     );
     expect(whoami.status).toBe(200);
   });
@@ -244,7 +259,7 @@ describe("settings after setup", () => {
     const { apiKey } = (await minted.json()) as { apiKey: string };
 
     const res = await app.handle(
-      new Request("http://localhost/v1/settings", {
+      new Request("http://localhost/admin/v1/settings", {
         method: "PUT",
         headers: { "content-type": "application/json", "x-api-key": apiKey },
         body: JSON.stringify({ instanceName: "Second Name" }),
@@ -256,7 +271,7 @@ describe("settings after setup", () => {
   });
 
   test("need a credential", async () => {
-    const res = await app.handle(new Request("http://localhost/v1/settings"));
+    const res = await app.handle(new Request("http://localhost/admin/v1/settings"));
     expect(res.status).toBe(401);
   });
 
@@ -266,7 +281,7 @@ describe("settings after setup", () => {
     const { apiKey } = (await minted.json()) as { apiKey: string };
 
     const res = await app.handle(
-      new Request("http://localhost/v1/settings", {
+      new Request("http://localhost/admin/v1/settings", {
         method: "PUT",
         headers: { "content-type": "application/json", "x-api-key": apiKey },
         body: JSON.stringify({ serverTimezone: "Europe/London" }),

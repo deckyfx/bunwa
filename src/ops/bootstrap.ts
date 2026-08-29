@@ -96,13 +96,17 @@ async function ensureDefaults(database: Database): Promise<{ projectId: string; 
  * behind revoked rather than deleted, so a key that was in use remains
  * auditable.
  */
-async function registerEnvKey(database: Database, environmentId: string, presented: string): Promise<void> {
+async function registerEnvKey(database: Database, presented: string): Promise<void> {
   const prefix = bootstrapPrefix(presented);
 
+  // Identified by its prefix and its label, not by an environment: this key
+  // has none. The prefix is derived from the key itself, so it is stable for a
+  // given API_KEY and changes the moment the variable does — which is what
+  // makes the registration idempotent across restarts and a rotation visible.
   const existing = await database
     .select()
     .from(apiKeys)
-    .where(and(eq(apiKeys.keyPrefix, prefix), eq(apiKeys.environmentId, environmentId)))
+    .where(and(eq(apiKeys.keyPrefix, prefix), eq(apiKeys.label, BOOTSTRAP_KEY_LABEL)))
     .limit(1);
 
   if (existing[0] !== undefined) {
@@ -121,29 +125,28 @@ async function registerEnvKey(database: Database, environmentId: string, present
   // to find it was to know it was there. Rotation has to mean the old one is
   // finished.
   //
-  // Scoped to this environment's bootstrap rows: keys minted through the
-  // console or the CLI are not superseded by an environment variable changing.
+  // Scoped to bootstrap rows by their label: keys minted through the console
+  // or the CLI are not superseded by an environment variable changing.
   const superseded = await database
     .update(apiKeys)
     .set({ revokedAt: now, updatedAt: now })
-    .where(
-      and(
-        eq(apiKeys.environmentId, environmentId),
-        eq(apiKeys.label, BOOTSTRAP_KEY_LABEL),
-        isNull(apiKeys.revokedAt),
-      ),
-    )
+    .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)))
     .returning({ prefix: apiKeys.keyPrefix });
 
   if (superseded.length > 0) {
-    log.info("revoked the previous API_KEY registration", {
-      environmentId,
-      revoked: superseded.length,
-    });
+    log.info("revoked the previous API_KEY registration", { revoked: superseded.length });
   }
 
+  // Registered as an admin key, like the one setup mints.
+  //
+  // API_KEY and the setup screen are two ways to obtain the same thing — the
+  // operator's credential — so they must produce the same kind of key. Leaving
+  // this one a tenant credential would mean the powers you got depended on
+  // which door you came through, and the one that made you a tenant let you
+  // send WhatsApp messages as that project.
   await database.insert(apiKeys).values({
-    environmentId,
+    level: "admin",
+    environmentId: null,
     keyHash: await Bun.password.hash(presented, { algorithm: "argon2id" }),
     keyPrefix: prefix,
     label: BOOTSTRAP_KEY_LABEL,
@@ -152,7 +155,7 @@ async function registerEnvKey(database: Database, environmentId: string, present
     updatedAt: now,
   });
 
-  log.info("registered the API_KEY from the environment", { environmentId, scopes: ALL_SCOPES.length });
+  log.info("registered the API_KEY from the environment", { level: "admin", scopes: ALL_SCOPES.length });
 }
 
 /**
@@ -176,7 +179,14 @@ async function hasAnyKey(database: Database, environmentId: string): Promise<boo
     .from(apiKeys)
     .where(
       and(
-        eq(apiKeys.environmentId, environmentId),
+        // An admin key or a key in this environment.
+        //
+        // Filtering on the environment alone stopped being enough the moment
+        // setup started minting admin keys, which have no environment: setup
+        // would mint one and this would still report the instance
+        // unconfigured, so the console kept offering to set it up and the
+        // operator would mint a second key that was equally invisible.
+        or(isNull(apiKeys.environmentId), eq(apiKeys.environmentId, environmentId)),
         isNull(apiKeys.revokedAt),
         // Null expiry means it does not expire, which is the common case and
         // must not be read as "expired at the epoch".
@@ -199,7 +209,7 @@ export async function ensureBootstrap(database: Database = db()): Promise<Instan
   const { projectId, environmentId } = await ensureDefaults(database);
 
   const envKey = config().apiKey;
-  if (envKey !== null) await registerEnvKey(database, environmentId, envKey);
+  if (envKey !== null) await registerEnvKey(database, envKey);
 
   // Settings resolve against the database, so this is the first point at which
   // a stored timezone can take effect. Anything logged before now used the

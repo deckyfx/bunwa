@@ -218,6 +218,11 @@ describe("a released migration is immutable", () => {
       hash: "f65658efa205bde50f8777f52c019cf9762689513a6a0ff14e7b050a807b63cc",
       when: 1787955854834,
     },
+    {
+      tag: "0008_api_key_levels",
+      hash: "d864593d56d470fca91a12ac925311cbb5cb890c5145cb8dba215fe4edaedb03",
+      when: 1787980003702,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
@@ -272,6 +277,9 @@ describe("a released migration is immutable", () => {
       // to drop for it.
       "0006_retire_gowa_engine_kind": [],
       "0007_settings": ["settings"],
+      // Rebuilds `api_keys` to add `level` and relax `environment_id`. A
+      // rebuild creates no table, so there is nothing to drop for it.
+      "0008_api_key_levels": [],
     };
     for (const migration of built.slice(1)) {
       const tables = CREATED_AFTER_BASELINE[migration.tag];

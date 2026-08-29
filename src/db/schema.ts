@@ -96,9 +96,29 @@ export const apiKeys = sqliteTable(
   "api_keys",
   {
     id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
-    environmentId: text("environment_id")
+    /**
+     * What this key is allowed to be, before any scope is consulted.
+     *
+     * `tenant` acts inside exactly one environment and is what every project
+     * route requires. `admin` acts on the instance — projects, environments,
+     * keys, devices system-wide — and belongs to no tenant at all.
+     *
+     * A column rather than an inference from scopes, because the two questions
+     * are different: scopes say what a key may do, this says whose data it can
+     * possibly reach. An operator key that was also a tenant credential able to
+     * send messages as that project is what this exists to end.
+     */
+    level: text("level", { enum: ["tenant", "admin"] })
       .notNull()
-      .references(() => environments.id, { onDelete: "cascade" }),
+      .default("tenant"),
+    /**
+     * The environment a tenant key acts in. Null for an admin key.
+     *
+     * Nullable only because an admin key has no tenant to name. The middleware
+     * keeps the two apart, so a tenant route still receives a non-null
+     * environment and no handler gained a null case — see src/auth/middleware.
+     */
+    environmentId: text("environment_id").references(() => environments.id, { onDelete: "cascade" }),
     /** Argon2id hash of the plaintext key. Never the key itself. */
     keyHash: text("key_hash").notNull(),
     /** Leading characters, for identification in the dashboard and in logs. */

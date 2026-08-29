@@ -22,12 +22,27 @@ import { NotFoundError, ValidationError } from "./errors";
 import { log } from "../observability/logger";
 
 /** What authentication resolves a presented key to. */
-export interface ResolvedKey {
-  apiKey: ApiKey;
-  environmentId: string;
-  projectId: string;
-  scopes: string[];
-}
+/**
+ * A key that authenticated, and what it turned out to be.
+ *
+ * A union rather than nullable fields, so a caller cannot read a tenant off an
+ * admin key by forgetting to check. The middleware narrows this once and hands
+ * each route the half it needs — which is why no project handler gained a null
+ * case when admin keys stopped having a tenant.
+ */
+export type ResolvedKey =
+  | {
+      level: "tenant";
+      apiKey: ApiKey;
+      environmentId: string;
+      projectId: string;
+      scopes: string[];
+    }
+  | {
+      level: "admin";
+      apiKey: ApiKey;
+      scopes: string[];
+    };
 
 /**
  * Most candidates one prefix may select before the rest are ignored.
@@ -58,7 +73,8 @@ type RejectionReason =
   | "prefix-matched-but-secret-did-not"
   | "revoked"
   | "expired"
-  | "tenant-not-active";
+  | "tenant-not-active"
+  | "tenant-key-without-environment";
 
 function reject(reason: RejectionReason, prefix: string | null, presented: string): void {
   log.warn("api key rejected", {
@@ -80,6 +96,8 @@ const HINTS: Record<RejectionReason, string> = {
   revoked: "this key was revoked",
   expired: "this key is past its expiry",
   "tenant-not-active": "the key is valid but its project or environment is suspended",
+  "tenant-key-without-environment":
+    "a tenant key with no environment, which should not exist: the column is nullable only so an admin key can have no tenant. Refused rather than promoted — treating it as an admin key would turn a broken row into instance-wide access",
 };
 
 export class ApiKeyStore {
@@ -90,6 +108,45 @@ export class ApiKeyStore {
    *
    * @throws NotFoundError if the environment does not belong to the project
    */
+  /**
+   * Mint a credential that acts on the instance rather than inside a project.
+   *
+   * Separate from `create` because the two take different inputs and mean
+   * different things: this one names no environment, and could not, since an
+   * admin key has no tenant. Keeping them apart is what stops an admin key
+   * being minted by forgetting an argument.
+   *
+   * The key reads `bw_live_admin_…`, so a listing and a log line say what it
+   * is without anyone looking it up. A project whose slug is literally "admin"
+   * would produce the same shape — cosmetic only, since resolution is by hash
+   * and the level is a column, not a naming convention.
+   */
+  static async createAdmin(
+    input: { label: string; scopes: string[]; expiresAt?: Date },
+    database: Database = db(),
+  ): Promise<{ apiKey: ApiKey; plaintext: string }> {
+    const label = input.label.trim();
+    if (label === "") throw new ValidationError("label is required", "label");
+
+    const generated = await generateApiKey({ projectSlug: "admin", kind: "live" });
+
+    const [created] = await database
+      .insert(apiKeys)
+      .values({
+        level: "admin",
+        environmentId: null,
+        keyHash: generated.hash,
+        keyPrefix: generated.prefix,
+        label,
+        scopes: input.scopes,
+        ...(input.expiresAt === undefined ? {} : { expiresAt: input.expiresAt }),
+      })
+      .returning();
+    if (created === undefined) throw new Error("insert returned no row");
+
+    return { apiKey: created, plaintext: generated.plaintext };
+  }
+
   static async create(
     input: { projectId: string; environmentId: string; label: string; scopes: string[]; expiresAt?: Date },
     database: Database = db(),
@@ -110,6 +167,7 @@ export class ApiKeyStore {
     const [created] = await database
       .insert(apiKeys)
       .values({
+        level: "tenant",
         environmentId: row.envId,
         keyHash: generated.hash,
         keyPrefix: generated.prefix,
@@ -172,6 +230,20 @@ export class ApiKeyStore {
         return null;
       }
 
+      // An admin key has no tenant to check, and no environment to be
+      // suspended with. It authenticates on its own validity alone.
+      if (candidate.level === "admin") {
+        return { level: "admin", apiKey: candidate, scopes: candidate.scopes };
+      }
+
+      // A tenant key with no environment is a row that should not exist —
+      // the column is nullable only for the admin case. Refused rather than
+      // treated as an admin key, which would promote a broken row.
+      if (candidate.environmentId === null) {
+        reject("tenant-key-without-environment", prefix, presented);
+        return null;
+      }
+
       const [env] = await database
         .select({ projectId: environments.projectId, envStatus: environments.status, projectStatus: projects.status })
         .from(environments)
@@ -186,6 +258,7 @@ export class ApiKeyStore {
       }
 
       return {
+        level: "tenant",
         apiKey: candidate,
         environmentId: candidate.environmentId,
         projectId: env.projectId,
@@ -211,7 +284,7 @@ export class ApiKeyStore {
    * put authentication behind the database's write lock, and an approximate
    * last-used time is worth more than the latency it would cost to be exact.
    */
-  static touch(id: string, environmentId: string, database: Database = db()): void {
+  static touch(id: string, environmentId: string | null, database: Database = db()): void {
     // Rejection handled rather than swallowed silently: an unhandled rejection
     // in Bun can terminate the process, and losing the service because a
     // last-used timestamp failed to write would be an absurd way to go down.
@@ -221,7 +294,15 @@ export class ApiKeyStore {
       // The id here came from a row this process just authenticated, so it is
       // already proven — but the predicate costs nothing and keeps the rule
       // "every mutation names its tenant" true without exceptions to remember.
-      .where(and(eq(apiKeys.id, id), eq(apiKeys.environmentId, environmentId)))
+      // An admin key has no environment, so the tenant predicate cannot apply
+      // to it. The rule it enforces — "every mutation names its tenant" — is
+      // about reaching another tenant's rows, and a key with no tenant has
+      // none to reach: the id alone is the whole scope of the update.
+      .where(
+        environmentId === null
+          ? and(eq(apiKeys.id, id), isNull(apiKeys.environmentId))
+          : and(eq(apiKeys.id, id), eq(apiKeys.environmentId, environmentId)),
+      )
       .catch((err: unknown) => {
         log.warn("failed to record api key use", { error: err instanceof Error ? err.message : String(err) });
       });
