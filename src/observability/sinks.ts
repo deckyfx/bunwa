@@ -30,6 +30,18 @@ const DIM = `${ESC}[90m`;
 const RESET = `${ESC}[0m`;
 
 /**
+ * The escape codes, for anything that paints its own line.
+ *
+ * Exported so the request line can colour its own parts without every caller
+ * re-deriving ANSI. `RESET` is included deliberately: a painter that forgets to
+ * close a sequence bleeds it into everything after it on the terminal.
+ */
+export const ANSI = { ESC, DIM, RESET } as const;
+
+/** Whether the terminal should be painted at all. Exported for the same reason. */
+export const colourEnabled = (): boolean => useColour();
+
+/**
  * Whether to colour at all.
  *
  * Off when the output is not a terminal, because escape codes in a piped log

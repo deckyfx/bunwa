@@ -8,6 +8,7 @@
 import { describe, expect, test, beforeAll, afterAll } from "bun:test";
 
 import { createApp, problem, type Problem } from "../server";
+import { paintedRequestLine, plainRequestLine } from "../../observability/request-line";
 import { PRESSURE_GUIDANCE, type Pressure } from "../../ops/pressure";
 import { resetConfig } from "../../config/env";
 import { resetDatabase } from "../../db";
@@ -146,5 +147,91 @@ describe("GET /metrics", () => {
     // must never carry tenant names, phone numbers or message bodies.
     const text = await (await get("/metrics")).text();
     expect(text).not.toMatch(/@s\.whatsapp\.net|\+62|grande/i);
+  });
+});
+
+describe("the request log line", () => {
+  // The file pins LOG_LEVEL at "error" so the rest of the suite stays quiet;
+  // these two tests are about a line logged at info and debug, so they lower
+  // the floor and put it back.
+  beforeAll(() => {
+    Bun.env["LOG_LEVEL"] = "debug";
+    resetConfig();
+  });
+  afterAll(() => {
+    Bun.env["LOG_LEVEL"] = ENV.LOG_LEVEL;
+    resetConfig();
+  });
+
+  /** Console lines emitted while `fn` runs. */
+  function capture(fn: () => Promise<void>): Promise<string[]> {
+    const lines: string[] = [];
+    const origLog = console.log;
+    const origErr = console.error;
+    console.log = (...a: unknown[]) => lines.push(a.join(" "));
+    console.error = (...a: unknown[]) => lines.push(a.join(" "));
+    return fn()
+      // onAfterResponse runs after handle() resolves — the line is written on
+      // the tick after the response, not during it. Without this wait the
+      // capture ends before the logger has said anything.
+      .then(() => Bun.sleep(50))
+      .then(() => lines)
+      .finally(() => {
+        console.log = origLog;
+        console.error = origErr;
+      });
+  }
+
+  test("reads as REQ status method path duration, not as a JSON blob", async () => {
+    // One line per request is read far more often than it is parsed. The
+    // previous form put the three things a reader wants behind the punctuation
+    // of `request {"method":"GET",…}`.
+    const lines = await capture(async () => {
+      await app.handle(new Request("http://localhost/health"));
+    });
+
+    const line = lines.find((l) => l.includes("REQ "));
+    expect(line, "no request line was logged").toBeDefined();
+    expect(line).toMatch(/REQ 200 GET \d+ms \/health$/);
+    expect(line, "the fields were repeated on the console as well").not.toContain("{");
+  });
+
+  test("an unmatched route claims no duration rather than claiming zero", async () => {
+    // `derive` does not run for a route that matched nothing, so the start
+    // time does not exist. "Not measured" and "took no time" are different
+    // claims and 0ms on every 404 is the second one said wrongly.
+    const lines = await capture(async () => {
+      await app.handle(new Request("http://localhost/nope"));
+    });
+
+    const line = lines.find((l) => l.includes("REQ "));
+    expect(line, "no request line was logged").toBeDefined();
+    expect(line).toContain("REQ 404 GET /nope");
+    expect(line, "it invented a duration for a request it never timed").not.toMatch(/\dms/);
+  });
+
+  test("the painted line and the plain one carry the same facts", () => {
+    // The console gets colour and the file must never see it — the two
+    // renderings are separate for that reason alone, so they have to be
+    // checked against each other or they will drift apart silently.
+    const line = { status: 200, method: "GET", path: "/v1/devices", durationMs: 12 };
+
+    const plain = plainRequestLine(line);
+    const painted = paintedRequestLine(line);
+    // eslint-disable-next-line no-control-regex
+    const stripped = painted.replace(/\u001b\[[0-9;]*m/g, "").replace(/\s+/g, " ").trim();
+
+    expect(plain).toBe("REQ 200 GET 12ms /v1/devices");
+    expect(stripped, "the painted line says something different from the plain one").toBe(plain);
+  });
+
+  test("nothing painted can reach the file", () => {
+    // The file sink is asserted elsewhere never to contain an escape code.
+    // This is the other half: the value the file is given must not carry one
+    // in the first place, whatever the terminal is doing.
+    for (const status of [200, 301, 404, 500]) {
+      const plain = plainRequestLine({ status, method: "DELETE", path: "/x", durationMs: 5_000 });
+      expect(plain, `status ${String(status)} painted the plain line`).not.toContain("\u001b");
+    }
   });
 });
