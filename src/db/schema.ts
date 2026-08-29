@@ -169,7 +169,13 @@ export const devices = sqliteTable(
     /** The id *inside* that engine, which is not ours and may be reassigned. */
     engineDeviceId: text("engine_device_id"),
     state: text("state", {
-      enum: ["unpaired", "pairing", "connected", "disconnected", "logged_out", "degraded", "deleted"],
+      // `retiring` is a reservation, not a condition of the phone: it is held
+      // between deciding a device has no holders left and the credentials
+      // actually being destroyed, so a claim arriving in that window is
+      // refused rather than bound to a session about to disappear. No
+      // migration needed — these enums are TypeScript-only, with no CHECK in
+      // any migration.
+      enum: ["unpaired", "pairing", "connected", "disconnected", "logged_out", "degraded", "deleted", "retiring"],
     })
       .notNull()
       .default("unpaired"),

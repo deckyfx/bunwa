@@ -67,9 +67,11 @@ async function main(consolePage?: ConsolePage): Promise<void> {
   const registry = new EngineRegistry();
 
   if (cfg.baileysEnabled) {
-    // The only engine now. Still behind a flag rather than unconditional: it
-    // has never paired a real device, and a deployment should choose that
-    // rather than be upgraded into it.
+    // The only engine now. Still behind a flag rather than unconditional: one
+    // real device has paired through it, by hand, and nothing has carried
+    // production traffic — so a deployment should choose it rather than be
+    // upgraded into it. The README says the same thing; if one of them moves,
+    // both should.
     registry.register({
       id: "baileys-1",
       kind: "baileys",

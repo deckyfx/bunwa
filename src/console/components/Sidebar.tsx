@@ -108,6 +108,15 @@ export const sectionsFor = (level: SectionLevel, scopes: string[]): Section[] =>
     (section) => section.level === level && (section.scope === undefined || scopes.includes(section.scope)),
   );
 
+/**
+ * The console's navigation, and the thing that tells an operator which kind of
+ * credential they are holding.
+ *
+ * Takes `level` and `scopes` as props rather than reading the session store
+ * itself, so the same component renders both an operator's instance menu and a
+ * tenant's project menu without knowing which it is looking at — and so a test
+ * can render either without a session.
+ */
 export function Sidebar({
   active,
   onSelect,

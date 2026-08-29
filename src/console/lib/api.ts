@@ -52,3 +52,15 @@ export const anonymous = () =>
 export type RowOf<T> = T extends { data: infer D }
   ? Extract<NonNullable<D>, readonly unknown[]>[number]
   : never;
+
+/**
+ * The request body a route accepts, taken from the route itself.
+ *
+ * The counterpart to `RowOf` for the other direction. A hand-written request
+ * shape compiles happily while the server has moved on — which is how `Whoami`
+ * and `VirtualDevice` were both wrong against a live API — and a body is the
+ * half nothing else checks: a response that changed shape at least renders
+ * "undefined", a request that changed shape is a 422 the console cannot
+ * explain.
+ */
+export type BodyOf<F> = F extends (body: infer B, ...rest: never[]) => unknown ? NonNullable<B> : never;

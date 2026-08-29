@@ -108,35 +108,16 @@ src/delivery/** already states the requirement, so it will keep being reported
 until the schema matches it.
 
 
-## 7. A super-admin key that is not also a project key
+## 7. Operator cannot act inside a tenant
 
-The operator key is minted into `default/production`, so it is simultaneously
-the instance admin and a tenant credential able to send messages as that
-project. `default/production` is created on every boot for this reason alone.
+An operator can now see every device on the instance and retire any of them:
+key levels landed, `api_keys.environment_id` is nullable, and the admin device
+routes revoke a tenant's binding and end the number.
 
-The constraint is one column: `api_keys.environment_id` is NOT NULL with a
-foreign key to `environments`.
-
-  (a) Make it nullable and let a key with instance scopes have no tenant. Every
-      route derives its tenant from the credential — the invariant the auth
-      design rests on, stated in src/auth/middleware.ts — so
-      `AuthContext.projectId` becomes nullable and ~15 handlers must answer
-      "what if there is no tenant". Most answer 403.
-  (b) A separate `operator_keys` table with its own resolver and middleware.
-      Leaves `api_keys` intact, at the cost of two auth paths that can drift —
-      and stream tickets reference `api_keys.id`, so an operator opening the
-      event stream needs that FK relaxed anyway.
-
-Recommend (a). Until then the bootstrap project is badged "instance" in the
-projects list so it does not read as a tenant someone created.
-
-
-## 8. Operator cannot act on a tenant's devices
-
-To claim a number or read a conversation for a tenant you sign in with that
-tenant's key. Clean boundary, and it means debugging a tenant requires their
-credential — which an operator can mint, but only by creating a key that then
-exists.
+What is still true is narrower. To claim a number *for* a tenant, or read one
+of their conversations, you sign in with that tenant's key. Clean boundary, and
+it means debugging a tenant requires their credential — which an operator can
+mint, but only by creating a key that then exists.
 
 Alternative: let an operator select a project and act within it. That is a
 tenant-scoping change on every project route, with scope coming from a
@@ -144,7 +125,7 @@ parameter rather than only from the credential — exactly what the current
 design refuses to do. Wants deliberate thought, not a flag.
 
 
-## 9. Warn at startup when the operator key is behind the current scope set
+## 8. Warn at startup when the operator key is behind the current scope set
 
 Adding a scope leaves every existing key short of it, and the symptom is a
 screen that 403s or a menu item that silently disappears. `key:list` reports
@@ -153,7 +134,7 @@ is missing manage:projects; run bun run key:grant <prefix>" — would have caugh
 both occurrences in one session before either was noticed as a bug.
 
 
-## 10. The claim flow beyond the first fix
+## 9. The claim flow beyond the first fix
 
 The claim screen now watches the binding it started, says it is waiting while
 the code is outstanding, and announces the device and moves to Devices when it
@@ -164,7 +145,7 @@ real phone and writing down each place the screen cannot answer the question
 the operator has, rather than guessing from the code.
 
 
-## 11. Console gaps
+## 10. Console gaps
 
   - No ProjectsPage component test. The store and the routes are tested; the
     page is not.
@@ -175,7 +156,7 @@ the operator has, rather than guessing from the code.
   - Deleting or suspending a project is not exposed anywhere.
 
 
-## 12. The Elysia audit
+## 11. The Elysia audit
 
 "Which components should be using Elysia and are not" was asked for after the
 SSE fix and never completed. SSE and the console plugin were fixed; nothing

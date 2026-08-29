@@ -98,15 +98,6 @@ export const adminRoutes = (registry: EngineRegistry) =>
     serverTimezone: serverTimezone(),
   }))
 
-  // Applied to every route below rather than repeated per handler. The
-  // per-handler version is how one gets forgotten, and the one that gets
-  // forgotten here mints credentials.
-  //
-  // Below `/whoami` and `/settings` on purpose: identifying yourself needs no
-  // scope, and settings answer to `manage:instance` rather than to this one.
-  .onBeforeHandle(({ admin, path }) => {
-    requireScope(admin, "manage:projects", path);
-  })
   /**
    * Instance settings, and where each value comes from.
    *
@@ -177,6 +168,21 @@ export const adminRoutes = (registry: EngineRegistry) =>
     },
   )
 
+  // Applied to every route below rather than repeated per handler. The
+  // per-handler version is how one gets forgotten, and the one that gets
+  // forgotten here mints credentials.
+  //
+  // Placement is the guard. Elysia applies a hook to the routes registered
+  // after it, so this has to sit physically below everything answering to a
+  // different scope: `/whoami`, which needs none because identifying yourself
+  // is not a privilege, and `/settings`, which answers to `manage:instance`.
+  // The comment here used to say "below /settings on purpose" while the code
+  // had it above — so a key holding exactly the scope those handlers check was
+  // refused by the guard, and the check inside them never ran.
+  .onBeforeHandle(({ admin, path }) => {
+    requireScope(admin, "manage:projects", path);
+  })
+
   /**
    * Every device on the instance, and which projects are using it.
    *
@@ -204,12 +210,21 @@ export const adminRoutes = (registry: EngineRegistry) =>
   .delete(
     "/devices/:deviceId",
     async ({ params, set }) => {
-      const holders = await DeviceStore.projectsHolding(params.deviceId);
-      for (const projectId of holders) {
-        await DeviceStore.revokeConsent(params.deviceId, projectId, "operator");
-      }
+      // One transaction: every claim ended and the device reserved together,
+      // so a project cannot claim the number between the last revocation and
+      // the credentials being destroyed and end up bound to a condemned
+      // session.
+      const holders = await DeviceStore.retireFor(params.deviceId, "operator");
 
-      const retired = await retireDevice(params.deviceId, registry);
+      let retired;
+      try {
+        // Outside the transaction: this talks to WhatsApp, and the reservation
+        // is what makes that safe to do with the lock released.
+        retired = await retireDevice(params.deviceId, registry);
+      } catch (error) {
+        await DeviceStore.cancelRetirement(params.deviceId);
+        throw error;
+      }
 
       log.info("device retired by operator", {
         deviceId: params.deviceId,

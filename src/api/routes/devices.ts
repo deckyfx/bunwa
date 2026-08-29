@@ -249,18 +249,29 @@ export function deviceRoutes(registry: EngineRegistry) {
           return problem(404, "not-found", "Device not found", undefined, path, currentCorrelationId());
         }
 
-        await DeviceStore.revokeConsent(binding.device.id, auth.projectId, "operator");
-
-        // Asked after the revocation, not before. Before, this project's own
-        // binding would still count as a holder and nothing would ever be the
-        // last one.
-        const holders = await DeviceStore.projectsHolding(binding.device.id);
+        // Revoked and counted in one transaction, which also reserves the
+        // device when this was the last claim. Done separately, another
+        // project could claim the number between "nobody holds this" and the
+        // credentials being destroyed.
+        const holders = await DeviceStore.releaseFor(binding.device.id, auth.projectId, "operator");
         if (holders.length > 0) {
           set.status = 200;
           return { outcome: "released" as const, stillHeldBy: holders.length };
         }
 
-        const retired = await retireDevice(binding.device.id, registry);
+        // Outside the transaction on purpose: this talks to WhatsApp, and a
+        // socket's round trip is not something to hold a write lock across.
+        // The reservation is what makes that safe.
+        let retired;
+        try {
+          retired = await retireDevice(binding.device.id, registry);
+        } catch (error) {
+          // The reservation goes back, or the number is unclaimable for ever
+          // with an explanation that stopped being true.
+          await DeviceStore.cancelRetirement(binding.device.id);
+          throw error;
+        }
+
         set.status = 200;
         return {
           outcome: "retired" as const,

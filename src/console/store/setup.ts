@@ -8,12 +8,24 @@
  */
 import { create } from "zustand";
 
-import { anonymous } from "../lib/api";
+import { anonymous, type BodyOf } from "../lib/api";
 
 export type SettingKey = "instanceName" | "serverTimezone";
 export type SettingSource = "environment" | "database" | "default";
 
-export interface SettingValue {
+export /** The whole body `POST /setup` accepts, as the route declares it. */
+type SetupBody = BodyOf<ReturnType<typeof anonymous>["setup"]["post"]>;
+
+/**
+ * The project half of that body.
+ *
+ * Derived rather than written out: this was a hand-written
+ * `{ projectName?: string; projectSlug?: string }`, which is the shape that
+ * compiles for as long as it takes the server to change and no longer.
+ */
+export type SetupProject = Pick<SetupBody, "projectName" | "projectSlug">;
+
+interface SettingValue {
   value: string;
   source: SettingSource;
 }
@@ -40,11 +52,7 @@ interface SetupState {
    * rule, and this creates a tenant. Sharing one bag would mean the
    * environment-locked check applied to a project name.
    */
-  submit: (
-    token: string,
-    values: Partial<Record<SettingKey, string>>,
-    project?: { projectName?: string; projectSlug?: string },
-  ) => Promise<void>;
+  submit: (token: string, values: Partial<Record<SettingKey, string>>, project?: SetupProject) => Promise<void>;
   dismissKey: () => void;
 }
 

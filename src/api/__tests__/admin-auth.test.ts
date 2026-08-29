@@ -308,3 +308,29 @@ describe("level, not scope, decides which surface a key reaches", () => {
     });
   });
 });
+
+describe("instance settings answer to manage:instance", () => {
+  test("a key holding only manage:instance may read and write them", async () => {
+    // The scope the handlers check. The guard above them checks
+    // `manage:projects`, and hooks in Elysia apply to routes registered after
+    // them — so a hook meant to sit below these routes but written above them
+    // refuses the exact key the handlers were built to admit, and the check
+    // inside never runs.
+    const key = await adminKeyWith(["manage:instance"], "instance only");
+
+    const read = await call({ method: "GET", path: "/admin/v1/settings" }, { "x-api-key": key });
+    expect(read.status, "manage:instance was refused its own settings").toBe(200);
+
+    const write = await call(
+      { method: "PUT", path: "/admin/v1/settings", body: { instanceName: "renamed" } },
+      { "x-api-key": key },
+    );
+    expect(write.status, "manage:instance could not write its own settings").toBe(200);
+  });
+
+  test("a key holding neither scope is still refused", async () => {
+    const key = await adminKeyWith(["manage:devices"], "devices only");
+    const res = await call({ method: "GET", path: "/admin/v1/settings" }, { "x-api-key": key });
+    expect(res.status).toBe(403);
+  });
+});

@@ -52,6 +52,13 @@ interface DeviceState {
  */
 let loadGeneration = 0;
 
+/**
+ * The devices one project can see, under a tenant key.
+ *
+ * The tenant counterpart to `useFleet`, and separate from it for the same
+ * reason the routes are: this store's rows are what a project is entitled to
+ * know about its own numbers, and none of them say who else holds one.
+ */
 export const useDevices = create<DeviceState>((set, get) => ({
   devices: null,
   error: null,

@@ -15,7 +15,7 @@ import { and, eq } from "drizzle-orm";
 
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
-import { deviceCredentials, devices, virtualDevices } from "../../db/schema";
+import { deviceConsents, deviceCredentials, devices, environments, virtualDevices } from "../../db/schema";
 import { createApp } from "../server";
 import { createDatabase, resetDatabase, type Database } from "../../db";
 import { DeviceStore } from "../../stores/device-store";
@@ -99,6 +99,16 @@ afterEach(() => {
   resetConfig();
   resetDatabase();
 });
+
+/** The project holding the device in the default fixture. */
+const soleHolder = async () => {
+  const [row] = await database
+    .select({ projectId: environments.projectId })
+    .from(virtualDevices)
+    .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+    .where(and(eq(virtualDevices.deviceId, deviceId), eq(virtualDevices.alias, "otp")));
+  return row!.projectId;
+};
 
 /** Release by the alias that project knows the device under, not a shared one. */
 const release = (key: string, ref = "otp") =>
@@ -215,5 +225,117 @@ describe("an operator retiring a device", () => {
   test("is refused to a project key", async () => {
     const res = await retire(keyA);
     expect(res.status, "a tenant reached the fleet-wide retire").toBe(403);
+  });
+});
+
+describe("a project that was refused does not keep the number alive", () => {
+  /** The project id behind the second binding, for reaching its consent row. */
+  const betaProjectId = async () => {
+    const [row] = await database
+      .select({ projectId: environments.projectId })
+      .from(virtualDevices)
+      .innerJoin(environments, eq(virtualDevices.environmentId, environments.id))
+      .where(and(eq(virtualDevices.deviceId, deviceId), eq(virtualDevices.alias, "shared")));
+    return row!.projectId;
+  };
+
+  test("a denied claim is not a holder", async () => {
+    // A binding is created `pending_consent` and only a grant ever moves it
+    // off that, so a denial left a row that still read as a live claim.
+    // Counting bindings meant the last project that actually had consent
+    // released the number and it was not retired — credentials and history
+    // kept alive on behalf of a project the phone holder had said no to.
+    keyB = await bindSecondProject("+628123456789");
+    await storeCredentials();
+
+    const consent = await DeviceStore.consentFor(deviceId, await betaProjectId(), database);
+    await DeviceStore.respondToConsent(consent!.challengeToken, "denied", "whatsapp_reply", {}, database);
+
+    const res = await release(keyA);
+    expect(res.status).toBe(200);
+    expect(
+      await res.json(),
+      "a refused project kept a number alive for itself",
+    ).toMatchObject({ outcome: "retired", stillHeldBy: 0 });
+
+    expect(await credentialRows(), "credentials outlived the last consenting project").toBe(0);
+  });
+
+  test("a claim whose deadline passed is not a holder", async () => {
+    // The same hole by the other route: nobody answered, the question lapsed,
+    // and the binding still said pending_consent.
+    keyB = await bindSecondProject("+628123456789");
+    await storeCredentials();
+
+    const consent = await DeviceStore.consentFor(deviceId, await betaProjectId(), database);
+    await database
+      .update(deviceConsents)
+      .set({ expiresAt: new Date(Date.now() - 60_000) })
+      .where(eq(deviceConsents.id, consent!.id));
+
+    const res = await release(keyA);
+    expect(await res.json(), "a lapsed request kept a number alive").toMatchObject({
+      outcome: "retired",
+      stillHeldBy: 0,
+    });
+  });
+
+  test("a claim still inside its deadline does hold", async () => {
+    // The other direction, so this cannot be read as "only granted counts". A
+    // request awaiting an answer is a decision outstanding, and retiring the
+    // device would answer it by destroying what it was about.
+    keyB = await bindSecondProject("+628123456789");
+    await storeCredentials();
+
+    const res = await release(keyA);
+    expect(
+      await res.json(),
+      "a number was destroyed while a claim on it was still awaiting an answer",
+    ).toMatchObject({ outcome: "released", stillHeldBy: 1 });
+
+    expect(await credentialRows(), "a pending claim lost the credentials it was waiting for").toBe(1);
+  });
+});
+
+describe("the window between deciding and destroying", () => {
+  test("a claim arriving mid-retirement is refused, not bound to a dying session", async () => {
+    // The race the reservation exists for. `projectsHolding` says nobody holds
+    // the number; before the credentials are destroyed, a third project claims
+    // it. Without the reservation that binding is created against a live
+    // session which is then logged out from under it, and the tenant has a
+    // device that stopped working for reasons nothing in their project
+    // explains.
+    //
+    // Reproduced by holding the device in the state the reservation puts it
+    // in, which is exactly what the window looks like from a claimer's side.
+    await storeCredentials();
+    await DeviceStore.releaseFor(deviceId, await soleHolder(), "operator", database);
+
+    const [row] = await database.select({ state: devices.state }).from(devices).where(eq(devices.id, deviceId));
+    expect(row?.state, "the last release did not reserve the device").toBe("retiring");
+
+    const gamma = await ProjectStore.create({ slug: "gamma", displayName: "Gamma" }, database);
+    const env = await EnvironmentStore.create({ projectId: gamma.id, slug: "prod" }, database);
+
+    expect(
+      DeviceStore.claim({ environmentId: env.id, msisdn: "+628123456789", alias: "late" }, database),
+      "a project was bound to a number whose credentials were being destroyed",
+    ).rejects.toThrow(/being retired/);
+  });
+
+  test("a failed retirement gives the reservation back", async () => {
+    // Otherwise the number is unclaimable for ever, refused with an
+    // explanation that stopped being true the moment the retirement failed.
+    await DeviceStore.releaseFor(deviceId, await soleHolder(), "operator", database);
+    await DeviceStore.cancelRetirement(deviceId, database);
+
+    const gamma = await ProjectStore.create({ slug: "delta", displayName: "Delta" }, database);
+    const env = await EnvironmentStore.create({ projectId: gamma.id, slug: "prod" }, database);
+
+    const claimed = await DeviceStore.claim(
+      { environmentId: env.id, msisdn: "+628123456789", alias: "after" },
+      database,
+    );
+    expect(claimed.device.id, "a device stayed unclaimable after a failed retirement").toBe(deviceId);
   });
 });

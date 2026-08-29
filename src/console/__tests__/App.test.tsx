@@ -15,11 +15,24 @@
 import { describe, expect, test, afterEach, beforeEach, mock } from "bun:test";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+import type { AdminIdentity, TenantIdentity } from "../store/session";
+
+/**
+ * What a mocked endpoint answers, shaped like Eden's result.
+ *
+ * The identity halves are the console's own derived types rather than
+ * hand-written objects, so a whoami response that changes shape on the server
+ * fails to compile here instead of leaving these tests passing against a reply
+ * the real API stopped sending. Both `Whoami` types were hand-written once and
+ * both were wrong; see src/console/lib/api.ts.
+ */
+type Answer<T> = Promise<{ data: T | null; error: { status: number } | null }>;
+
 let statusResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
 let submitResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
-let whoamiResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
+let whoamiResolver: () => Answer<TenantIdentity> = () => Promise.resolve({ data: null, error: null });
 /** What the admin whoami answers. Only reached when the tenant one 403s. */
-let adminWhoamiResolver: () => Promise<unknown> = () =>
+let adminWhoamiResolver: () => Answer<AdminIdentity> = () =>
   Promise.resolve({ data: null, error: { status: 403 } });
 /** Which admin endpoints the console reached for. Empty is the assertion for a project key. */
 const adminCalls: string[] = [];
@@ -279,7 +292,17 @@ describe("a credential left over from a database that no longer exists", () => {
       Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
     whoamiResolver = () =>
       Promise.resolve({
-        data: { level: "tenant", projectId: "p", environmentId: "e", scopes: [], serverTimezone: "UTC" },
+        data: {
+          level: "tenant",
+          projectId: "p",
+          projectSlug: "acme",
+          projectName: "Acme",
+          environmentId: "e",
+          environmentSlug: "production",
+          environmentKind: "live",
+          scopes: [],
+          serverTimezone: "UTC",
+        },
         error: null,
       });
     useSession.setState({ apiKey: "bw_live_default_good" });
@@ -301,7 +324,11 @@ describe("the signed-in shell", () => {
         data: {
           level: "tenant",
           projectId: "proj-1234-abcd",
+          projectSlug: "acme",
+          projectName: "Acme",
           environmentId: "env-5678-efgh",
+          environmentSlug: "production",
+          environmentKind: "live",
           scopes: [],
           serverTimezone: "UTC",
         },

@@ -32,6 +32,21 @@ export interface RetireOutcome {
   threadsErased: number;
 }
 
+/**
+ * End a device and destroy everything its pairing gave access to.
+ *
+ * Takes the registry rather than reaching for a global one so the caller's
+ * engines are the ones asked: a retire that quietly used a different registry
+ * would report success having left the real socket connected.
+ *
+ * Both engine calls are best-effort. A pool that no longer holds this device,
+ * or a socket already gone, must not stop the credentials being destroyed —
+ * the failure worth preventing is material surviving the operation, not an
+ * operation refusing to finish.
+ *
+ * @returns what was actually found and erased, so the caller can say
+ * "credentials destroyed" rather than "credentials probably destroyed".
+ */
 export async function retireDevice(
   deviceId: string,
   registry: EngineRegistry,

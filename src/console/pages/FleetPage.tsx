@@ -20,6 +20,14 @@ import { useFleet } from "../store/fleet";
 import { useNotice } from "../store/notice";
 import { useSession } from "../store/session";
 
+/**
+ * The fleet screen.
+ *
+ * Reads `useFleet` rather than `useDevices`: the two stores answer to
+ * different credentials, and this one is the only view whose rows carry the
+ * holding projects. Rendering it from the tenant store would show an operator
+ * their own project's numbers and call it the instance.
+ */
 export function FleetPage() {
   const revision = useSession((s) => s.revision);
   const { devices, error, busy, load, retire } = useFleet();
