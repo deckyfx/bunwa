@@ -64,6 +64,25 @@ async function findDefaults(
 
 
 /**
+ * Retire every bootstrap key that can still authenticate.
+ *
+ * Marked `superseded` rather than merely revoked: that is the fact the next
+ * boot reads to tell "API_KEY changed" from "a person disabled this".
+ *
+ * Scoped to bootstrap rows by their label, so keys minted through the console
+ * or the CLI are not retired by an environment variable changing.
+ *
+ * @returns the prefixes that were retired, for the log line.
+ */
+async function revokeLiveBootstrapKeys(database: Database, now: Date): Promise<{ prefix: string }[]> {
+  return database
+    .update(apiKeys)
+    .set({ revokedAt: now, revokedReason: "superseded", updatedAt: now })
+    .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)))
+    .returning({ prefix: apiKeys.keyPrefix });
+}
+
+/**
  * Register `API_KEY` as a real key row.
  *
  * It has to be a row rather than a special case in the auth path, because a
@@ -100,20 +119,38 @@ async function registerEnvKey(database: Database, presented: string): Promise<vo
   // both were questions SQLite does not promise to answer: rows that tie come
   // back in no defined order. Each rule below reads one row's own recorded
   // facts, so there is nothing left for a tie to decide.
-  if (live.length === 1 && live[0]!.prefix === prefix) {
-    // Registered, live, and the only one. Nothing to do.
+
+  // Asked first, and about this key alone, because a person's decision to
+  // disable it does not expire. `superseded` is written by the retire path and
+  // by nothing else, so a null reason means someone did it deliberately.
+  //
+  // This sat inside the "nothing is live" branch, which made it conditional on
+  // unrelated history: X, then Y, then Y disabled by hand, then back to X — and
+  // with X live, returning to Y skipped the check entirely and re-inserted Y as
+  // an admin key holding every scope. Disabling the one credential that cannot
+  // be rotated without a redeploy has to survive whatever the variable does
+  // afterwards.
+  const disabledByHand = history.some(
+    (row) => row.prefix === prefix && row.revokedAt !== null && row.revokedReason === null,
+  );
+
+  if (disabledByHand) {
+    // Anything still live is retired with it. Leaving those alone would keep a
+    // previous API_KEY working while the operator believes the current one is
+    // in force — a stale credential surviving precisely because the configured
+    // one was refused.
+    const retired = await revokeLiveBootstrapKeys(database, new Date());
+    // Warned rather than passed over in silence: the deployment is configured
+    // with a key that will not authenticate, and nothing else says why.
+    log.warn("the API_KEY in the environment was disabled by hand and stays disabled", {
+      alsoRetired: retired.length,
+    });
     return;
   }
 
-  if (live.length === 0) {
-    // Every bootstrap key has been revoked. This one comes back only if it was
-    // retired by a rotation; if a person disabled it, a restart must not undo
-    // that. `superseded` is written by the supersede path below and by nothing
-    // else, so a null reason means someone decided it deliberately.
-    const disabledByHand = history.some(
-      (row) => row.prefix === prefix && row.revokedAt !== null && row.revokedReason === null,
-    );
-    if (disabledByHand) return;
+  if (live.length === 1 && live[0]!.prefix === prefix) {
+    // Registered, live, and the only one. Nothing to do.
+    return;
   }
 
   // Everything else registers, and the supersede below is what makes that
@@ -160,13 +197,7 @@ async function registerEnvKey(database: Database, presented: string): Promise<vo
     //
     // Scoped to bootstrap rows by their label: keys minted through the console
     // or the CLI are not superseded by an environment variable changing.
-    const revoked = await tx
-      .update(apiKeys)
-      // Marked as superseded, not merely revoked. This is the fact the next
-      // boot reads to tell "API_KEY changed" from "a person disabled this".
-      .set({ revokedAt: now, revokedReason: "superseded", updatedAt: now })
-      .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)))
-      .returning({ prefix: apiKeys.keyPrefix });
+    const revoked = await revokeLiveBootstrapKeys(tx, now);
 
     // Registered as an admin key, like the one setup mints.
     //

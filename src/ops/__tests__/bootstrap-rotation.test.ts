@@ -270,3 +270,56 @@ describe("when two revocations share a timestamp", () => {
     expect(usable[0]?.prefix).toBe(bootstrapPrefix("bw_live_admin_alpha_secret_padding_0001"));
   });
 });
+
+describe("a key disabled by hand stays disabled", () => {
+  /** Disable whatever currently authenticates, the way the CLI or admin API does. */
+  const revokeByHand = async () => {
+    const now = new Date();
+    await database
+      .update(apiKeys)
+      .set({ revokedAt: now, updatedAt: now })
+      .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)));
+  };
+
+  test("through a rotation away and back again", async () => {
+    // X → Y → disable Y by hand → X → Y. The check for a hand-revoked key sat
+    // inside the "nothing is live" branch, so with X live the return to Y
+    // skipped it and re-inserted Y: an admin key holding every scope, brought
+    // back by an environment variable after a person had deliberately disabled
+    // it.
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+    await revokeByHand();
+
+    // Back to X, which was only ever superseded, so it legitimately returns.
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    expect(await active(), "a superseded key did not come back").toHaveLength(1);
+
+    // And now back to Y, which a person disabled.
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+
+    const beta = bootstrapPrefix("bw_live_admin_beta_secret_padding_0002");
+    expect(
+      (await active()).map((r) => r.prefix),
+      "a key an operator disabled was re-registered by setting the variable back to it",
+    ).not.toContain(beta);
+  });
+
+  test("and takes any still-live key down with it", async () => {
+    // The consequence of refusing the configured key: whatever was live is a
+    // previous API_KEY, and leaving it working would mean a stale credential
+    // surviving precisely because the current one was refused.
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+    await revokeByHand();
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    expect(await active(), "the fixture did not leave alpha live").toHaveLength(1);
+
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+
+    expect(
+      await active(),
+      "a previous API_KEY kept working after the configured one was refused",
+    ).toHaveLength(0);
+  });
+});
