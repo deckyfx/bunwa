@@ -89,8 +89,19 @@ export const useFleet = create<FleetState>((set, get) => ({
       return false;
     }
 
-    set({ busy: false, error: null });
     await get().load();
+
+    // Cleared after the reload, not before it. Clearing first re-enabled every
+    // button on the page while the list still showed the state the retirement had
+    // just changed — the operator could act again on a row that was already
+    // gone. `busy` covers the whole operation, which is what the page is asking
+    // about when it disables on it.
+    //
+    // Re-checked here too: the reload is another await, and the credential can
+    // change across it. Returning the outcome then would report one tenant's
+    // retirement into a console that had already switched to another.
+    if (useSession.getState().apiKey !== under) return false;
+    set({ busy: false, error: null });
     return true;
   },
 }));
