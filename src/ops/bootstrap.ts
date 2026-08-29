@@ -19,9 +19,7 @@ import { ALL_SCOPES } from "../auth/scopes";
 import { bootstrapPrefix } from "../auth/api-key";
 import { config } from "../config/env";
 import { db, type Database } from "../db";
-import { EnvironmentStore } from "../stores/environment-store";
 import { log } from "../observability/logger";
-import { ProjectStore } from "../stores/project-store";
 import { SettingsStore } from "../stores/settings-store";
 import { setServerTimezone } from "../time/format";
 
@@ -42,7 +40,14 @@ export interface InstanceState {
   environmentId: string | null;
 }
 
-/** Find the single-instance project and environment, if they exist yet. */
+/**
+ * The project and environment the CLI acts in, if one exists yet.
+ *
+ * Still keyed on the `default` slug, which is now a convention rather than a
+ * guarantee: nothing creates it, so an instance set up through the console has
+ * whatever the operator named instead and this returns null. Callers that need
+ * a tenant must say which one.
+ */
 async function findDefaults(
   database: Database,
 ): Promise<{ projectId: string; environmentId: string } | null> {
@@ -56,32 +61,6 @@ async function findDefaults(
   return row ?? null;
 }
 
-/** Create the single-instance project and environment, or return the existing. */
-async function ensureDefaults(database: Database): Promise<{ projectId: string; environmentId: string }> {
-  const existing = await findDefaults(database);
-  if (existing !== null) return existing;
-
-  const project = await ProjectStore.create(
-    { slug: DEFAULT_PROJECT_SLUG, displayName: "Default" },
-    database,
-  );
-  const environment = await EnvironmentStore.create(
-    // Explicitly live. The store defaults to "test", which is the right
-    // default for an environment someone is adding to an existing project and
-    // the wrong one for the only environment a single-instance deployment has
-    // — every key it ever mints would read `bw_test_`, and the prefix is meant
-    // to be the thing that stops a test credential being mistaken for a real
-    // one at a glance.
-    { projectId: project.id, slug: DEFAULT_ENVIRONMENT_SLUG, kind: "live" },
-    database,
-  );
-
-  log.info("created the default project and environment", {
-    projectId: project.id,
-    environmentId: environment.id,
-  });
-  return { projectId: project.id, environmentId: environment.id };
-}
 
 /**
  * Register `API_KEY` as a real key row.
@@ -172,21 +151,13 @@ async function registerEnvKey(database: Database, presented: string): Promise<vo
  * that exists to mint a replacement refuses to appear because setup is closed.
  * That is an instance locked out of itself by the one path meant to prevent it.
  */
-async function hasAnyKey(database: Database, environmentId: string): Promise<boolean> {
+async function hasAnyKey(database: Database): Promise<boolean> {
   const now = new Date();
   const [row] = await database
     .select({ id: apiKeys.id })
     .from(apiKeys)
     .where(
       and(
-        // An admin key or a key in this environment.
-        //
-        // Filtering on the environment alone stopped being enough the moment
-        // setup started minting admin keys, which have no environment: setup
-        // would mint one and this would still report the instance
-        // unconfigured, so the console kept offering to set it up and the
-        // operator would mint a second key that was equally invisible.
-        or(isNull(apiKeys.environmentId), eq(apiKeys.environmentId, environmentId)),
         isNull(apiKeys.revokedAt),
         // Null expiry means it does not expire, which is the common case and
         // must not be read as "expired at the epoch".
@@ -206,7 +177,14 @@ async function hasAnyKey(database: Database, environmentId: string): Promise<boo
  * someone reaches the screen.
  */
 export async function ensureBootstrap(database: Database = db()): Promise<InstanceState> {
-  const { projectId, environmentId } = await ensureDefaults(database);
+  // No project is created here any more.
+  //
+  // One was, called "Default", because the operator's key had to live in an
+  // environment and an environment needs a project. An admin key has no
+  // tenant, so the reason is gone — and a project nobody asked for, named
+  // after the fact that it had to exist, is worse than no project at all.
+  // Setup names the first one; until then the instance simply has none.
+  const existing = await findDefaults(database);
 
   const envKey = config().apiKey;
   if (envKey !== null) await registerEnvKey(database, envKey);
@@ -216,12 +194,12 @@ export async function ensureBootstrap(database: Database = db()): Promise<Instan
   // environment's, which is the only value available that early.
   setServerTimezone(SettingsStore.resolve("serverTimezone", database).value);
 
-  const configured = envKey !== null || (await hasAnyKey(database, environmentId));
+  const configured = envKey !== null || (await hasAnyKey(database));
 
   return {
     configured,
     apiKeySource: envKey !== null ? "environment" : configured ? "database" : "none",
-    projectId,
-    environmentId,
+    projectId: existing?.projectId ?? null,
+    environmentId: existing?.environmentId ?? null,
   };
 }

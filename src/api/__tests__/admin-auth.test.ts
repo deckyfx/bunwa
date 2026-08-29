@@ -24,6 +24,8 @@ import { captureEnv, FIXTURE_ENV_KEYS } from "../../testing/env";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { ALL_SCOPES } from "../../auth/scopes";
 import { ensureBootstrap } from "../../ops/bootstrap";
+import { EnvironmentStore } from "../../stores/environment-store";
+import { ProjectStore } from "../../stores/project-store";
 
 const restoreEnv = captureEnv([...FIXTURE_ENV_KEYS, "ADMIN_API_ENABLED"]);
 
@@ -66,9 +68,19 @@ beforeEach(async () => {
   database = createDatabase(join(dir, "t.sqlite"));
   await MigrationManager.runMigrations(database);
 
-  const state = await ensureBootstrap(database);
-  projectId = state.projectId!;
-  environmentId = state.environmentId!;
+  await ensureBootstrap(database);
+
+  // Created here rather than taken from bootstrap. Nothing creates a project
+  // any more — the operator's key is an admin key with no tenant, so there was
+  // no longer a reason to conjure one called "Default" on every boot. These
+  // tests need a tenant to mint tenant keys into, so they make one.
+  const project = await ProjectStore.create({ slug: "acme-tenant", displayName: "Acme" }, database);
+  const environment = await EnvironmentStore.create(
+    { projectId: project.id, slug: "production", kind: "live" },
+    database,
+  );
+  projectId = project.id;
+  environmentId = environment.id;
 
   app = createApp();
 });

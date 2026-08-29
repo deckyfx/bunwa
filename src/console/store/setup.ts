@@ -32,7 +32,19 @@ interface SetupState {
   mintedKey: string | null;
 
   refresh: () => Promise<void>;
-  submit: (token: string, values: Partial<Record<SettingKey, string>>) => Promise<void>;
+  /**
+   * Finish setup: settings, and optionally the first project.
+   *
+   * The project is separate from the settings rather than folded into them
+   * because it is not one: settings are instance values with a precedence
+   * rule, and this creates a tenant. Sharing one bag would mean the
+   * environment-locked check applied to a project name.
+   */
+  submit: (
+    token: string,
+    values: Partial<Record<SettingKey, string>>,
+    project?: { projectName?: string; projectSlug?: string },
+  ) => Promise<void>;
   dismissKey: () => void;
 }
 
@@ -159,12 +171,13 @@ export const useSetup = create<SetupState>((set) => ({
     return request;
   },
 
-  submit: async (token, values) => {
+  submit: async (token, values, project) => {
     set({ busy: true, error: null });
 
-    const { data, error } = await anonymous().setup.post(values, {
-      headers: { "x-setup-token": token.trim() },
-    });
+    const { data, error } = await anonymous().setup.post(
+      { ...values, ...project },
+      { headers: { "x-setup-token": token.trim() } },
+    );
 
     if (error !== null || data === null) {
       set({ busy: false, error: messageFrom(error ?? {}) });

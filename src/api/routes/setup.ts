@@ -29,6 +29,9 @@ import { ALL_SCOPES } from "../../auth/scopes";
 import { ApiKeyStore } from "../../stores/api-key-store";
 import { config } from "../../config/env";
 import { ensureBootstrap } from "../../ops/bootstrap";
+import { EnvironmentStore } from "../../stores/environment-store";
+import { ProjectStore } from "../../stores/project-store";
+import { slugFromName } from "../../stores/slug";
 import { log } from "../../observability/logger";
 import {
   SettingsStore,
@@ -182,10 +185,34 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
           };
         }
 
-        if (state.environmentId === null || state.projectId === null) {
-          throw new Error(
-            "bootstrap did not produce an environment to mint against",
-          );
+        // The first project, if the operator named one.
+        //
+        // Optional because the two things setup does are independent: the
+        // credential is what makes the instance usable, and a project is what
+        // makes it useful. An operator who only wants the key can add projects
+        // afterwards, and one who names a project here does not have to visit
+        // a second screen to get a working tenant.
+        //
+        // Created before the key is minted, so a project that cannot be
+        // created — a name that reduces to nothing, a slug already taken —
+        // fails while the setup token is still unspent and the operator can
+        // simply try again.
+        let firstProject: { id: string; slug: string; displayName: string } | null = null;
+        if (body.projectName !== undefined && body.projectName.trim() !== "") {
+          const displayName = body.projectName.trim();
+          const supplied = body.projectSlug?.trim();
+          const slug = supplied !== undefined && supplied !== "" ? supplied : slugFromName(displayName);
+
+          if (slug === null) {
+            throw new ValidationError(
+              `"${displayName}" has no usable slug; give one explicitly`,
+              "projectSlug",
+            );
+          }
+
+          const project = await ProjectStore.create({ slug, displayName });
+          await EnvironmentStore.create({ projectId: project.id, slug: "production", kind: "live" });
+          firstProject = { id: project.id, slug: project.slug, displayName: project.displayName };
         }
 
         // An admin key, not a tenant key that happens to hold every scope.
@@ -207,8 +234,8 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
         // navigates away.
         clearSetupToken();
         log.info("setup completed; the first API key was minted", {
-          environmentId: state.environmentId,
           scopes: ALL_SCOPES.length,
+          project: firstProject?.slug ?? null,
         });
 
         set.status = 201;
@@ -216,12 +243,16 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
           settings: SettingsStore.all(),
           apiKey: plaintext,
           apiKeySource: "database" as const,
+          project: firstProject,
         };
       }),
     {
       body: t.Object({
         instanceName: t.Optional(t.String({ maxLength: 200 })),
         serverTimezone: t.Optional(t.String({ maxLength: 100 })),
+        /** The first project's name. Its slug is derived unless one is given. */
+        projectName: t.Optional(t.String({ maxLength: 200 })),
+        projectSlug: t.Optional(t.String({ maxLength: 40 })),
       }),
     },
   );

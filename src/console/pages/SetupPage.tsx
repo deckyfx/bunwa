@@ -16,6 +16,7 @@ import { Check, Copy, LoaderCircle, Rocket, ShieldCheck, Wand2 } from "lucide-re
 import { Card, Note } from "../components/Card";
 import { Field } from "../components/Field";
 import { TimezoneField } from "../components/TimezoneField";
+import { slugFromName } from "../../stores/slug";
 import { suggestInstanceName } from "../lib/suggest";
 import { useSetup } from "../store/setup";
 
@@ -91,6 +92,12 @@ export function SetupPage() {
 
   const [token, setToken] = useState("");
   const [instanceName, setInstanceName] = useState("");
+  const [projectName, setProjectName] = useState("");
+  const [projectSlug, setProjectSlug] = useState("");
+  // Shown as the placeholder, so what the server will do is visible before it
+  // does it. Same function the server calls, so the preview cannot disagree
+  // with the result.
+  const derivedSlug = slugFromName(projectName);
   const [timezone, setTimezone] = useState("");
 
   useEffect(() => {
@@ -162,10 +169,22 @@ export function SetupPage() {
         className="flex flex-col gap-4"
         onSubmit={(e) => {
           e.preventDefault();
-          void submit(token, {
-            instanceName: nameLocked ? undefined : instanceName,
-            serverTimezone: timezoneLocked ? undefined : timezone,
-          });
+          void submit(
+            token,
+            {
+              instanceName: nameLocked ? undefined : instanceName,
+              serverTimezone: timezoneLocked ? undefined : timezone,
+            },
+            projectName.trim() === ""
+              ? undefined
+              : {
+                  projectName,
+                  // Sent only when the operator typed one. Sending the derived
+                  // value would make the field look mandatory to the server
+                  // and freeze a slug the name no longer matches.
+                  ...(projectSlug.trim() === "" ? {} : { projectSlug }),
+                },
+          );
         }}
       >
         <Field
@@ -221,6 +240,44 @@ export function SetupPage() {
               : "Every timestamp on these screens and in the logs is rendered in this zone."
           }
         />
+
+        {/* The first project.
+            Optional, and last, because the credential is the part that cannot
+            wait: an operator who only wants a key gets one and adds projects
+            later. Naming it here saves a second screen for the common case,
+            where the instance exists to serve one tenant. */}
+        <div className="flex flex-col gap-3 rounded-md border border-slate-200 p-3 dark:border-slate-800">
+          <p className="text-sm font-medium">First project (optional)</p>
+
+          <Field
+            id="setup-project-name"
+            label="Project name"
+            value={projectName}
+            onChange={setProjectName}
+            placeholder="Acme Ltd."
+            hint="What you call this tenant. You can add more later."
+          />
+
+          {/* Secondary, and only worth showing once there is a name to derive
+              from. The slug ends up inside every key this project issues, so
+              it has to be visible — but asking for it first would make the
+              form about an identifier rather than about the project. */}
+          {projectName.trim() !== "" && (
+            <Field
+              id="setup-project-slug"
+              label="Slug"
+              mono
+              value={projectSlug}
+              onChange={setProjectSlug}
+              placeholder={derivedSlug ?? "acme-ltd"}
+              hint={
+                derivedSlug === null
+                  ? "That name has no usable slug — letters and digits are needed. Type one here."
+                  : `Derived as "${derivedSlug}" unless you set it. It appears in every key this project issues.`
+              }
+            />
+          )}
+        </div>
 
         {error !== null && (
           <p role="alert" className="text-sm text-rose-700 dark:text-rose-400">

@@ -291,3 +291,49 @@ describe("settings after setup", () => {
     expect(res.status).toBeGreaterThanOrEqual(400);
   });
 });
+
+describe("the first project", () => {
+  test("is created from a name, with the slug derived", async () => {
+    const res = await finish({ instanceName: "demo", projectName: "Acme Ltd." });
+    expect(res.status).toBe(201);
+
+    const body = (await res.json()) as { project: { slug: string; displayName: string } | null };
+    expect(body.project, "setup accepted a project name and created nothing").not.toBeNull();
+    expect(body.project).toMatchObject({ slug: "acme-ltd", displayName: "Acme Ltd." });
+  });
+
+  test("an explicit slug wins over the derived one", async () => {
+    const res = await finish({ projectName: "Acme Ltd.", projectSlug: "acme" });
+    const body = (await res.json()) as { project: { slug: string } | null };
+    expect(body.project?.slug).toBe("acme");
+  });
+
+  test("is optional: the credential is the part that cannot wait", async () => {
+    // An operator who only wants a key gets one, and adds projects later.
+    const res = await finish({ instanceName: "demo" });
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as { apiKey: string | null; project: unknown };
+    expect(body.apiKey).not.toBeNull();
+    expect(body.project).toBeNull();
+  });
+
+  test("a name with no usable slug is refused while the token is still good", async () => {
+    // Refused before the key is minted, so the operator can correct the name
+    // and try again rather than being left with a spent token and no project.
+    const res = await finish({ projectName: "→→→" });
+    // 422, which is what this app answers for a value it understood and
+    // refused — as opposed to a body it could not parse.
+    expect(res.status).toBe(422);
+
+    const retry = await finish({ projectName: "Acme" });
+    expect(retry.status, "the failed attempt spent the setup token").toBe(201);
+  });
+
+  test("nothing creates a project on its own any more", async () => {
+    // A project called "Default" was created on every boot, because the
+    // operator's key had to live in an environment. It does not any more.
+    await ensureBootstrap();
+    const state = await ensureBootstrap();
+    expect(state.projectId, "a project was conjured with nobody asking for one").toBeNull();
+  });
+});
