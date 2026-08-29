@@ -179,10 +179,10 @@ export function SetupPage() {
               ? undefined
               : {
                   projectName,
-                  // Sent only when the operator typed one. Sending the derived
-                  // value would make the field look mandatory to the server
-                  // and freeze a slug the name no longer matches.
-                  ...(projectSlug.trim() === "" ? {} : { projectSlug }),
+                  // Sent only when the operator typed one, and trimmed. Sending
+                  // the derived value would make the field look mandatory to
+                  // the server and freeze a slug the name no longer matches.
+                  ...(projectSlug.trim() === "" ? {} : { projectSlug: projectSlug.trim() }),
                 },
           );
         }}
@@ -285,9 +285,13 @@ export function SetupPage() {
           </p>
         )}
 
+        {/* Blocked on the same condition NewProject blocks on: a name that
+            derives no usable slug and no slug typed to stand in. The hint
+            under the field already says so; letting the form submit anyway
+            spent a setup token to be told it by the server. */}
         <button
           type="submit"
-          disabled={busy}
+          disabled={busy || (projectName.trim() !== "" && derivedSlug === null && projectSlug.trim() === "")}
           className="inline-flex items-center gap-1.5 self-start rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900"
         >
           {busy ? <LoaderCircle aria-hidden size={14} className="animate-spin" /> : <Rocket aria-hidden size={14} />}

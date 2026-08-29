@@ -96,9 +96,12 @@ function NewProject() {
       className="flex flex-col gap-3 rounded-lg border border-slate-200 p-3 dark:border-slate-800"
       onSubmit={(e) => {
         e.preventDefault();
-        // The typed slug if there is one, otherwise the derived one. The
-        // button is disabled when neither exists, so this cannot send "".
-        void createProject(slug.trim() === "" ? (derived ?? "") : slug, displayName).then((ok) => {
+        // The typed slug if there is one, otherwise the derived one, and
+        // trimmed either way — the field is checked trimmed, so sending it raw
+        // let " my-slug" through a guard that had judged "my-slug". The button
+        // is disabled when neither exists, so this cannot send "".
+        const typed = slug.trim();
+        void createProject(typed === "" ? (derived ?? "") : typed, displayName).then((ok) => {
           if (!ok) return;
           setSlug("");
           setDisplayName("");

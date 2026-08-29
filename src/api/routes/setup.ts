@@ -163,6 +163,32 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
           pending.push({ key, value: SettingsStore.validate(key, value) });
         }
 
+        // The first project is resolved in the same pass, for the same reason.
+        // Validating it after the settings were written meant a name that
+        // reduces to no usable slug answered 400 having already persisted the
+        // instance name and moved the server clock — half of a request the
+        // operator was told had failed.
+        //
+        // Optional because the two things setup does are independent: the
+        // credential is what makes the instance usable, and a project is what
+        // makes it useful. An operator who only wants the key can add projects
+        // afterwards, and one who names a project here does not have to visit
+        // a second screen to get a working tenant.
+        let plannedProject: { slug: string; displayName: string } | null = null;
+        if (body.projectName !== undefined && body.projectName.trim() !== "") {
+          const displayName = body.projectName.trim();
+          const supplied = body.projectSlug?.trim();
+          const slug = supplied !== undefined && supplied !== "" ? supplied : slugFromName(displayName);
+
+          if (slug === null) {
+            throw new ValidationError(
+              `"${displayName}" has no usable slug; give one explicitly`,
+              "projectSlug",
+            );
+          }
+          plannedProject = { slug, displayName };
+        }
+
         const applied: Partial<Record<SettingKey, string>> = {};
         for (const { key, value } of pending) applied[key] = SettingsStore.set(key, value);
 
@@ -185,32 +211,13 @@ export const setupRoutes = new Elysia({ prefix: "/setup" })
           };
         }
 
-        // The first project, if the operator named one.
-        //
-        // Optional because the two things setup does are independent: the
-        // credential is what makes the instance usable, and a project is what
-        // makes it useful. An operator who only wants the key can add projects
-        // afterwards, and one who names a project here does not have to visit
-        // a second screen to get a working tenant.
-        //
         // Created before the key is minted, so a project that cannot be
-        // created — a name that reduces to nothing, a slug already taken —
+        // created — a slug already taken, which only the write can discover —
         // fails while the setup token is still unspent and the operator can
         // simply try again.
         let firstProject: { id: string; slug: string; displayName: string } | null = null;
-        if (body.projectName !== undefined && body.projectName.trim() !== "") {
-          const displayName = body.projectName.trim();
-          const supplied = body.projectSlug?.trim();
-          const slug = supplied !== undefined && supplied !== "" ? supplied : slugFromName(displayName);
-
-          if (slug === null) {
-            throw new ValidationError(
-              `"${displayName}" has no usable slug; give one explicitly`,
-              "projectSlug",
-            );
-          }
-
-          const project = await ProjectStore.create({ slug, displayName });
+        if (plannedProject !== null) {
+          const project = await ProjectStore.create(plannedProject);
           await EnvironmentStore.create({ projectId: project.id, slug: "production", kind: "live" });
           firstProject = { id: project.id, slug: project.slug, displayName: project.displayName };
         }

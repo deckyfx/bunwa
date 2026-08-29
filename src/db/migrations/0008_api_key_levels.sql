@@ -4,6 +4,12 @@
 -- it had: a credential acting inside one environment. Nothing is promoted by
 -- this migration — an admin key has to be minted deliberately.
 --
+-- The copy below selects the literal 'tenant' rather than a `level` column,
+-- because the table being read has no such column. SQLite would not reject
+-- `SELECT "level"` — it falls back to treating an unresolvable double-quoted
+-- identifier as a string, so every migrated key would come out holding the
+-- word "level" and silently sit outside the enum.
+--
 -- `environment_id` becomes nullable for one reason: an admin key has no tenant
 -- to name. It is not "optional" for a tenant key, which the middleware enforces
 -- by refusing a tenant key that has no environment rather than trusting the
@@ -26,7 +32,7 @@ CREATE TABLE `__new_api_keys` (
 	FOREIGN KEY (`environment_id`) REFERENCES `environments`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-INSERT INTO `__new_api_keys`("id", "level", "environment_id", "key_hash", "key_prefix", "label", "scopes", "last_used_at", "expires_at", "revoked_at", "created_at", "updated_at") SELECT "id", "level", "environment_id", "key_hash", "key_prefix", "label", "scopes", "last_used_at", "expires_at", "revoked_at", "created_at", "updated_at" FROM `api_keys`;--> statement-breakpoint
+INSERT INTO `__new_api_keys`("id", "level", "environment_id", "key_hash", "key_prefix", "label", "scopes", "last_used_at", "expires_at", "revoked_at", "created_at", "updated_at") SELECT "id", 'tenant', "environment_id", "key_hash", "key_prefix", "label", "scopes", "last_used_at", "expires_at", "revoked_at", "created_at", "updated_at" FROM `api_keys`;--> statement-breakpoint
 DROP TABLE `api_keys`;--> statement-breakpoint
 ALTER TABLE `__new_api_keys` RENAME TO `api_keys`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;--> statement-breakpoint
