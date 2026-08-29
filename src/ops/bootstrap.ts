@@ -85,43 +85,49 @@ async function registerEnvKey(database: Database, presented: string): Promise<vo
   // which is what makes the registration idempotent across restarts and a
   // rotation visible.
   const history = await database
-    .select({ prefix: apiKeys.keyPrefix, revokedAt: apiKeys.revokedAt })
+    .select({
+      prefix: apiKeys.keyPrefix,
+      revokedAt: apiKeys.revokedAt,
+      revokedReason: apiKeys.revokedReason,
+    })
     .from(apiKeys)
     .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL));
 
-  // Which row is "current" is decided by revocation, not by `createdAt`.
-  //
-  // Ordering on `createdAt` and taking the first row asked SQLite a question
-  // it does not answer: rows with equal timestamps come back in no defined
-  // order. Two registrations inside the same millisecond — a restart loop, a
-  // test — could therefore hand back the revoked half of a rotation as the
-  // current registration, and the X → Y → X rollback this function exists to
-  // fix would silently come back.
-  //
-  // Registration revokes every active bootstrap row before inserting its own,
-  // so at most one is ever live. That is a fact about the writes rather than
-  // about the clock, and it cannot tie.
   const live = history.filter((row) => row.revokedAt === null);
 
-  if (live.length > 0) {
-    // Already registered and working. Nothing to do, whichever key it is: a
-    // different one here means the variable rotated, which falls through.
-    if (live.some((row) => row.prefix === prefix)) return;
-  } else if (history.length > 0) {
-    // Nothing is live, so every bootstrap key has been revoked. That is either
-    // an operator disabling the current one by hand — which a restart must not
-    // undo, since it is the only way to disable a key that cannot be rotated
-    // without a redeploy — or a rollback to a key that was superseded earlier.
-    //
-    // The last one revoked is the one the operator acted on. Compared by
-    // `revokedAt`, which is written when the decision is made and so orders
-    // decisions rather than creations; the supersede path revokes exactly one
-    // live row at a time, so these cannot tie either.
-    const lastRevoked = history.reduce((latest, row) =>
-      (row.revokedAt?.getTime() ?? 0) > (latest.revokedAt?.getTime() ?? 0) ? row : latest,
-    );
-    if (lastRevoked.prefix === prefix) return;
+  // Nothing here compares two rows. Which registration is "current" was
+  // inferred from row order first and from revocation timestamps second, and
+  // both were questions SQLite does not promise to answer: rows that tie come
+  // back in no defined order. Each rule below reads one row's own recorded
+  // facts, so there is nothing left for a tie to decide.
+  if (live.length === 1 && live[0]!.prefix === prefix) {
+    // Registered, live, and the only one. Nothing to do.
+    return;
   }
+
+  if (live.length === 0) {
+    // Every bootstrap key has been revoked. This one comes back only if it was
+    // retired by a rotation; if a person disabled it, a restart must not undo
+    // that. `superseded` is written by the supersede path below and by nothing
+    // else, so a null reason means someone decided it deliberately.
+    const disabledByHand = history.some(
+      (row) => row.prefix === prefix && row.revokedAt !== null && row.revokedReason === null,
+    );
+    if (disabledByHand) return;
+  }
+
+  // Everything else registers, and the supersede below is what makes that
+  // safe. Two cases reach here besides an ordinary rotation:
+  //
+  // A database written before rotation retired anything can hold several live
+  // bootstrap rows, including one matching this key. Returning because one
+  // matched left the others usable — admin keys with every scope, belonging to
+  // API_KEY values the operator had already replaced. Falling through revokes
+  // all of them and leaves exactly one, so the condition above holds from the
+  // next boot onward.
+  //
+  // And a rollback: a key whose row a later rotation superseded is registered
+  // again rather than left revoked, which is the whole point of recording why.
 
   // Falling through with an older row for this prefix is deliberate. Rotating
   // X → Y → X used to find X's superseded row, take it for an existing
@@ -156,7 +162,9 @@ async function registerEnvKey(database: Database, presented: string): Promise<vo
     // or the CLI are not superseded by an environment variable changing.
     const revoked = await tx
       .update(apiKeys)
-      .set({ revokedAt: now, updatedAt: now })
+      // Marked as superseded, not merely revoked. This is the fact the next
+      // boot reads to tell "API_KEY changed" from "a person disabled this".
+      .set({ revokedAt: now, revokedReason: "superseded", updatedAt: now })
       .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)))
       .returning({ prefix: apiKeys.keyPrefix });
 

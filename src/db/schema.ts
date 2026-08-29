@@ -129,6 +129,22 @@ export const apiKeys = sqliteTable(
     lastUsedAt: integer("last_used_at", { mode: "timestamp_ms" }),
     expiresAt: integer("expires_at", { mode: "timestamp_ms" }),
     revokedAt: integer("revoked_at", { mode: "timestamp_ms" }),
+    /**
+     * Why the key was revoked, when anything but a person decided it.
+     *
+     * Only `superseded` is ever written, by the bootstrap registration when a
+     * changed `API_KEY` retires the row it replaces. Null means a person did
+     * it — through the CLI or the admin API — and the two must be told apart:
+     * a superseded key may be registered again if the variable rolls back to
+     * it, and a key someone disabled by hand may not, or a restart would undo
+     * the only way to disable a credential that cannot be rotated without a
+     * redeploy.
+     *
+     * Recorded rather than inferred. It was inferred first from row order and
+     * then from revocation timestamps, and both are questions SQLite does not
+     * promise to answer when two rows tie.
+     */
+    revokedReason: text("revoked_reason", { enum: ["superseded"] }),
     ...timestamps,
   },
   (t) => [

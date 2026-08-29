@@ -223,6 +223,11 @@ describe("a released migration is immutable", () => {
       hash: "106f01bd25e3a5312b8e155b61eb7ef95f2108db3ece3afd85421c1c4417fecf",
       when: 1787980003702,
     },
+    {
+      tag: "0009_revocation_reason",
+      hash: "de4740f8fc7c9167b2f371e8e40ee9565f8fc305f5c708f0be10fd592041838d",
+      when: 1788010909408,
+    },
   ];
 
   test("shipped migrations keep the order, hash and timestamp inspect() compares", () => {
@@ -280,6 +285,8 @@ describe("a released migration is immutable", () => {
       // Rebuilds `api_keys` to add `level` and relax `environment_id`. A
       // rebuild creates no table, so there is nothing to drop for it.
       "0008_api_key_levels": [],
+      // Adds a column to api_keys; creates no table, so nothing to drop.
+      "0009_revocation_reason": [],
     };
     for (const migration of built.slice(1)) {
       const tables = CREATED_AFTER_BASELINE[migration.tag];

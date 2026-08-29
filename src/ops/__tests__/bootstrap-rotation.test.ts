@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 
 import { createDatabase, resetDatabase, type Database } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
@@ -185,5 +185,88 @@ describe("when two registrations share a timestamp", () => {
     await bootWith("bw_live_admin_beta_secret_padding_0002");
 
     expect(await active(), "a restart un-revoked the key an operator had disabled").toHaveLength(0);
+  });
+});
+
+describe("a database written before rotation retired anything", () => {
+  test("leaves exactly one usable key, even when one of them is the current one", async () => {
+    // Rotation did not always revoke what it replaced, so an existing database
+    // can hold several live bootstrap rows. Returning because one of them
+    // matched the current API_KEY left the others usable — admin keys carrying
+    // every scope, for values the operator had already replaced and believed
+    // were gone.
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+
+    // A second live row for a key that is no longer configured, as the old
+    // code would have left behind.
+    const now = new Date();
+    await database.insert(apiKeys).values({
+      level: "admin",
+      environmentId: null,
+      keyHash: "stale-hash",
+      keyPrefix: "bw_boot_stale000000000000000000",
+      label: BOOTSTRAP_KEY_LABEL,
+      scopes: [],
+      createdAt: now,
+      updatedAt: now,
+    });
+    expect(await active(), "the fixture did not produce two live rows").toHaveLength(2);
+
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+
+    const usable = await active();
+    expect(usable, "a superseded API_KEY was left able to authenticate").toHaveLength(1);
+    expect(usable[0]?.prefix).toBe(bootstrapPrefix("bw_live_admin_alpha_secret_padding_0001"));
+
+    // And it settles: the next restart recognises the single live row and
+    // writes nothing further.
+    const before = (await rows()).length;
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    expect((await rows()).length, "the repair repeated itself on every boot").toBe(before);
+  });
+});
+
+describe("when two revocations share a timestamp", () => {
+  test("a hand-revoked key stays revoked even if a rotation ties with it", async () => {
+    // The last ordering question left: picking "the most recently revoked" row
+    // when two were revoked in the same millisecond. A rotation revoking
+    // several rows writes one timestamp to all of them, so the tie is not
+    // hypothetical. The reason is recorded now, and no rule compares two rows.
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+
+    // Beta is current; an operator disables it by hand, and every revocation
+    // in the table ends up claiming the same instant.
+    const when = new Date(1_700_000_000_000);
+    await database
+      .update(apiKeys)
+      .set({ revokedAt: when, updatedAt: when })
+      .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)));
+    await database
+      .update(apiKeys)
+      .set({ revokedAt: when })
+      .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL));
+
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+
+    expect(
+      await active(),
+      "a tied timestamp let a restart re-register a key an operator had disabled",
+    ).toHaveLength(0);
+  });
+
+  test("a superseded key still comes back when its revocation ties", async () => {
+    // The other direction, so the rule cannot be read as "never re-register".
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+
+    const when = new Date(1_700_000_000_000);
+    await database.update(apiKeys).set({ revokedAt: when }).where(isNotNull(apiKeys.revokedAt));
+
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+
+    const usable = await active();
+    expect(usable, "a rollback to a superseded key left nothing usable").toHaveLength(1);
+    expect(usable[0]?.prefix).toBe(bootstrapPrefix("bw_live_admin_alpha_secret_padding_0001"));
   });
 });

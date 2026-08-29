@@ -1,0 +1,17 @@
+-- Why a key was revoked, when it was not a person who decided.
+--
+-- The bootstrap registration has to tell two revoked keys apart: one retired
+-- because `API_KEY` changed, and one an operator disabled by hand. A
+-- superseded key may be registered again if the variable rolls back to it; a
+-- key someone disabled may not, or a restart would undo the only way to
+-- disable a credential that cannot be rotated without a redeploy.
+--
+-- It was inferred first from row order and then from revocation timestamps.
+-- Both are questions SQLite does not promise to answer: rows that tie come
+-- back in no defined order, and a rotation revoking several rows at once
+-- writes the same millisecond to all of them. So the fact is recorded.
+--
+-- Nullable with no backfill, deliberately. Null means "a person did it", which
+-- is the safe reading for every row that already exists: nothing that predates
+-- this column gets re-registered on the strength of a guess.
+ALTER TABLE `api_keys` ADD `revoked_reason` text;
