@@ -595,6 +595,18 @@ export class DeviceStore {
     now: Date = new Date(),
   ): Promise<string[]> {
     return withTransaction(database, async (tx) => {
+      // Checked before anything else. Without it an unknown id was a silent
+      // success: nothing to revoke, an update touching no rows, and a
+      // retirement finding no device to end — so a mistyped id answered 200
+      // "retired" and the operator was told a number had been destroyed that
+      // had never existed. The tenant route already 404s for the same mistake.
+      const [device] = await tx
+        .select({ id: devices.id })
+        .from(devices)
+        .where(eq(devices.id, deviceId))
+        .limit(1);
+      if (device === undefined) throw new NotFoundError(`device ${deviceId} not found`);
+
       // Every project with a binding, not every project that *holds* it.
       // `projectsHolding` answers a narrower question — who would lose
       // something — and deliberately excludes projects whose consent was

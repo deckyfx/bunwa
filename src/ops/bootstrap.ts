@@ -12,7 +12,7 @@
  * offer to mint another. When it is not, the setup screen mints one and shows
  * it once.
  */
-import { and, desc, eq, gt, isNull, or } from "drizzle-orm";
+import { and, eq, gt, isNull, or } from "drizzle-orm";
 
 import { apiKeys, environments, projects } from "../db/schema";
 import { ALL_SCOPES } from "../auth/scopes";
@@ -79,24 +79,48 @@ async function findDefaults(
 async function registerEnvKey(database: Database, presented: string): Promise<void> {
   const prefix = bootstrapPrefix(presented);
 
-  // Every bootstrap row, newest first. Identified by label rather than by an
-  // environment: this key has none. The prefix is derived from the key itself,
-  // so it is stable for a given API_KEY and changes the moment the variable
-  // does — which is what makes the registration idempotent across restarts and
-  // a rotation visible.
+  // Every bootstrap row. Identified by label rather than by an environment:
+  // this key has none. The prefix is derived from the key itself, so it is
+  // stable for a given API_KEY and changes the moment the variable does —
+  // which is what makes the registration idempotent across restarts and a
+  // rotation visible.
   const history = await database
     .select({ prefix: apiKeys.keyPrefix, revokedAt: apiKeys.revokedAt })
     .from(apiKeys)
-    .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL))
-    .orderBy(desc(apiKeys.createdAt));
+    .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL));
 
-  const current = history[0];
+  // Which row is "current" is decided by revocation, not by `createdAt`.
+  //
+  // Ordering on `createdAt` and taking the first row asked SQLite a question
+  // it does not answer: rows with equal timestamps come back in no defined
+  // order. Two registrations inside the same millisecond — a restart loop, a
+  // test — could therefore hand back the revoked half of a rotation as the
+  // current registration, and the X → Y → X rollback this function exists to
+  // fix would silently come back.
+  //
+  // Registration revokes every active bootstrap row before inserting its own,
+  // so at most one is ever live. That is a fact about the writes rather than
+  // about the clock, and it cannot tie.
+  const live = history.filter((row) => row.revokedAt === null);
 
-  if (current !== undefined && current.prefix === prefix) {
-    // This key is the current registration, and it stays exactly as found —
-    // including revoked. Un-revoking on restart would make revocation useless
-    // for the one key an operator cannot rotate without a redeploy.
-    return;
+  if (live.length > 0) {
+    // Already registered and working. Nothing to do, whichever key it is: a
+    // different one here means the variable rotated, which falls through.
+    if (live.some((row) => row.prefix === prefix)) return;
+  } else if (history.length > 0) {
+    // Nothing is live, so every bootstrap key has been revoked. That is either
+    // an operator disabling the current one by hand — which a restart must not
+    // undo, since it is the only way to disable a key that cannot be rotated
+    // without a redeploy — or a rollback to a key that was superseded earlier.
+    //
+    // The last one revoked is the one the operator acted on. Compared by
+    // `revokedAt`, which is written when the decision is made and so orders
+    // decisions rather than creations; the supersede path revokes exactly one
+    // live row at a time, so these cannot tie either.
+    const lastRevoked = history.reduce((latest, row) =>
+      (row.revokedAt?.getTime() ?? 0) > (latest.revokedAt?.getTime() ?? 0) ? row : latest,
+    );
+    if (lastRevoked.prefix === prefix) return;
   }
 
   // Falling through with an older row for this prefix is deliberate. Rotating

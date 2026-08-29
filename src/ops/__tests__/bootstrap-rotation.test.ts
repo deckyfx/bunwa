@@ -12,7 +12,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 
 import { createDatabase, resetDatabase, type Database } from "../../db";
 import { MigrationManager } from "../../db/migration-manager";
@@ -133,5 +133,57 @@ describe("API_KEY registration", () => {
 
     expect(await active(), "a restart un-revoked a key that was revoked deliberately").toHaveLength(0);
     expect(await rows(), "a restart registered a second row for the same key").toHaveLength(1);
+  });
+});
+
+describe("when two registrations share a timestamp", () => {
+  /** Flatten every bootstrap row onto one `createdAt`, as a restart loop would. */
+  const collapseTimestamps = async () => {
+    const when = new Date(1_700_000_000_000);
+    await database
+      .update(apiKeys)
+      .set({ createdAt: when })
+      .where(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL));
+  };
+
+  test("the rollback still works when createdAt cannot break the tie", async () => {
+    // SQLite does not define the order of rows with equal `createdAt`, so
+    // picking "the newest" by that column was asking a question the data does
+    // not answer. With the timestamps collapsed, ordering could hand back the
+    // revoked half of the rotation as the current registration and the X → Y →
+    // X rollback would silently fail again.
+    //
+    // The decision is made from revocation now — at most one bootstrap row is
+    // ever live, which is a fact about the writes rather than about the clock.
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+    await collapseTimestamps();
+
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+
+    const usable = await active();
+    expect(usable, "a tied timestamp left no working credential").toHaveLength(1);
+    expect(usable[0]?.prefix, "the tie decided which key came back").toBe(
+      bootstrapPrefix("bw_live_admin_alpha_secret_padding_0001"),
+    );
+  });
+
+  test("a hand-revoked key stays revoked when createdAt cannot break the tie", async () => {
+    // The other side of the same tie. Nothing is live here, so the decision
+    // falls to which key was revoked last — and that must still be the one the
+    // operator acted on, not whichever row the database happened to return.
+    await bootWith("bw_live_admin_alpha_secret_padding_0001");
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+    await collapseTimestamps();
+
+    const now = new Date();
+    await database
+      .update(apiKeys)
+      .set({ revokedAt: now, updatedAt: now })
+      .where(and(eq(apiKeys.label, BOOTSTRAP_KEY_LABEL), isNull(apiKeys.revokedAt)));
+
+    await bootWith("bw_live_admin_beta_secret_padding_0002");
+
+    expect(await active(), "a restart un-revoked the key an operator had disabled").toHaveLength(0);
   });
 });

@@ -369,3 +369,20 @@ describe("an operator retiring a device", () => {
     ).toBe(true);
   });
 });
+
+describe("an id that does not name a device", () => {
+  test("is refused, not reported as a retirement", async () => {
+    // Every step of a retirement is a no-op for an id that matches nothing:
+    // no bindings to revoke, an update touching no rows, no session to end. So
+    // the route answered 200 "retired, revokedFrom 0" and an operator who
+    // mistyped an id was told a number had been destroyed that never existed.
+    const res = await app.handle(
+      new Request("http://localhost/admin/v1/devices/no-such-device", {
+        method: "DELETE",
+        headers: { "x-api-key": adminKey },
+      }),
+    );
+
+    expect(res.status, "a mistyped device id reported a successful retirement").toBe(404);
+  });
+});
