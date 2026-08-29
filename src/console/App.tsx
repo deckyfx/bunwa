@@ -166,7 +166,7 @@ export function App() {
    */
   useEffect(() => {
     if (identity === null) return;
-    const allowed = sectionsFor(identity.scopes);
+    const allowed = sectionsFor(identity.level, identity.scopes);
     if (allowed.some((section) => section.id === route.section)) return;
 
     const fallback = allowed[0];
@@ -205,6 +205,14 @@ export function App() {
                 // a live WhatsApp connection has to make obvious. The ids are
                 // still available on the panel for anyone quoting one in a
                 // support ticket.
+                identity.level === "admin" ? (
+                  <p className="text-[11px] text-slate-500">
+                    instance
+                    <span className="ml-1.5 rounded bg-slate-200 px-1 py-px text-[10px] font-medium text-slate-700 dark:bg-slate-800 dark:text-slate-300">
+                      admin
+                    </span>
+                  </p>
+                ) : (
                 <p className="text-[11px] text-slate-500">
                   {identity.projectName}
                   <span className="mx-1 text-slate-300 dark:text-slate-700">/</span>
@@ -217,6 +225,7 @@ export function App() {
                     </span>
                   )}
                 </p>
+                )
               )}
             </div>
           </div>
@@ -261,7 +270,10 @@ export function App() {
             active={route.section}
             onSelect={navigate}
             onSignOut={signOut}
-            identity={identity}
+            // An admin key has no tenant to name in the panel, and the level
+            // is what decides which sections exist at all.
+            identity={identity.level === "tenant" ? identity : null}
+            level={identity.level}
             scopes={identity.scopes}
           />
 

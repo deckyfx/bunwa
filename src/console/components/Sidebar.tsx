@@ -37,33 +37,81 @@ export type SectionId = "claim" | "devices" | "chats" | "deliveries" | "projects
  * Hiding is not the security boundary. Every route checks the scope itself;
  * this only decides what is offered.
  */
-export const SECTIONS: Array<{ id: SectionId; label: string; icon: LucideIcon; scope?: string }> = [
-  // Projects first, and only an operator sees it: on this deployment a tenant
-  // is the unit everything else hangs off, so it is the first thing an
-  // operator wants and the thing they return to. A project key never sees it,
-  // and its list therefore still begins with Devices.
-  { id: "projects", label: "Projects", icon: FolderKanban, scope: "manage:projects" },
-  { id: "devices", label: "Devices", icon: Smartphone },
-  { id: "chats", label: "Conversations", icon: MessagesSquare },
-  { id: "claim", label: "Claim a number", icon: PlusCircle, scope: "manage:devices" },
-  { id: "deliveries", label: "Deliveries", icon: Send },
-  { id: "settings", label: "Settings", icon: SlidersHorizontal, scope: "manage:instance" },
+/**
+ * Which credential a section belongs to.
+ *
+ * The two are not a hierarchy — an admin key cannot read a project's
+ * conversations and a project key cannot rename the instance — so they are
+ * shown as separate groups rather than one list with some entries greyed out.
+ * A single list implied the operator was one grant away from everything on it,
+ * which was true when level was a scope and is not true now.
+ */
+export type SectionLevel = "admin" | "tenant";
+
+export interface Section {
+  id: SectionId;
+  label: string;
+  icon: LucideIcon;
+  level: SectionLevel;
+  scope?: string;
+}
+
+export const SECTIONS: Section[] = [
+  // Instance-level. What an operator manages: who the tenants are, what
+  // credentials exist, and the values shared by every project on the box.
+  { id: "projects", label: "Projects", icon: FolderKanban, level: "admin", scope: "manage:projects" },
+  { id: "settings", label: "Settings", icon: SlidersHorizontal, level: "admin", scope: "manage:instance" },
+
+  // Project-level. What a tenant does with the number it holds.
+  { id: "devices", label: "Devices", icon: Smartphone, level: "tenant" },
+  { id: "claim", label: "Claim a number", icon: PlusCircle, level: "tenant", scope: "manage:devices" },
+  { id: "chats", label: "Conversations", icon: MessagesSquare, level: "tenant" },
+  { id: "deliveries", label: "Deliveries", icon: Send, level: "tenant" },
 ];
 
-/** The sections a key holding these scopes should be offered. */
-export const sectionsFor = (scopes: string[]): typeof SECTIONS =>
-  SECTIONS.filter((section) => section.scope === undefined || scopes.includes(section.scope));
+/** What each group is called where it is shown. */
+/**
+ * What each group is called on screen.
+ *
+ * "tenant" is the credential's word and "Project" is the operator's. The type
+ * uses the former so it cannot drift from the level a key actually has; this
+ * maps it to the latter, because nobody signing in thinks of themselves as a
+ * tenant.
+ */
+export const LEVEL_LABEL: Record<SectionLevel, string> = {
+  admin: "Instance",
+  tenant: "Project",
+};
+
+/**
+ * The sections this credential should be offered.
+ *
+ * Filtered by level first and scope second, because they answer different
+ * questions: the level is what the key *is* and cannot be granted around, the
+ * scope is what it may do. An admin key with every scope still gets no
+ * Conversations, because there is no project whose conversations they would
+ * be.
+ *
+ * Hiding is not the security boundary — every route checks for itself. This
+ * only decides what is worth offering.
+ */
+export const sectionsFor = (level: SectionLevel, scopes: string[]): Section[] =>
+  SECTIONS.filter(
+    (section) => section.level === level && (section.scope === undefined || scopes.includes(section.scope)),
+  );
 
 export function Sidebar({
   active,
   onSelect,
   onSignOut,
   identity,
+  level,
   scopes,
 }: {
   active: SectionId;
   onSelect: (id: SectionId) => void;
   onSignOut: () => void;
+  level: SectionLevel;
   scopes: string[];
   identity: {
     projectId: string;
@@ -72,10 +120,19 @@ export function Sidebar({
     environmentSlug: string;
   } | null;
 }) {
+  const sections = sectionsFor(level, scopes);
+
   return (
     <aside className="flex w-56 shrink-0 flex-col justify-between border-r border-slate-200 bg-white/50 dark:border-slate-800 dark:bg-slate-900/30">
       <nav aria-label="Sections" className="flex flex-col gap-0.5 p-2">
-        {sectionsFor(scopes).map(({ id, label, icon: Icon }) => (
+        {/* Headed even though only one group is ever shown, because which one
+            is the thing an operator most needs to know: the same console with
+            the same layout does very different things depending on which key
+            opened it, and an unlabelled list gives no clue which. */}
+        <p className="px-2.5 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+          {LEVEL_LABEL[level]}
+        </p>
+        {sections.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"

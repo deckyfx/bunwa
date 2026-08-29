@@ -116,6 +116,7 @@ const Probe = () => createElement("output", null, useEventStream());
 const EXPIRES_AT = new Date(Date.now() + 60_000).toISOString();
 
 const IDENTITY: Identity = {
+  level: "tenant" as const,
   projectId: "p1",
   environmentId: "e1",
   projectSlug: "default",

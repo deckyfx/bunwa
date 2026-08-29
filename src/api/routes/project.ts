@@ -23,6 +23,10 @@ export const projectRoutes = new Elysia({ prefix: "/v1" })
    * which environment it acts on, before anything is sent to a real number.
    */
   .get("/whoami", async ({ auth }) => ({
+    // Named so the console can tell the two identities apart without
+    // inspecting which fields happen to be present. The admin whoami says the
+    // same about itself.
+    level: "tenant" as const,
     projectId: auth.projectId,
     environmentId: auth.environmentId,
     // The names a person uses. The ids are stable and unambiguous, which is

@@ -71,6 +71,9 @@ describe("GET /v1/whoami", () => {
     // Exact match, not a subset: whoami is the endpoint an integrator hits
     // first, and a field appearing in it silently is a contract change.
     expect(await res.json()).toEqual({
+      // Says which kind of credential it is, so the console can tell a tenant
+      // key from an admin one without inspecting which fields are present.
+      level: "tenant",
       ...ids,
       projectSlug: "grande",
       projectName: "Grande",

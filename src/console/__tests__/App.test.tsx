@@ -18,6 +18,9 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 let statusResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
 let submitResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
 let whoamiResolver: () => Promise<unknown> = () => Promise.resolve({ data: null, error: null });
+/** What the admin whoami answers. Only reached when the tenant one 403s. */
+let adminWhoamiResolver: () => Promise<unknown> = () =>
+  Promise.resolve({ data: null, error: { status: 403 } });
 /** Which admin endpoints the console reached for. Empty is the assertion for a project key. */
 const adminCalls: string[] = [];
 
@@ -41,6 +44,15 @@ void mock.module("../lib/api", () => ({
     // mock that could not answer would hide a call that did.
     admin: {
       v1: {
+        // The console asks this when the tenant whoami answers 403, which is
+        // how it tells an admin key from a project key. Present even in the
+        // project-key tests: a mock that could not answer would turn a
+        // fallback into a thrown error rather than a wrong result.
+        whoami: { get: () => adminWhoamiResolver() },
+        settings: {
+          get: () => Promise.resolve({ data: null, error: { status: 403 } }),
+          put: () => Promise.resolve({ data: null, error: { status: 403 } }),
+        },
         projects: Object.assign(
           (params: { projectId: string }) => ({
             environments: Object.assign(() => ({ "api-keys": Object.assign(() => ({ delete: () => Promise.resolve({ error: null }) }), { get: () => Promise.resolve({ data: [], error: null }), post: () => Promise.resolve({ data: null, error: null }) }) }), {
@@ -267,7 +279,7 @@ describe("a credential left over from a database that no longer exists", () => {
       Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
     whoamiResolver = () =>
       Promise.resolve({
-        data: { projectId: "p", environmentId: "e", scopes: [], serverTimezone: "UTC" },
+        data: { level: "tenant", projectId: "p", environmentId: "e", scopes: [], serverTimezone: "UTC" },
         error: null,
       });
     useSession.setState({ apiKey: "bw_live_default_good" });
@@ -286,7 +298,13 @@ describe("the signed-in shell", () => {
       Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
     whoamiResolver = () =>
       Promise.resolve({
-        data: { projectId: "proj-1234-abcd", environmentId: "env-5678-efgh", scopes: [], serverTimezone: "UTC" },
+        data: {
+          level: "tenant",
+          projectId: "proj-1234-abcd",
+          environmentId: "env-5678-efgh",
+          scopes: [],
+          serverTimezone: "UTC",
+        },
         error: null,
       });
     useSession.setState({ apiKey: "bw_live_default_good" });
@@ -366,6 +384,7 @@ describe("what each kind of key is offered", () => {
     whoamiResolver = () =>
       Promise.resolve({
         data: {
+          level: "tenant",
           projectId: "p",
           environmentId: "e",
           projectSlug: "acme",
@@ -380,11 +399,27 @@ describe("what each kind of key is offered", () => {
     useSession.setState({ apiKey: "bw_live_acme_key" });
   };
 
+  /**
+   * Sign in with an instance key rather than a project one.
+   *
+   * The tenant whoami refuses it, which is exactly how the console tells the
+   * two apart — so the mock has to refuse it too, or this would be testing a
+   * path the real server never takes.
+   */
+  const signInAsAdmin = (scopes: string[]) => {
+    statusResolver = () =>
+      Promise.resolve({ data: { ...UNCONFIGURED.data, configured: true, canMintKey: false }, error: null });
+    whoamiResolver = () => Promise.resolve({ data: null, error: { status: 403 } });
+    adminWhoamiResolver = () =>
+      Promise.resolve({ data: { level: "admin", scopes, serverTimezone: "UTC" }, error: null });
+    useSession.setState({ apiKey: "bw_live_admin_key" });
+  };
+
   const PROJECT = ["send:text", "receive:messages", "manage:devices"];
   const OPERATOR = [...PROJECT, "manage:instance", "manage:projects"];
 
   test("an operator is offered Projects", async () => {
-    signInWith(OPERATOR);
+    signInAsAdmin(OPERATOR);
     render(<App />);
     expect(await screen.findByRole("button", { name: "Projects" })).toBeDefined();
   });
@@ -439,7 +474,7 @@ describe("what each kind of key is offered", () => {
     // for the key that must be redirected; asserting the negative through a
     // preloaded address here fought happy-dom's history semantics rather than
     // the code — the guard's own rule is asserted directly below.
-    signInWith(OPERATOR);
+    signInAsAdmin(OPERATOR);
     render(<App />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
@@ -455,11 +490,27 @@ describe("what each kind of key is offered", () => {
   });
 
   test("the rule the guard applies, directly", () => {
-    // A key is redirected only when the section it names is not in its own
-    // list, and an operator's list contains everything.
-    expect(sectionsFor(OPERATOR).map((s) => s.id)).toContain("projects");
-    expect(sectionsFor(PROJECT).map((s) => s.id)).not.toContain("projects");
-    expect(sectionsFor(PROJECT).map((s) => s.id)).not.toContain("settings");
+    // Level first, scope second. An admin key is offered the instance sections
+    // and a tenant key the project ones, and neither is a subset of the other:
+    // an admin key holding every scope still gets no Conversations, because
+    // there is no project whose conversations they would be.
+    const adminIds = sectionsFor("admin", OPERATOR).map((s) => s.id);
+    const tenantIds = sectionsFor("tenant", PROJECT).map((s) => s.id);
+
+    expect(adminIds).toContain("projects");
+    expect(adminIds).toContain("settings");
+    expect(adminIds, "an admin key was offered a project's conversations").not.toContain("chats");
+
+    expect(tenantIds).toContain("devices");
+    expect(tenantIds, "a project key was offered the instance's projects").not.toContain("projects");
+    expect(tenantIds, "a project key was offered instance settings").not.toContain("settings");
+  });
+
+  test("a scope still narrows within a level", () => {
+    // The level says which group; the scope still decides what inside it.
+    const withoutClaim = sectionsFor("tenant", ["receive:messages"]).map((s) => s.id);
+    expect(withoutClaim).toContain("devices");
+    expect(withoutClaim, "claiming was offered to a key that cannot claim").not.toContain("claim");
   });
 });
 
@@ -499,6 +550,7 @@ describe("reopening a tab that has a key", () => {
     whoamiResolver = () =>
       Promise.resolve({
         data: {
+          level: "tenant",
           projectId: "p",
           environmentId: "e",
           projectSlug: "acme",

@@ -43,6 +43,7 @@ type WhoamiResponse = { data: Whoami | null; error: { status?: number } | null }
  * were added, which is the drift the derived type exists to surface.
  */
 const whoami = (over: Partial<Whoami> = {}): Whoami => ({
+  level: "tenant" as const,
   projectId: "p1",
   projectSlug: "grande",
   projectName: "Grande",
@@ -94,7 +95,10 @@ describe("connecting", () => {
 
     await useSession.getState().connect("bw_test_key");
 
-    expect(useSession.getState().identity?.projectId).toBe("p1");
+    const identity = useSession.getState().identity;
+    expect(identity?.level).toBe("tenant");
+    if (identity?.level !== "tenant") throw new Error("expected a tenant identity");
+    expect(identity.projectId).toBe("p1");
     expect(useSession.getState().error).toBeNull();
   });
 
@@ -180,10 +184,9 @@ describe("a response that arrives after the key changed", () => {
     releaseFirst?.({ data: whoami({ projectId: "FIRST" }), error: null });
     await first;
 
-    expect(
-      useSession.getState().identity?.projectId,
-      "a superseded response overwrote the current session",
-    ).toBe("SECOND");
+    const current = useSession.getState().identity;
+    if (current?.level !== "tenant") throw new Error("expected a tenant identity");
+    expect(current.projectId, "a superseded response overwrote the current session").toBe("SECOND");
   });
 });
 
